@@ -2,6 +2,16 @@
 
 > 将 AI 无限画布网页应用打包为 Windows 桌面应用程序，支持 GPU 硬件加速。
 
+<p>
+  <a href="https://github.com/Nicke000/JaceCanvas"><img src="https://img.shields.io/badge/源码-GitHub-181717?logo=github" alt="GitHub 源码"></a>
+  <a href="../安装说明.md"><img src="https://img.shields.io/badge/安装版-配置说明-0078D4?logo=windows" alt="安装版配置说明"></a>
+  <a href="../开源使用说明.md"><img src="https://img.shields.io/badge/本地开发-配置说明-2ea44f?logo=visualstudiocode" alt="本地开发配置说明"></a>
+  <a href="https://www.facebook.com/share/1C2aPnT9N3/?mibextid=wwXIfr"><img src="https://img.shields.io/badge/Facebook-联系我们-1877F2?logo=facebook&logoColor=white" alt="Facebook 联系我们"></a>
+  <a href="mailto:mikesill701@gmail.com"><img src="https://img.shields.io/badge/Email-联系我们-EA4335?logo=gmail&logoColor=white" alt="邮件联系"></a>
+</p>
+
+安装完成后的主控 API、API Key、ComfyUI 和 SSH 性能检测配置，请查看上方“安装版-配置说明”入口；源码运行和打包请查看“本地开发-配置说明”。
+
 ---
 
 ## 📋 目录

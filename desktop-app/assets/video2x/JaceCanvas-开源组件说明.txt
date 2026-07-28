@@ -1,0 +1,7 @@
+本目录随 JaceCanvas 内置 Video2X Qt6 开源组件及其本地模型，用于视频超分与补帧。
+
+Video2X 项目： https://github.com/k4yt3x/video2x
+Video2X 许可证：请以随项目发布的 LICENSE/官方仓库当前文本为准。重新分发时必须保留上游版权和许可证要求。
+
+注意：RealESRGAN、RealCUGAN、RIFE 及其模型可能具有各自的许可证、版权或使用限制。本文件不替代这些项目/模型的许可证。
+用户须自行确认软件、模型、输入素材和输出内容的合法授权；JaceCanvas 不授予商业授权，也不保证适配所有电脑或显卡。禁止侵权使用，禁止将本组件误认为 JaceCanvas 自研模型。

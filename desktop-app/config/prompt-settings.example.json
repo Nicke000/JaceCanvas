@@ -1,0 +1,6 @@
+{
+  "optimizerProvider": "openai",
+  "optimizerBaseUrl": "https://api.openai.com/v1",
+  "optimizerApiKey": "",
+  "optimizerModel": "gpt-4o-mini"
+}

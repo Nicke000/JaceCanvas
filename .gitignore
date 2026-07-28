@@ -1,0 +1,36 @@
+# Dependencies and build output
+node_modules/
+dist/
+release/
+release-*/
+desktop-app/server/
+server/dist/
+
+# Local runtime data
+server/data/
+desktop-app/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and local settings
+*.log
+*.exit
+desktop-app/config/prompt-settings.json
+desktop-app/config/*.local.json
+
+# Personal documents and workflow exports
+问题.docx
+api/
+*.tmp
+
+# Third-party runtime bundles are distributed separately after license review.
+desktop-app/assets/video2x/
+desktop-app/assets/ffmpeg/
+!desktop-app/assets/
+!desktop-app/assets/video2x/
+!desktop-app/assets/video2x/JaceCanvas-开源组件说明.txt
+desktop-app/assets/icon.ico
+desktop-app/assets/icon1.ico
+desktop-app/assets/JaceCanvas.ico
+desktop-app/public/启动动画设置.mp4

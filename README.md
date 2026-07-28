@@ -5,13 +5,15 @@
 [![License: MIT](https://img.shields.io/badge/source%20license-MIT-green.svg)](./LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue.svg)](#系统要求) [![Video2X](https://img.shields.io/badge/Video2X-open--source%20local%20bundle-cyan.svg)](./THIRD_PARTY_NOTICES.md)
 
 <p align="center">
-  <a href="https://github.com/Nicke000/JaceCanvas"><img src="https://img.shields.io/badge/源码-GitHub-181717?logo=github" alt="GitHub 源码"></a>
-  <a href="./安装说明.md"><img src="https://img.shields.io/badge/安装版-Windows%20x64-0078D4?logo=windows" alt="Windows 安装说明"></a>
-  <a href="./开源使用说明.md"><img src="https://img.shields.io/badge/本地开发-配置说明-2ea44f?logo=visualstudiocode" alt="本地开发配置说明"></a>
-  <a href="./THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/第三方组件-许可证-6f42c1" alt="第三方组件许可证"></a>
+  <a href="https://github.com/Nicke000/JaceCanvas"><img src="https://img.shields.io/badge/Source-GitHub-181717?logo=github" alt="GitHub source"></a>
+  <a href="./安装说明.md"><img src="https://img.shields.io/badge/Install-Windows%20x64-0078D4?logo=windows" alt="Windows install guide"></a>
+  <a href="./开源使用说明.md"><img src="https://img.shields.io/badge/Docs-Local%20development-2ea44f?logo=visualstudiocode" alt="Local development guide"></a>
+  <a href="./THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/Licenses-Third%20party-6f42c1" alt="Third-party licenses"></a>
 </p>
 
 > **JaceCanvas** 是面向 AI 创作的无限画布与导演工作台：把工作流节点、远程 GPU 主控、视频处理和 3D 分镜工具放在一个可扩展的 Windows 桌面应用中。
+
+> **兼容性说明：** 当前版本主要基于 **Zealman 大神的 ComfyUI 主控平台 API** 开发和验证，默认按该平台的接口、鉴权、工作流目录和参数格式工作。不保证兼容其他主控平台；如使用其他主控，需要根据接口差异自行完成 API 适配和二次开发。
 
 ### 快速入口
 
@@ -25,9 +27,9 @@
 ### 联系我们
 
 <p>
-  <a href="https://www.facebook.com/share/1C2aPnT9N3/?mibextid=wwXIfr"><img src="https://img.shields.io/badge/Facebook-联系我们-1877F2?logo=facebook&logoColor=white" alt="Facebook 联系我们"></a>
-  <a href="mailto:mikesill701@gmail.com"><img src="https://img.shields.io/badge/Email-mikesill701%40gmail.com-EA4335?logo=gmail&logoColor=white" alt="Gmail 联系我们"></a>
-  <a href="mailto:qiangzh49@outlook.com"><img src="https://img.shields.io/badge/Email-qiangzh49%40outlook.com-0078D4?logo=microsoftoutlook&logoColor=white" alt="Outlook 联系我们"></a>
+  <a href="https://www.facebook.com/share/1C2aPnT9N3/?mibextid=wwXIfr"><img src="https://img.shields.io/badge/Facebook-Contact-1877F2?logo=facebook&logoColor=white" alt="Facebook contact"></a>
+  <a href="mailto:mikesill701@gmail.com"><img src="https://img.shields.io/badge/Email-Contact-EA4335?logo=gmail&logoColor=white" alt="Gmail contact"></a>
+  <a href="mailto:qiangzh49@outlook.com"><img src="https://img.shields.io/badge/Email-Contact-EA4335?logo=gmail&logoColor=white" alt="Outlook contact"></a>
 </p>
 
 反馈问题时请说明系统版本、应用版本、复现步骤和错误截图；不要公开 API Key、SSH 密码、个人主控地址或数据库文件。
@@ -69,7 +71,7 @@ cd .\desktop-app
 
 ### 安装版
 
-安装后打开设置，填写自己的主控 API 根地址和可选 API Key；主控服务负责提供工作流目录、节点参数和生成任务。需要远程性能监控时，再填写 SSH 主机、端口、用户名和密码。SSH 密码只保存在本机安全存储中，不要写入 README、Issue 或截图。
+安装后打开设置，填写自己的主控 API 根地址和可选 API Key。当前安装版主要适配 Zealman 的 ComfyUI 主控平台 API；其他主控不保证兼容，需要自行完成 API 适配和二次开发。需要远程性能监控时，再填写 SSH 主机、端口、用户名和密码。SSH 密码只保存在本机安全存储中，不要写入 README、Issue 或截图。
 
 ### 本地开发版
 

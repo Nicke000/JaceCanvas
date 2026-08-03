@@ -21,7 +21,7 @@ Write-Host "桌面路径: $DesktopPath" -ForegroundColor Gray
 $ExePath = $null
 
 # 1. 先检查 release 目录中的安装版
-$ReleaseDir = Join-Path $AppDir "release-v3.11.6"
+$ReleaseDir = Join-Path $AppDir "release-v3.11.8"
 if (Test-Path $ReleaseDir) {
         $ExeFiles = Get-ChildItem -Path $ReleaseDir -Recurse -Filter "JaceCanvas.exe" -ErrorAction SilentlyContinue
     if ($ExeFiles) {
@@ -69,7 +69,7 @@ if (-not $ExePath) {
         $Shortcut.Description = "JaceCanvas - AI image and video canvas"
         
         # 设置图标
-    $IconPath = Join-Path $AppDir "assets\icon1.ico"
+        $IconPath = Join-Path $AppDir "assets\icon1.ico"
         if (Test-Path $IconPath) {
             $Shortcut.IconLocation = $IconPath
         }

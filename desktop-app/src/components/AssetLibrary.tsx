@@ -20,7 +20,7 @@ const MTYPES = [
   { key: 'text', icon: <FileTextOutlined/> }, { key: 'audio', icon: <AudioOutlined/> },
 ];
 
-export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void }> = ({ collapsed, onToggle }) => {
+export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; embedded?: boolean }> = ({ collapsed, onToggle, embedded = false }) => {
   const [assets, setAssets] = useState<AssetItem[]>([]);
   const [cat, setCat] = useState('character');
   const [mtype, setMtype] = useState('image');
@@ -71,17 +71,17 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void }
     try { await downloadMedia(asset.url, asset.name || `asset-${asset.id}`, asset.type); }
     catch (error) { window.alert(error instanceof Error ? error.message : '保存资产失败，请检查文件地址'); }
   };
-  if (collapsed) return (
+  if (collapsed && !embedded) return (
     <div style={{position:'absolute',left:0,top:130,zIndex:10}}>
       <Tooltip title="资产库"><Button type="text" icon={<PictureOutlined/>}
-        onClick={onToggle} style={{background:'#16162add',borderRadius:8,color:'#aaa'}}/></Tooltip>
+        onClick={onToggle} style={{background:'var(--theme-surface)',borderRadius:8,color:'var(--theme-muted)',border:'1px solid var(--theme-border)'}}/></Tooltip>
     </div>
   );
   return (
-    <div className="asset-panel" style={{position:'absolute',left:0,top:40,width:260,height:'calc(100vh - 40px)',background:'#16162a',
-      borderRight:'1px solid #2a2a3e',zIndex:10,display:'flex',flexDirection:'column'}}>
-      <div style={{padding:'10px 12px',borderBottom:'1px solid #2a2a3e',display:'flex',alignItems:'center',gap:8}}>
-        <span style={{fontWeight:700,fontSize:13,color:'#e0e0f0',flex:1}}>资产库</span>
+    <div className={`asset-panel workspace-panel ${embedded ? 'asset-panel--embedded' : ''}`} style={{position:'absolute',left:0,top:40,width:260,height:'calc(100vh - 40px)',background:'var(--theme-panel)',
+      borderRight:'1px solid var(--theme-border)',zIndex:10,display:'flex',flexDirection:'column'}}>
+      <div style={{padding:'10px 12px',borderBottom:'1px solid var(--theme-border)',display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontWeight:700,fontSize:13,color:'var(--theme-text)',flex:1}}>资产库</span>
         <Upload showUploadList={false} multiple beforeUpload={file => {
           const reader = new FileReader();
           reader.onload = () => {
@@ -91,8 +91,8 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void }
           };
           (file.type.startsWith('image')||file.type.startsWith('video')||file.type.startsWith('audio'))?reader.readAsDataURL(file):reader.readAsText(file);
           return false;
-        }}><Button type="text" size="small" icon={<UploadOutlined/>} style={{color:'#888'}}/></Upload>
-        <Button type="text" size="small" onClick={onToggle} style={{color:'#888'}}>×</Button>
+        }}><Button type="text" size="small" icon={<UploadOutlined/>} style={{color:'var(--theme-muted)'}}/></Upload>
+        <Button type="text" size="small" onClick={onToggle} style={{color:'var(--theme-muted)'}}>×</Button>
       </div>
       <div style={{padding:'6px 10px'}}>
         <Input prefix={<SearchOutlined/>} placeholder="搜索..." size="small" value={search}
@@ -106,20 +106,21 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void }
           onClick={()=>setCat(c.key)}>{c.icon} {c.label}</Tag>))}
       </div>
       <div style={{flex:1,overflow:'auto',padding:'6px'}} onDrop={handleFileDrop} onDragOver={e=>e.preventDefault()}>
-        {filtered.length===0&&(<div style={{color:'#555',textAlign:'center',padding:20,fontSize:11,
-          border:'1px dashed #2a2a3e',borderRadius:10,margin:4}}>
+        {filtered.length===0&&(<div style={{color:'var(--theme-muted)',textAlign:'center',padding:20,fontSize:11,
+          border:'1px dashed var(--theme-border)',borderRadius:10,margin:4}}>
           <InboxOutlined style={{fontSize:24,marginBottom:8,display:'block'}}/>
           拖拽文件到此处<br/>归入「{CATS.find(c=>c.key===cat)?.label}」
         </div>)}
         {filtered.map(a=>(<div key={a.id} draggable
           onDragStart={e=>{e.dataTransfer.setData('asset-id',a.id);e.dataTransfer.setData('asset-url',a.url||'');e.dataTransfer.setData('application/ai-asset',JSON.stringify({id:a.id,name:a.name,type:a.type,url:a.url}));e.dataTransfer.effectAllowed='copy';}}
-          style={{padding:6,borderRadius:8,cursor:'grab',marginBottom:4,border:'1px solid #2a2a3e',
-            fontSize:11,color:'#c0c0d0',background:'#1a1a30'}}>
+          className="asset-card"
+          style={{padding:6,borderRadius:8,cursor:'grab',marginBottom:4,border:'1px solid var(--theme-border)',
+            fontSize:11,color:'var(--theme-text)'}}>
           {a.type==='image'&&a.url ? <img src={a.url} style={{width:'100%',height:90,borderRadius:6,objectFit:'cover',marginBottom:4}} alt=""/> :
-           a.type==='video' && a.url ? <video src={a.url} muted playsInline style={{width:'100%',height:90,borderRadius:6,objectFit:'contain',background:'#0f0f1a',marginBottom:4}}/> : a.type==='video' ? <div style={{width:'100%',height:70,borderRadius:6,background:'#0f0f1a',
-             display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><VideoCameraOutlined style={{fontSize:24,color:'#555'}}/></div> :
-           <div style={{width:'100%',height:50,borderRadius:6,background:'#0f0f1a',
-             display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><FileTextOutlined style={{fontSize:20,color:'#555'}}/></div>}
+           a.type==='video' && a.url ? <video src={a.url} muted playsInline style={{width:'100%',height:90,borderRadius:6,objectFit:'contain',background:'var(--theme-input)',marginBottom:4}}/> : a.type==='video' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-input)',
+             display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><VideoCameraOutlined style={{fontSize:24,color:'var(--theme-muted)'}}/></div> :
+           <div style={{width:'100%',height:50,borderRadius:6,background:'var(--theme-input)',
+             display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><FileTextOutlined style={{fontSize:20,color:'var(--theme-muted)'}}/></div>}
           {editNameId===a.id?<Input size="small" value={nameInput} autoFocus onChange={e=>setNameInput(e.target.value)} onPressEnter={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}} onBlur={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}}/>:<div title="双击重命名" onDoubleClick={()=>{setEditNameId(a.id);setNameInput(a.name)}} style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>{a.name.length>20?a.name.slice(0,20)+'...':a.name}</div>}
           <div style={{display:'flex',flexWrap:'wrap',gap:2,marginBottom:3}}>
             {a.tags.map(t=>(<Tag key={t} closable style={{fontSize:9,margin:0,padding:'0 4px',lineHeight:'16px'}}
@@ -131,8 +132,8 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void }
               onClick={()=>setEditTagId(a.id)}>+标签</Tag>)}
           </div>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <span style={{fontSize:9,color:'#555'}}>{new Date(a.createdAt).toLocaleDateString()}</span>
-            <span style={{display:'flex',gap:8}}><DownloadOutlined title="保存到本机" style={{fontSize:11,color:'#60a5fa',cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveAsset(a)}}/><EditOutlined title="重命名" style={{fontSize:11,color:'#747b91',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setEditNameId(a.id);setNameInput(a.name)}}/><DeleteOutlined title="删除" style={{fontSize:11,color:'#747b91',cursor:'pointer'}} onClick={e=>{e.stopPropagation();save(assets.filter(x=>x.id!==a.id));}}/></span>
+            <span style={{fontSize:9,color:'var(--theme-muted)'}}>{new Date(a.createdAt).toLocaleDateString()}</span>
+            <span style={{display:'flex',gap:8}}><DownloadOutlined title="保存到本机" style={{fontSize:11,color:'#60a5fa',cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveAsset(a)}}/><EditOutlined title="重命名" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setEditNameId(a.id);setNameInput(a.name)}}/><DeleteOutlined title="删除" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();save(assets.filter(x=>x.id!==a.id));}}/></span>
           </div>
         </div>))}
       </div>

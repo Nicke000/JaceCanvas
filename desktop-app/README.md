@@ -4,16 +4,14 @@
 
 <p>
   <a href="https://github.com/Nicke000/JaceCanvas"><img src="https://img.shields.io/badge/Source-GitHub-181717?logo=github" alt="GitHub 源码"></a>
-  <a href="../安装说明.md"><img src="https://img.shields.io/badge/Install-Guide-0078D4?logo=windows" alt="安装版配置说明"></a>
-  <a href="../开源使用说明.md"><img src="https://img.shields.io/badge/Docs-Development-2ea44f?logo=visualstudiocode" alt="本地开发配置说明"></a>
+  <a href="../安装版本/安装说明.md"><img src="https://img.shields.io/badge/Install-Guide-0078D4?logo=windows" alt="安装版配置说明"></a>
+  <a href="../开源/开源使用说明.md"><img src="https://img.shields.io/badge/Docs-Development-2ea44f?logo=visualstudiocode" alt="本地开发配置说明"></a>
   <a href="https://www.facebook.com/share/1C2aPnT9N3/?mibextid=wwXIfr"><img src="https://img.shields.io/badge/Facebook-Contact-1877F2?logo=facebook&logoColor=white" alt="Facebook 联系我们"></a>
   <a href="mailto:mikesill701@gmail.com"><img src="https://img.shields.io/badge/Email-Contact-EA4335?logo=gmail&logoColor=white" alt="邮件联系"></a>
 
   <a href="mailto:qiangzh49@outlook.com"><img src="https://img.shields.io/badge/Email-Outlook-0078D4?logo=microsoftoutlook&logoColor=white" alt="Outlook contact"></a></p>
 
 当前版本主要基于 Zealman 的 ComfyUI 主控平台 API 开发和验证。其他主控不保证兼容，需要自主完成 API 适配和二次开发。
-
-安装完成后的主控 API、API Key、ComfyUI 和 SSH 性能检测配置，请查看上方“安装版-配置说明”入口；源码运行和打包请查看“本地开发-配置说明”。
 
 ---
 
@@ -57,6 +55,11 @@
 
 ## 🚀 快速开始
 
+### 方式零：直接下载安装包（普通用户）
+
+- **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/1eVCgaoPqYvxneCNpcIb1bg?pwd=3buf>（提取码 `3buf`）
+- **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>（Windows x64 安装包 `JaceCanvas Setup 4.6.8.exe`）
+
 ### 方式一：快速测试（推荐先用这个验证）
 
 ```batch
@@ -73,7 +76,7 @@ start-desktop.bat
 build-desktop.bat
 ```
 
-完成后在 `release/` 目录中会生成安装程序 `AI无限画布 Setup x.x.x.exe`。
+完成后在 `release-v4.6.8/` 目录中会生成安装程序 `JaceCanvas Setup 4.6.8.exe`。
 
 ---
 
@@ -235,8 +238,8 @@ desktop-app/
 │   ├── routes/
 │   └── services/
 ├── node_modules/            # Electron 等依赖
-└── release/                 # 📦 打包输出目录
-    └── AI无限画布 Setup x.x.x.exe
+└── release-v4.6.8/          # 📦 打包输出目录
+    └── JaceCanvas Setup 4.6.8.exe
 ```
 
 ---
@@ -307,12 +310,12 @@ POST /api/comfy/upload/file
 
 ## 📝 更新日志
 
-### v1.0.0 (2026-07)
-- ✅ 初始桌面版本
-- ✅ GPU 硬件加速支持
-- ✅ 崩溃自动恢复
-- ✅ 内嵌后端服务
-- ✅ 桌面快捷方式
+详细的版本更新内容请查看 GitHub Releases 页面。当前最新版本：**v4.6.8**（持续迭代中）。
+
+主要方向：
+- AI 无限画布与节点工作流体验持续优化；
+- 付费 API 节点能力、厂商适配与界面持续完善；
+- 外观主题、性能显示、文档与用户体验持续更新。
 
 ---
 

@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import type { ReactFlowInstance } from '@xyflow/react';
 import { useCanvasStore } from '@/stores/canvasStore';
+import type { NodeComponentType } from '@/types';
 
 /** 画布核心 hook */
 export function useCanvas() {
@@ -20,7 +21,7 @@ export function useCanvas() {
 
   /** 在画布中央添加节点 */
   const addNodeAtCenter = useCallback(
-    (type: string) => {
+    (type: NodeComponentType) => {
       if (!reactFlowRef.current) return;
       const viewport = reactFlowRef.current.getViewport();
       const center = reactFlowRef.current.screenToFlowPosition({
@@ -46,7 +47,7 @@ export function useCanvas() {
         ?.getBoundingClientRect();
       if (!bounds) return;
 
-      addNode('default', {
+      addNode(activeTool, {
         x: event.clientX - bounds.left - 75,
         y: event.clientY - bounds.top - 25,
       });

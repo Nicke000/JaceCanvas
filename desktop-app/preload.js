@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 获取应用信息
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+  chooseProjectFolder: () => ipcRenderer.invoke('choose-project-folder'),
+  saveProjectFile: (payload) => ipcRenderer.invoke('save-project-file', payload),
+  openProjectFile: () => ipcRenderer.invoke('open-project-file'),
   sshPerformance: (config) => ipcRenderer.invoke('ssh-performance', config),
   saveSshPassword: (password) => ipcRenderer.invoke('save-ssh-password', password),
   getSshPassword: () => ipcRenderer.invoke('get-ssh-password'),
@@ -34,4 +37,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 窗口控制
   minimizeWindow: () => ipcRenderer.send('minimize-window'),
+  toggleMaximizeWindow: () => ipcRenderer.send('toggle-maximize-window'),
+  closeWindow: () => ipcRenderer.send('close-window'),
+  onWindowStateChange: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('window-state-changed', listener);
+    return () => ipcRenderer.removeListener('window-state-changed', listener);
+  },
+  openDevTools: () => ipcRenderer.send('open-devtools'),
 });

@@ -274,10 +274,17 @@ const MODEL_LIBRARY_THUMB_NAME_MAP: Record<string, string> = {
   "display_cooler_low.fbx": "展示冰柜",
 };
 
+// 这三个模型的外部中文缩略图没有随源码分发。使用内置 SVG 占位图，
+// 避免构建期引用不存在的文件，也避免模型库出现破图。
+function createMissingThumbnail(label: string, color: string) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="220" viewBox="0 0 320 220"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="${color}" stop-opacity=".34"/><stop offset="1" stop-color="#111827"/></linearGradient></defs><rect width="320" height="220" rx="18" fill="url(#g)"/><circle cx="160" cy="92" r="42" fill="none" stroke="${color}" stroke-width="5" opacity=".8"/><path d="M112 148h96M128 132l32-40 32 40" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/><text x="160" y="188" text-anchor="middle" fill="#e5e7eb" font-family="sans-serif" font-size="18">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
 const UPDATED_MODEL_THUMBNAIL_OVERRIDES: Record<string, string> = {
-  "deer_skull_low.fbx": new URL("../../../../模型库/户外出行/缩略图/鹿头骨.png", import.meta.url).href,
-  "drill_press_low.fbx": new URL("../../../../模型库/工具配件/缩略图/台钻.png", import.meta.url).href,
-  "thermus_low.fbx": new URL("../../../../模型库/户外出行/缩略图/保温瓶.png", import.meta.url).href,
+  "deer_skull_low.fbx": createMissingThumbnail("鹿头骨", "#a78bfa"),
+  "drill_press_low.fbx": createMissingThumbnail("台钻", "#38bdf8"),
+  "thermus_low.fbx": createMissingThumbnail("保温瓶", "#34d399"),
 };
 
 function createModelName(fileName: string) {

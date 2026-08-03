@@ -6,7 +6,7 @@ import rawConfig from './_workflows_config.json';
 
 // ========== 类型定义 ==========
 export interface WorkflowField {
-  nodeId: string; fieldName: string; type: 'string' | 'number' | 'boolean';
+  nodeId: string; fieldName: string; type: 'string' | 'number' | 'boolean' | 'select';
   default: unknown; nodeTitle: string; nodeClass: string;
   group: 'prompt' | 'negative_prompt' | 'dimensions' | 'sampler' | 'output' | 'model' | 'control' | 'other';
   label: string;
@@ -87,6 +87,14 @@ function getOptions(fieldName: string): { label: string; value: string }[] | und
   return undefined;
 }
 
+function normalizeType(fieldName: string, fieldData: any): WorkflowField['type'] {
+  const value = fieldData?.default;
+  if (typeof value === 'boolean' || /^(true|false)$/i.test(String(value ?? ''))) return 'boolean';
+  if (Array.isArray(fieldData?.options) || Array.isArray(fieldData?.values) || getOptions(fieldName)?.length) return 'select';
+  if (typeof value === 'number' || /^(int|float|number|integer)$/i.test(String(fieldData?.type || ''))) return 'number';
+  return 'string';
+}
+
 // ========== 核心 vs 高级分组 ==========
 const CORE_GROUPS: WorkflowField['group'][] = ['prompt', 'negative_prompt', 'dimensions', 'sampler', 'control'];
 const ADVANCED_GROUPS: WorkflowField['group'][] = ['model', 'output', 'other'];
@@ -104,7 +112,9 @@ function parseWorkflow(id: string, data: any): WorkflowConfig {
         const group = classifyField(nodeData.class||'', nodeData.title||'', fieldName);
         const label = fieldLabel(nodeData.title||'', fieldName);
         const options = getOptions(fieldName);
-        fields.push({ nodeId, fieldName, type: fieldData.type||'string', default: fieldData.default, nodeTitle: nodeData.title||nodeId, nodeClass: nodeData.class||'', group, label, options });
+        const type = normalizeType(fieldName, fieldData);
+        const dynamicOptions = Array.isArray(fieldData.options) ? fieldData.options.map((option: any) => ({ label: String(option.label ?? option), value: String(option.value ?? option) })) : Array.isArray(fieldData.values) ? fieldData.values.map((option: any) => ({ label: String(option), value: String(option) })) : options;
+        fields.push({ nodeId, fieldName, type, default: fieldData.default, nodeTitle: nodeData.title||nodeId, nodeClass: nodeData.class||'', group, label, options: dynamicOptions });
         defaultValueMap[`${nodeId}:${fieldName}`] = fieldData.default;
       }
     }

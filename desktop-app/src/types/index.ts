@@ -12,10 +12,11 @@ export type NodeComponentType =
   | 'storyboardPrompt' | 'cinematographyKnowledge' | 'directorStudio'
   | 'uploadNode' | 'downloadNode'
   | 'apiNode'  // 通用API节点（17个工作流）
-  | 'videoTrim' | 'video2xLocal';
+  | 'chatNode' | 'videoTrim' | 'video2xLocal' | 'imageCrop'
+  | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage';
 
 /* ========== IO 定义 ========== */
-export type IOType = 'text' | 'image' | 'video' | 'number' | 'select';
+export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select';
 
 export interface PortDefinition {
   name: string;
@@ -33,14 +34,14 @@ export interface NodeConfig {
 }
 
 /* ========== 执行状态 ========== */
-export type NodeStatus = 'idle' | 'running' | 'paused' | 'success' | 'error';
+export type NodeStatus = 'idle' | 'queued' | 'running' | 'paused' | 'success' | 'error';
 
 export interface NodeIOValue {
   [portName: string]: unknown;
 }
 
 /* ========== 各节点配置预设 ========== */
-export const NODE_CONFIGS: Record<NodeComponentType, NodeConfig> = {
+export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
   textInput: {
     inputs: [{ name: 'settings', label: '场景设定', type: 'text' }],
     outputs: [{ name: 'text', label: '文本', type: 'text' }],
@@ -151,7 +152,14 @@ export const NODE_CONFIGS: Record<NodeComponentType, NodeConfig> = {
   downloadNode: { inputs: [{ name: 'url', label: '文件URL', type: 'image', required: true }],
     outputs: [], params: {} },
   apiNode: { inputs: [], outputs: [{ name: 'output', label: '输出', type: 'image' }], params: {} },
-  directorStudio: { inputs: [{ name: 'shot', label: '镜头设定', type: 'text' }], outputs: [{ name: 'shot', label: '镜头设定', type: 'text' }, { name: 'preview', label: '导演台截图', type: 'image' }], params: {} },
+  chatNode: { inputs: [{ name: 'image', label: '图片', type: 'image' }, { name:'file', label:'文件/音视频', type:'audio' }], outputs: [{ name: 'text', label: '回复', type: 'text' }, { name: 'image', label: '图片', type: 'image' }, { name: 'video', label: '视频', type: 'video' }], params: { message: '', memory: true, historyLimit: 20 } },
+  imageCrop: { inputs: [{ name: 'image', label: '输入图片', type: 'image', required: true }], outputs: [{ name: 'image', label: '裁切后图片', type: 'image' }], params: { x: 0, y: 0, width: 512, height: 512, aspectRatio: '1:1' } },
+  paidTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
+  paidImageToImage: { inputs: [{ name: 'image', label: '参考图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
+  paidTextToVideo: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },
+  paidImageToVideo: { inputs: [{ name: 'image', label: '起始图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },
+  paidCapability: { inputs: [{ name: 'image', label: '人物图片', type: 'image' }, { name: 'video', label: '参考视频', type: 'video' }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'output', label: '生成结果', type: 'image' }], params: { capability: 'image-upscale', prompt: '', model: '' } },
+  bailianTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', ratio: '1:1', resolution: 1024, seed: -1 } },
   video2xLocal: {
     inputs: [{ name: 'video', label: '输入视频', type: 'video', required: true }],
     outputs: [{ name: 'video', label: '处理后视频', type: 'video' }],
@@ -202,7 +210,26 @@ export interface Project {
   canvasData: { nodes: AppNode[]; edges: Edge[]; };
 }
 export interface ChatMessage {
-  id: string; role: 'user' | 'assistant'; content: string; nodeId?: string; timestamp: number;
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  nodeId?: string;
+  timestamp: number;
+  attachments?: Array<{
+    name: string;
+    mimeType: string;
+    dataUrl?: string;
+    url?: string;
+    source?: 'local' | 'asset' | 'canvas' | 'history';
+  }>;
+  status?: 'complete' | 'stopped' | 'error';
+}
+export interface ChatSession {
+  id: string;
+  nodeId: string;
+  title: string;
+  messages: ChatMessage[];
+  updatedAt: number;
 }
 export type ToolAction = 'select' | NodeComponentType;
 

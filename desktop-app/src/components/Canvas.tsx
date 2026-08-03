@@ -1,26 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, MarkerType, SelectionMode, type ReactFlowInstance } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, MarkerType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Tooltip } from 'antd';
-import { CameraOutlined, AppstoreOutlined, BgColorsOutlined, ApartmentOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { nodeTypes } from '@/components/nodes/nodeTypes';
 import { DeletableEdge } from '@/components/edges/DeletableEdge';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useThemeStore } from '@/stores/themeStore';
 import { getModels, testConnection } from '@/services/comfyui.service';
 import { comfyWS } from '@/services/comfyui-ws.service';
-import type { NodeComponentType } from '@/types';
+import type { NodeComponentType, AppNode } from '@/types';
 
 const edgeTypes={deletable:DeletableEdge};
 
 export const Canvas: React.FC = () => {
-  const rfRef = useRef<ReactFlowInstance | null>(null);
+  const rfRef = useRef<ReactFlowInstance<AppNode, Edge> | null>(null);
   const nodes = useCanvasStore(s => s.nodes);
   const edges = useCanvasStore(s => s.edges);
   const onNodesChange = useCanvasStore(s => s.onNodesChange);
+  const pushHistory = useCanvasStore(s => s._pushHistory);
   const onEdgesChange = useCanvasStore(s => s.onEdgesChange);
   const onConnect = useCanvasStore(s => s.onConnect);
   const setSelectedNodeId = useCanvasStore(s => s.setSelectedNodeId);
+  const selectedNodeId = useCanvasStore(s => s.selectedNodeId);
   const addNode = useCanvasStore(s => s.addNode);
   const del = useCanvasStore(s => s.deleteSelectedNode);
   const dup = useCanvasStore(s => s.duplicateSelectedNode);
@@ -32,6 +33,12 @@ export const Canvas: React.FC = () => {
   const [showMiniMap, setShowMiniMap] = useState(true);
   const [gpuInfo, setGpuInfo] = useState<{name:string;mem:string;usage:string}|null>(null);
   const baseUrl = useSettingsStore(s => s.baseUrl);
+  const gridStyle = useThemeStore(s => s.preferences.gridStyle);
+
+  // 4.6.8：外观偏好中的「画布网格」实时切换 React Flow 网格样式。
+  useEffect(() => {
+    setGridVariant(gridStyle === 'lines' ? BackgroundVariant.Lines : gridStyle === 'cross' ? BackgroundVariant.Cross : BackgroundVariant.Dots);
+  }, [gridStyle]);
 
   useEffect(() => {
     const check = async () => {
@@ -68,7 +75,7 @@ export const Canvas: React.FC = () => {
     return ()=>{unProgress();unExec();unDone();};
   },[baseUrl]);
 
-  const onInit = useCallback((inst: ReactFlowInstance) => { rfRef.current = inst; }, []);
+  const onInit = useCallback((inst: ReactFlowInstance<AppNode, Edge>) => { rfRef.current = inst; }, []);
   useEffect(()=>{
     (window as any).__focusCanvasNode=(id:string)=>{
       const node=useCanvasStore.getState().nodes.find(item=>item.id===id);
@@ -89,6 +96,9 @@ export const Canvas: React.FC = () => {
   const onSel = useCallback(({nodes:sel}:{nodes:{id:string}[]}) => {
     setSelectedNodeId(sel.length === 1 && sel[0].id ? sel[0].id : null);
   }, [setSelectedNodeId]);
+  const onPaneClick = useCallback(() => {
+    setSelectedNodeId(null);
+  }, [setSelectedNodeId]);
   useEffect(()=>{const close=(event:PointerEvent)=>{if((event.target as HTMLElement).closest('.canvas-text-editor'))return;window.dispatchEvent(new Event('ai-canvas-close-text-editor'))};window.addEventListener('pointerdown',close);return()=>window.removeEventListener('pointerdown',close)},[]);
   const onConnectEnd=useCallback((event:MouseEvent|TouchEvent,state:any)=>{
     if(state?.toNode||!state?.fromNode||state?.fromHandle?.type==='target')return;
@@ -103,7 +113,7 @@ export const Canvas: React.FC = () => {
     const results=source.data.results||[];const current=results[0];
     useCanvasStore.getState().updateNodeData(previewId,{inputValues:{media:current?.url||source.data.resultUrl,results},results});
   },[addNode,onConnect]);
-  const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='move'; }, []);
+  const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; }, []);
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const remoteRaw = e.dataTransfer.getData('application/remote-workflow');
@@ -149,11 +159,35 @@ export const Canvas: React.FC = () => {
   /* 一键整理画布 */
   const handleAutoLayout = useCallback(() => {
     const ns = useCanvasStore.getState().nodes;
+    const es = useCanvasStore.getState().edges;
     if (ns.length < 2) { rfRef.current?.fitView({ duration: 300 }); return; }
-    const cols = Math.ceil(Math.sqrt(ns.length)), spacing = 350;
-    const updated = ns.map((n, i) => ({
-      ...n, position: { x: 200 + (i % cols) * spacing, y: 100 + Math.floor(i / cols) * spacing * 0.7 }
-    }));
+    const incoming = new Map(ns.map(n => [n.id, 0]));
+    const children = new Map(ns.map(n => [n.id, [] as string[]]));
+    es.forEach(edge => {
+      if (incoming.has(edge.target) && children.has(edge.source)) {
+        incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
+        children.get(edge.source)?.push(edge.target);
+      }
+    });
+    const layers = new Map<string, number>();
+    const queue = ns.filter(n => (incoming.get(n.id) || 0) === 0).map(n => n.id);
+    if (!queue.length) ns.forEach(n => queue.push(n.id));
+    while (queue.length) {
+      const id = queue.shift()!;
+      const layer = layers.get(id) || 0;
+      (children.get(id) || []).forEach(child => {
+        layers.set(child, Math.max(layers.get(child) || 0, layer + 1));
+        queue.push(child);
+      });
+    }
+    ns.forEach((node, index) => { if (!layers.has(node.id)) layers.set(node.id, index); });
+    const groups = new Map<number, typeof ns>();
+    ns.forEach(node => { const layer = layers.get(node.id) || 0; if (!groups.has(layer)) groups.set(layer, []); groups.get(layer)!.push(node); });
+    const xGap = 390; const yGap = 230;
+    const updated = ns.map(n => {
+      const layer = layers.get(n.id) || 0; const group = groups.get(layer) || []; const index = group.findIndex(item => item.id === n.id);
+      return { ...n, position: { x: 120 + layer * xGap, y: 100 + index * yGap } };
+    });
     useCanvasStore.setState({ nodes: updated as any });
     setTimeout(() => rfRef.current?.fitView({ duration: 400 }), 80);
   }, []);
@@ -176,46 +210,44 @@ export const Canvas: React.FC = () => {
     } catch { /* ignore */ }
   }, []);
 
-  return (
-    <div className="canvas-root" style={{width:'100%',height:'100%',background:'#0f0f1a'}} onDoubleClick={e=>{const target=e.target as HTMLElement;if(target.classList.contains('react-flow__pane')||target.classList.contains('canvas-root'))openNodeLibrary()}} onDragOver={onDragOver} onDrop={onDrop}>
-      {/* 画布工具按钮 - 右上角 */}
-      <div style={{position:'absolute',top:56,right:56,zIndex:20,display:'flex',gap:4}}>
-        <Tooltip title={showGrid?'隐藏网格':'显示网格'}>
-          <Button type="text" size="small" icon={<BgColorsOutlined style={{opacity:showGrid?1:0.4}}/>}
-            onClick={()=>setShowGrid(!showGrid)} style={{background:'#16162add',borderRadius:6,color:'#888'}}/>
-        </Tooltip>
-        <Tooltip title={showMiniMap?'隐藏缩略图':'显示缩略图'}>
-          <Button type="text" size="small" icon={<AppstoreOutlined style={{opacity:showMiniMap?1:0.4}}/>}
-            onClick={()=>setShowMiniMap(!showMiniMap)} style={{background:'#16162add',borderRadius:6,color:'#888'}}/>
-        </Tooltip>
-        <Tooltip title="一键整理画布">
-          <Button type="text" size="small" icon={<ApartmentOutlined/>}
-            onClick={handleAutoLayout} style={{background:'#16162add',borderRadius:6,color:'#888'}}/>
-        </Tooltip>
-        <Tooltip title="导出画布截图">
-          <Button type="text" size="small" icon={<CameraOutlined/>}
-            onClick={handleSnapshot} style={{background:'#16162add',borderRadius:6,color:'#888'}}/>
-        </Tooltip>
-      </div>
+  // 画布工具统一放在应用顶栏，避免被右侧节点控制面板遮住。
+  useEffect(() => {
+    const toggleGrid = () => setShowGrid(value => !value);
+    const toggleMiniMap = () => setShowMiniMap(value => !value);
+    const autoLayout = () => handleAutoLayout();
+    const snapshot = () => handleSnapshot();
+    window.addEventListener('ai-canvas-toggle-grid', toggleGrid);
+    window.addEventListener('ai-canvas-toggle-minimap', toggleMiniMap);
+    window.addEventListener('ai-canvas-auto-layout', autoLayout);
+    window.addEventListener('ai-canvas-snapshot', snapshot);
+    return () => {
+      window.removeEventListener('ai-canvas-toggle-grid', toggleGrid);
+      window.removeEventListener('ai-canvas-toggle-minimap', toggleMiniMap);
+      window.removeEventListener('ai-canvas-auto-layout', autoLayout);
+      window.removeEventListener('ai-canvas-snapshot', snapshot);
+    };
+  }, [handleAutoLayout, handleSnapshot]);
 
+  return (
+    <div className={`canvas-root ${selectedNodeId ? 'has-inspector' : ''}`} onDoubleClick={e=>{const target=e.target as HTMLElement;if(target.classList.contains('react-flow__pane')||target.classList.contains('canvas-root'))openNodeLibrary()}} onDragOver={onDragOver} onDrop={onDrop}>
       {empty && (
         <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none',zIndex:5}}>
           <div style={{textAlign:'center'}}>
-            <div className="empty-orb">✦</div>
-            <div style={{fontSize:20,fontWeight:700,color:'#a9a9c4',marginBottom:8}}>开始搭建你的创作工作流</div>
-            <div style={{fontSize:13,color:'#62627d'}}>从上方选择节点，点击添加或拖到画布中</div>
+            <div className="welcome-brand"><img src="./icon1.png" alt="JaceCanvas" /><strong>JaceCanvas</strong></div>
+            <div className="welcome-heading">开始搭建你的创作工作流</div>
+            <div className="welcome-sub">展开工作区，拖入或点击节点添加到画布开始创作</div>
           </div>
         </div>
       )}
 
       <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} edgeTypes={edgeTypes}
-        onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} nodeTypes={nodeTypes}
-        fitView minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} multiSelectionKeyCode="Shift" selectionKeyCode="Control" selectionOnDrag selectionMode={SelectionMode.Partial}
+        onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onPaneClick={onPaneClick} nodeTypes={nodeTypes}
+        fitView minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} multiSelectionKeyCode="Shift" selectionKeyCode="Control" selectionOnDrag={false} selectionMode={SelectionMode.Partial}
         snapToGrid snapGrid={[20,20]} connectionLineType={ConnectionLineType.Bezier}
-        defaultEdgeOptions={{type:'deletable',animated:true,markerEnd:{type:MarkerType.ArrowClosed,width:14,height:14,color:'#7c6df2'},style:{stroke:'#7c6df2',strokeWidth:2.2}}}>
-        {showGrid && <Background variant={gridVariant} gap={20} size={1} color="#1a1a30" />}
-        <Controls position="bottom-right" showFitView showZoom showInteractive={false} />
-        {showMiniMap && <MiniMap position="bottom-left" nodeColor={n=>(n.data?.color as string)??'#6366f1'} maskColor="rgba(0,0,0,0.5)" />}
+        defaultEdgeOptions={{type:'deletable',animated:true,markerEnd:{type:MarkerType.ArrowClosed,width:14,height:14,color:'var(--theme-edge)'},style:{stroke:'var(--theme-edge)',strokeWidth:2.2}}}>
+        {showGrid && <Background variant={gridVariant} gap={20} size={1} color="var(--theme-grid)" />}
+        <Controls position="top-right" showFitView showZoom showInteractive={false} />
+        {showMiniMap && <MiniMap position="bottom-right" nodeColor={n=>(n.data?.color as string)??'#6366f1'} maskColor="rgba(0,0,0,0.5)" />}
       </ReactFlow>
     </div>
   );

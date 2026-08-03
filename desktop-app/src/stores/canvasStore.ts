@@ -3,9 +3,19 @@ import { applyNodeChanges, applyEdgeChanges, type NodeChange, type EdgeChange, t
 import type { AppNode, CanvasNodeData, ToolAction, HistorySnapshot, NodeComponentType, ContextMenuState, NodeStatus } from '@/types';
 import { NODE_CONFIGS } from '@/types';
 import { generate, pollResult, uploadFile, getApiBase, bridgeMediaToInput, cancelComfyTask, type ResultItem } from '@/services/comfyui.service';
+import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
 import { generateId } from '@/utils';
 import { NODE_MAP } from '@/config/registry';
 import { mediaTypeForFile } from '@/utils/fileDrop';
+import { sendChat, type ChatTurn } from '@/services/chat.service';
+import { formatEffects, CINEMATOGRAPHY_EFFECTS } from '@/config/cinematographyKnowledge';
+import { generateStoryboard, DEFAULT_STORYBOARD_SYSTEM_PROMPT } from '@/services/storyboard.service';
+import { callPaidApi } from '@/services/paidApi.service';
+import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
+import { useSettingsStore, type PaidApiNodeSettings } from '@/stores/settingsStore';
+import { getSupportedPaidCapabilities } from '@/config/paidCapabilityCatalog';
+import { callBailianTextToImage } from '@/services/bailianTextToImage.service';
+import { addGenerationHistory } from '@/utils/generationHistory';
 
 const NODE_DEFAULTS: Record<NodeComponentType, { label: string; color: string; icon: string }> = {
   textInput:       { label: '文本输入', color: '#1677ff', icon: '📝' },
@@ -33,15 +43,11 @@ const NODE_DEFAULTS: Record<NodeComponentType, { label: string; color: string; i
   refMultiFusion:{label:'多图融合',color:'#ec4899',icon:'🔄'},refWashImage:{label:'洗图',color:'#f43f5e',icon:'🖌️'},
   refImageClear:{label:'变清晰',color:'#22c55e',icon:'✨'},refImageToVideo:{label:'图生视频',color:'#3b82f6',icon:'📹'},
   uploadNode:{label:'上传文件',color:'#60a5fa',icon:'📤'},downloadNode:{label:'下载结果',color:'#f59e0b',icon:'📥'},
-  apiNode:{label:'API节点',color:'#6366f1',icon:'🔌'}, directorStudio:{label:'JA导演台',color:'#f59e0b',icon:'🎬'}, videoTrim:{label:'视频剪辑',color:'#f97316',icon:'✂'}, video2xLocal:{label:'Video2X超分/补帧（开源本地）',color:'#06b6d4',icon:'⚙'},
+  imageCrop:{label:'修图裁切',color:'#f97316',icon:'✂'}, apiNode:{label:'API节点',color:'#6366f1',icon:'🔌'}, chatNode:{label:'AI聊天',color:'#22c55e',icon:'💬'}, directorStudio:{label:'JA导演台',color:'#f59e0b',icon:'🎬'}, videoTrim:{label:'视频剪辑',color:'#f97316',icon:'✂'}, video2xLocal:{label:'Video2X超分/补帧（开源本地）',color:'#06b6d4',icon:'⚙'},
+  paidTextToImage:{label:'付费API·文生图',color:'#a855f7',icon:'🎨'},paidImageToImage:{label:'付费API·图生图',color:'#0ea5e9',icon:'🖼️'},paidTextToVideo:{label:'付费API·文生视频',color:'#ec4899',icon:'🎬'},paidImageToVideo:{label:'付费API·图生视频',color:'#f43f5e',icon:'📹'},paidCapability:{label:'付费扩展能力',color:'#14b8a6',icon:'✦'},bailianTextToImage:{label:'文生图',color:'#ff7a45',icon:'🔥'},
 };
 
-const INITIAL: AppNode[] = [{
-  id: 'welcome', type: 'textInput', position: { x: 200, y: 120 },
-  data: { label: '👋 欢迎使用 JaceCanvas', content: '从工具栏点击或拖拽添加节点，右键执行', color: '#1677ff', nodeType: 'textInput',
-    config: { text: '' }, inputValues: {}, outputValues: {}, status: 'idle',
-    createdAt: Date.now(), updatedAt: Date.now() },
-}];
+const INITIAL: AppNode[] = [];
 
 interface Store {
   nodes: AppNode[]; edges: Edge[]; selectedNodeId: string | null; activeTool: ToolAction; projectName: string;
@@ -53,6 +59,7 @@ interface Store {
   updateNodeStyle: (id: string, style: Record<string, unknown>) => void;
   setNodeConfig: (id: string, config: Record<string, unknown>) => void;
   executeNode: (id: string) => Promise<boolean>;
+  enqueueNode: (id: string) => void;
   executeFromNode: (id: string) => Promise<void>;
   pauseNode: (id: string) => void;
   setNodeStatus: (id: string, status: NodeStatus, error?: string) => void;
@@ -75,6 +82,8 @@ interface Store {
 
 const runningControllers = new Map<string, AbortController>();
 const queuedTaskIds = new Set<string>();
+const localExecutionQueue: string[] = [];
+let localQueueRunning = false;
 export const getRunningTaskCount = () => runningControllers.size;
 export const getQueuedTaskIds = () => [...queuedTaskIds];
 
@@ -150,11 +159,19 @@ export const useCanvasStore = create<Store>((set, get) => ({
       storyboardPrompt: { script:'',personCount:2,sceneCount:2,personNotes:{},sceneNotes:{},segmentCount:3,segmentRule:'每段 5 秒',totalDuration:15,inheritPrevious:'true',effects:'',customRequirements:'',systemPrompt:'' },
       cinematographyKnowledge: { selectedEffectIds:[],customTerms:[],presetName:'' },
       directorStudio: { actors: [], scene: '', camera: {}, shot: {}, workflow: '', prompt: '', snapshot: '' },
+      imageCrop: { x: 0, y: 0, width: 512, height: 512, aspectRatio: '1:1' },
+      paidTextToImage: { prompt:'', model:'', aspectRatio:'1:1', width:1024, height:1024 },
+      paidImageToImage: { prompt:'', model:'', aspectRatio:'1:1', width:1024, height:1024 },
+      paidTextToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5 },
+      paidImageToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5 },
+      paidCapability: { capability:'image-upscale', prompt:'', model:'' },
+      bailianTextToImage: { prompt:'', ratio:'1:1', resolution:1024, seed:-1 },
+      chatNode: { message: '', memory: true, historyLimit: 20, history: [] },
       videoTrim: { startFrame: 0, endFrame: 0, fps: 30 },
     };
     let dynCfg = defaults[t];
     if (!dynCfg) { const e = NODE_MAP.get(t); if (e) dynCfg = { ...e.defaultParams }; else dynCfg = {}; }
-    const initialStyle = t === 'preview' ? { width: 240, height: 180 } : t === 'compare' ? {width:460,height:260} : t === 'storyboardPrompt' ? {width:680,minWidth:620} : t === 'cinematographyKnowledge' ? {width:520,minWidth:420} : undefined;
+    const initialStyle = t === 'preview' ? { width: 240, height: 180 } : t === 'compare' ? {width:460,height:260} : t === 'chatNode' ? {width:520,height:620,minWidth:420,minHeight:420} : t === 'storyboardPrompt' ? {width:680,minWidth:620} : t === 'cinematographyKnowledge' ? {width:520,minWidth:420} : undefined;
     const nodeId=generateId();
     set({ nodes: [...get().nodes, { id: nodeId, type: t, position: p, style: initialStyle,
       data: { label: nd.label, content: '', color: nd.color, nodeType: t,
@@ -216,7 +233,34 @@ export const useCanvasStore = create<Store>((set, get) => ({
     void cancelComfyTask(promptId).catch(() => undefined);
     runningControllers.get(id)?.abort();
     runningControllers.delete(id);
+    const queuedIndex = localExecutionQueue.indexOf(id);
+    if (queuedIndex >= 0) localExecutionQueue.splice(queuedIndex, 1);
+    queuedTaskIds.delete(id);
     set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, status: 'paused', content: '已取消任务，已通知 ComfyUI 中断', error: undefined, updatedAt: Date.now() } } : n) });
+  },
+
+  enqueueNode: (id) => {
+    const node = get().nodes.find(item => item.id === id);
+    if (!node || node.data.disabled || node.data.status === 'running' || localExecutionQueue.includes(id)) return;
+    localExecutionQueue.push(id);
+    queuedTaskIds.add(id);
+    get().updateNodeData(id, { status: 'idle', queuedAt: Date.now(), queueOrder: Date.now(), error: undefined, content: '已加入本地执行队列' });
+    if (localQueueRunning) return;
+    localQueueRunning = true;
+    void (async () => {
+      try {
+        while (localExecutionQueue.length) {
+          const nextId = localExecutionQueue.shift()!;
+          queuedTaskIds.delete(nextId);
+          const current = get().nodes.find(item => item.id === nextId);
+          if (!current || current.data.status === 'paused' || current.data.disabled) continue;
+          get().updateNodeData(nextId, { queuedAt: undefined, queueOrder: undefined });
+          await get().executeNode(nextId);
+        }
+      } finally {
+        localQueueRunning = false;
+      }
+    })();
   },
 
   toggleNodeDisabled: (id) => {
@@ -264,7 +308,6 @@ export const useCanvasStore = create<Store>((set, get) => ({
       const input_values: Record<string, unknown> = {};
 
       if (nt === 'cinematographyKnowledge') {
-        const { formatEffects, CINEMATOGRAPHY_EFFECTS } = await import('@/config/cinematographyKnowledge');
         const ids = Array.isArray(config.selectedEffectIds) ? config.selectedEffectIds.map(String) : [];
         const search = String(config.search || '').trim().toLowerCase();
         const selected = search ? CINEMATOGRAPHY_EFFECTS.filter(e=>e.term.toLowerCase().includes(search)).map(e=>e.id) : ids;
@@ -275,7 +318,6 @@ export const useCanvasStore = create<Store>((set, get) => ({
         Object.entries(output).forEach(([key,value])=>get().propagateData(id,key,value));
         return true;
       } else if (nt === 'storyboardPrompt') {
-        const { generateStoryboard, DEFAULT_STORYBOARD_SYSTEM_PROMPT } = await import('@/services/storyboard.service');
         const requestVersion = `${id}-${startedAt}`;
         get().updateNodeData(id,{content:'正在请求分镜 AI…',config:{...config,_requestVersion:requestVersion}});
         const sourceEdges = get().edges.filter(e=>e.target===id);
@@ -351,11 +393,105 @@ export const useCanvasStore = create<Store>((set, get) => ({
         Object.entries(outputValues).forEach(([key,value]) => get().propagateData(id,key,value));
         get().updateNodeData(id,{status:'success',generationDurationMs:Date.now()-startedAt});
         return true;
+      } else if (false && nt === 'bailianTextToImage') {
+        const bailian = useSettingsStore.getState().bailianTextToImage;
+        const prompt = String(config.prompt || node?.data.inputValues?.prompt || node?.data.inputValues?.text || '').trim();
+        if (!prompt) throw new Error('请输入提示词，或连接文本节点到提示词输入端口');
+        const result = await callBailianTextToImage(bailian, {
+          prompt,
+          ratio: String(config.ratio || '1:1'),
+          resolution: Number(config.resolution) || 1024,
+          seed: Number(config.seed),
+        }, controller.signal);
+        const results = [{ type: 'image' as const, url: result.url }];
+        const outputValues = { image: result.url, output: result.url, url: result.url, results };
+        get().updateNodeData(id, { resultUrl: result.url, outputValues, results, content: '文生图生成完成', status: 'success' });
+        get().propagateData(id, 'image', result.url);
+        get().propagateData(id, 'output', result.url);
+        get().propagateData(id, 'results', results);
+        return true;
+      } else if (['paidTextToImage','paidImageToImage','paidTextToVideo','paidImageToVideo','paidCapability','bailianTextToImage'].includes(nt)) {
+        const paid = useSettingsStore.getState();
+        const legacyCapability = nt === 'paidImageToImage' ? 'image-to-image' : nt === 'paidTextToVideo' ? 'text-to-video' : nt === 'paidImageToVideo' ? 'image-to-video' : 'text-to-image';
+        const capability = String(config.capability || legacyCapability) as PaidCapability;
+        const capabilityInfo = capability ? PAID_CAPABILITIES[capability] : undefined;
+        const isVideo = capabilityInfo?.output === 'video';
+        const needsImage = Boolean(capabilityInfo && capabilityInfo.input !== 'text');
+        const provider = String(config.provider || (nt === 'bailianTextToImage' ? 'bailian' : ''));
+        const profile = paid.paidApiProviders?.[provider as keyof typeof paid.paidApiProviders];
+        if (!provider || !profile?.apiKey) throw new Error(`请先在设置 → 付费 API 厂商配置中填写当前厂商的 API Key`);
+        const prompt = String(config.prompt || node.data.inputValues?.prompt || node.data.inputValues?.text || '').trim();
+        const imageUrl = String(node.data.inputValues?.image || node.data.inputValues?.firstImage || node.data.inputValues?.url || '');
+        const lastImageUrl = String(node.data.inputValues?.lastImage || '');
+        const videoUrl = String(node.data.inputValues?.video || '');
+        const audioUrl = String(node.data.inputValues?.audio || '');
+        if (!prompt) throw new Error('请输入提示词，或连接文本节点到提示词输入端口');
+        if (capability === 'element-manage' || capability === 'voice-manage') {
+          throw new Error('主体 / 音色管理请在节点内直接创建、查询和删除，无需在画布中执行任务');
+        }
+        if (capability === 'lipsync') {
+          if (!videoUrl) throw new Error('对口型需要连接人物视频输入端口');
+          if (!audioUrl) throw new Error('对口型需要连接音频输入端口');
+        } else if (needsImage && !imageUrl) throw new Error('请连接图片输入端口，或拖入图片素材');
+        if (capabilityInfo?.input === 'image-video' && capability !== 'lipsync' && !videoUrl) throw new Error('该节点还需要连接参考视频输入端口');
+        const type = capability;
+        const chosenModel = String(config.model || profile.selectedModel || '');
+        if (!chosenModel) throw new Error('请选择当前厂商支持的模型');
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: String(config.model || profile.selectedModel || ''), region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, {
+          type,
+          prompt,
+          negativePrompt: String(config.negativePrompt || config.negative_prompt || ''),
+          imageUrl: needsImage ? imageUrl : undefined,
+          lastImageUrl: lastImageUrl || undefined,
+          videoUrl: videoUrl || undefined,
+          audioUrl: audioUrl || undefined,
+          width: Number(config.width) || undefined,
+          height: Number(config.height) || undefined,
+          aspectRatio: String(config.aspectRatio || ''),
+          resolution: isVideo ? Number(config.resolution) || undefined : undefined,
+          duration: isVideo ? Number(config.duration) || 5 : undefined,
+          frameRate: isVideo ? Number(config.frameRate) || 24 : undefined,
+          seed: Number.isFinite(Number(config.seed)) ? Number(config.seed) : undefined,
+        });
+        if (!result.url) throw new Error('接口已返回成功状态，但未提供可访问的生成结果地址');
+        const outputKey = isVideo ? 'video' : 'image';
+        const outputValues = { [outputKey]: result.url, output: result.url };
+        const paidResults = [{ type: isVideo ? ('video' as const) : ('image' as const), url: result.url }];
+        get().updateNodeData(id, { resultUrl: result.url, outputValues, results: paidResults, content: `付费 API 生成完成 · ${chosenModel}`, status:'success' });
+        get().propagateData(id, outputKey, result.url);
+        get().propagateData(id, 'output', result.url);
+        addGenerationHistory({ id: `${id}-${Date.now()}`, nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, resultUrl: result.url, results: paidResults, status: 'success', timestamp: Date.now() });
+        return true;
+      } else if (nt === 'chatNode') {
+        const message = String(config.message || node.data.inputValues?.prompt || node.data.inputValues?.text || '').trim();
+        const inputImage = String(node.data.inputValues?.image || '');
+        const inputFile = String(node.data.inputValues?.file || node.data.inputValues?.video || node.data.inputValues?.audio || node.data.inputValues?.url || '');
+        if (!message && !inputImage && !inputFile) throw new Error('请输入消息或连接图片/文件');
+        const history = (Array.isArray(config.history) ? config.history : []) as ChatTurn[];
+        const attachments = [...(Array.isArray(config.attachments) ? config.attachments : []), ...(inputImage ? [{ name: 'input-image', mimeType: 'image/*', url: inputImage }] : []), ...(inputFile ? [{ name: 'input-file', mimeType: 'application/octet-stream', url: inputFile }] : [])];
+        const result = await sendChat(message || '请分析这个文件。', attachments, config.memory === false ? [] : history.slice(-Math.max(0, Number(config.historyLimit) || 20)), undefined, { model:String(config.selectedModel || '') || undefined, thinkingMode:(config.thinkingMode as any) || undefined });
+        const nextHistory = [...history, { role: 'user' as const, content: message }, { role: 'assistant' as const, content: result.text }];
+        const image = result.text.match(/https?:\/\/[^\s)]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)]*)?/i)?.[0];
+        const video = result.text.match(/https?:\/\/[^\s)]+\.(?:mp4|webm|mov)(?:\?[^\s)]*)?/i)?.[0];
+        const outputValues: Record<string, unknown> = { text: result.text, output: result.text };
+        if (image) outputValues.image = image;
+        if (video) outputValues.video = video;
+        get().updateNodeData(id, { content: result.text, outputValues, config: { ...config, history: nextHistory }, status: 'success', error: undefined });
+        get().propagateData(id, 'text', result.text); get().propagateData(id, 'output', result.text);
+        if (image) get().propagateData(id, 'image', image);
+        if (video) get().propagateData(id, 'video', video);
+        return true;
       } else if (nt === 'video2xLocal') {
-        const input = String(config.inputPath || node.data.inputValues?.video || ''); const api=(window as any).electronAPI;
-        if (!input) throw new Error('请先连接视频，或在 Video2X 节点中选择本地视频'); if (!api?.video2xProcess) throw new Error('请使用 Electron 桌面版运行 Video2X 本地节点');
-        const result=await api.video2xProcess({input,mode:config.mode||'upscale',scale:config.scale||2,model:config.model||'realesr-animevideov3',frameRateMul:config.frameRateMul||2}); const values={video:result.url,output:result.url};
-        get().updateNodeData(id,{resultUrl:result.url,outputValues:values,results:[{type:'video',url:result.url,filename:result.filename}],content:'Video2X 处理完成'}); get().propagateData(id,'video',result.url); get().propagateData(id,'output',result.url); get().setNodeStatus(id,'success'); return true;
+        const input = String(config.inputPath || node.data.inputValues?.video || '');
+        const api = (window as any).electronAPI;
+        if (!input) throw new Error('请先连接视频，或在 Video2X 节点中选择本地视频');
+        if (!api?.video2xProcess) throw new Error('请使用 Electron 桌面版运行 Video2X 本地节点');
+        const result = await api.video2xProcess({ input, mode: config.mode || 'upscale', scale: config.scale || 2, model: config.model || 'realesr-animevideov3', frameRateMul: config.frameRateMul || 2 });
+        const values = { video: result.url, output: result.url };
+        get().updateNodeData(id, { resultUrl: result.url, outputValues: values, results: [{ type:'video', url:result.url, filename:result.filename }], content:'Video2X 处理完成' });
+        get().propagateData(id, 'video', result.url); get().propagateData(id, 'output', result.url);
+        get().setNodeStatus(id, 'success');
+        return true;
       } else if (nt === 'downloadNode') {
         // 下载节点：从 input URL 下载
         const url = (config.url as string) || (node.data.inputValues?.url as string);
@@ -396,7 +532,9 @@ export const useCanvasStore = create<Store>((set, get) => ({
             if(value!=null)input_values[field.key]=await bridgeMediaToInput(String(value),mediaType);
           }
         }
-        const textFields = fields.filter((f:any)=>!f.fileType && /text|prompt|positive|negative|script|caption|description/i.test(String(f.key).split(':').pop()||''));
+        // 所有非媒体字符串字段都可接收文本；不能只依赖 prompt/text 等字段名，
+        // 否则模型自定义节点的第二、第三个文本输入会被遗漏。
+        const textFields = fields.filter((f:any)=>!f.fileType && ['string','text','textarea'].includes(String(f.type || 'string').toLowerCase()));
         const texts = sourceNodes.flatMap(source=>{
           const direct=source.data.outputValues?.text ?? source.data.config?.text;
           return direct==null?[]:[String(direct)];
@@ -478,15 +616,15 @@ export const useCanvasStore = create<Store>((set, get) => ({
       get().updateNodeData(id, { progress: 100, generationDurationMs:Date.now()-startedAt });
       get().setNodeStatus(id, 'success');
       runningControllers.delete(id);
-      // 记录历史
-      try { (window as any).__addHistory?.({ id: id + '-' + Date.now(), nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, resultUrl, results:get().nodes.find(n=>n.id===id)?.data.results, status: 'success', timestamp: Date.now() }); } catch {}
+      // 记录历史，不依赖生成历史面板是否已经挂载。
+      addGenerationHistory({ id: id + '-' + Date.now(), nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, resultUrl, results:get().nodes.find(n=>n.id===id)?.data.results, status: 'success', timestamp: Date.now() });
       return true;
     } catch (e: any) {
       runningControllers.delete(id);
       if (e?.name === 'AbortError') { get().updateNodeData(id,{status:'paused',generationDurationMs:Date.now()-startedAt}); return false; }
       get().updateNodeData(id,{generationDurationMs:Date.now()-startedAt});
       get().setNodeStatus(id, 'error', e?.message || '执行失败');
-      try { (window as any).__addHistory?.({ id: id + '-' + Date.now(), nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, status: 'error', timestamp: Date.now(), error: e?.message }); } catch {}
+      addGenerationHistory({ id: id + '-' + Date.now(), nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, status: 'error', timestamp: Date.now(), error: e?.message });
       return false;
     }
   },
@@ -501,19 +639,30 @@ export const useCanvasStore = create<Store>((set, get) => ({
       planned.add(current);
       get().edges.filter(e => e.source === current).forEach(e => queue.push(e.target));
     }
-    planned.forEach(taskId => queuedTaskIds.add(taskId));
+    planned.forEach((taskId, index) => {
+      queuedTaskIds.add(taskId);
+      get().updateNodeData(taskId, { queuedAt: Date.now(), queueOrder: index, status: 'queued', content: '已加入本地执行队列' });
+    });
     const executionQueue = [id];
     while (executionQueue.length > 0) {
+      executionQueue.sort((left, right) => Number(get().nodes.find(node => node.id === left)?.data.queueOrder ?? 0) - Number(get().nodes.find(node => node.id === right)?.data.queueOrder ?? 0));
       const current = executionQueue.shift()!;
       queuedTaskIds.delete(current);
       if (visited.has(current)) continue;
       visited.add(current);
+      const currentNode = get().nodes.find(node => node.id === current);
+      if (currentNode?.data.status === 'paused') continue;
+      get().updateNodeData(current, { queuedAt: undefined, queueOrder: undefined });
       const succeeded = await get().executeNode(current);
       if (!succeeded) continue;
       const downstream = get().edges.filter(e => e.source === current).map(e => e.target);
       downstream.forEach(taskId => executionQueue.push(taskId));
     }
-    planned.forEach(taskId => queuedTaskIds.delete(taskId));
+    planned.forEach(taskId => {
+      queuedTaskIds.delete(taskId);
+      const node = get().nodes.find(item => item.id === taskId);
+      if (node && node.data.status === 'queued') get().updateNodeData(taskId, { queuedAt: undefined, queueOrder: undefined, status: 'idle' });
+    });
   },
 
   contextMenu: { visible: false, x: 0, y: 0, nodeId: null },

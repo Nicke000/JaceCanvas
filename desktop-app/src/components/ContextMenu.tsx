@@ -4,7 +4,7 @@ import { useCanvasStore } from '@/stores/canvasStore';
 export const ContextMenu: React.FC = () => {
   const ctx = useCanvasStore(s => s.contextMenu);
   const hide = useCanvasStore(s => s.hideContextMenu);
-  const exec = useCanvasStore(s => s.executeNode);
+  const exec = useCanvasStore(s => s.enqueueNode);
   const execFrom = useCanvasStore(s => s.executeFromNode);
   const del = useCanvasStore(s => s.deleteSelectedNode);
   const dup = useCanvasStore(s => s.duplicateSelectedNode);
@@ -26,7 +26,7 @@ export const ContextMenu: React.FC = () => {
     } catch { window.open(resultUrl,'_blank'); }
   };
   const items = [
-    { l: '\u25B6 \u6267\u884C\u6B64\u8282\u70B9', a: () => ctx.nodeId && exec(ctx.nodeId) },
+    { l: '\u25B6 \u52a0\u5165\u672c\u5730\u961f\u5217', a: () => ctx.nodeId && exec(ctx.nodeId) },
     { l: '\u26A1 \u4ECE\u6B64\u5F00\u59CB\u6267\u884C', a: () => ctx.nodeId && execFrom(ctx.nodeId) },
     { l: node?.data.status==='running' ? 'Ⅱ 暂停等待并阻断下游' : 'Ⅱ 标记暂停并阻断下游', a: () => ctx.nodeId && pause(ctx.nodeId) },
     ...(resultUrl ? [{ l: '↓ 保存生成结果', a: saveResult }] : []),
@@ -38,14 +38,9 @@ export const ContextMenu: React.FC = () => {
   ];
   return <>
     <div style={{position:'fixed',inset:0,zIndex:999}} onClick={hide}/>
-    <div style={{position:'fixed',zIndex:1000,left:ctx.x,top:ctx.y,background:'#1a1a2e',borderRadius:10,
-      boxShadow:'0 8px 32px rgba(0,0,0,0.6)',border:'1px solid #2a2a3e',padding:'6px 0',minWidth:180,fontSize:12}}>
+    <div className="app-context-menu" style={{left:ctx.x,top:ctx.y}}>
       {items.map((it,i) => it.l==='---' ?
-        <div key={i} style={{height:1,background:'#2a2a3e',margin:'4px 12px'}}/> :
-        <div key={i} onClick={()=>{it.a?.();hide();}}
-          style={{padding:'8px 16px',cursor:'pointer',color:it.danger?'#ef4444':'#c0c0d0',
-            transition:'background 0.1s'}}
-          onMouseEnter={e=>(e.currentTarget.style.background='#2a2a3e')}
-          onMouseLeave={e=>(e.currentTarget.style.background='transparent')}>{it.l}</div>
+        <div key={i} className="app-context-menu__sep"/> :
+        <div key={i} className={'app-context-menu__item' + (it.danger?' is-danger':'')} onClick={()=>{it.a?.();hide();}}>{it.l}</div>
       )}</div></>;
 };

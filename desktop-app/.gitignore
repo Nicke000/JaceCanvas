@@ -4,12 +4,7 @@ release-*/
 dist/
 server/
 !server/package.json
-assets/*
-!assets/
-!assets/.gitkeep
-!assets/video2x/
-assets/video2x/*
-!assets/video2x/JaceCanvas-开源组件说明.txt
+assets/
 *.log
 config/prompt-settings.json
 config/*.local.json

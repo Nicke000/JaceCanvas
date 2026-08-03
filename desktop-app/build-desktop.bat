@@ -21,6 +21,11 @@ if errorlevel 1 (
 echo.
 echo [2/4] 构建后端...
 pushd "%~dp0..\server"
+if not exist "node_modules\.bin\tsc.cmd" (
+  echo 正在安装后端依赖...
+  call npm install --include=dev
+  if errorlevel 1 exit /b 1
+)
 call npm run build
 if errorlevel 1 (
   echo ❌ 后端构建失败
@@ -48,5 +53,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo   输出目录：%~dp0release-v3.11.6
+echo   输出目录：%~dp0release-v4.6.8
 pause

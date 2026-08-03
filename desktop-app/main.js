@@ -8,7 +8,7 @@
  * - 本地文件加载（无需网络）
  */
 
-const { app, BrowserWindow, shell, dialog, ipcMain, safeStorage } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, safeStorage, Menu } = require("electron");
 const path = require("path");
 const { spawn, execFileSync } = require("child_process");
 const fs = require("fs");
@@ -30,30 +30,16 @@ if (!gpuAcceleration) app.disableHardwareAcceleration();
 // ============================================================
 // 🔥 GPU 加速配置
 // ============================================================
-// 启用 GPU 硬件加速（Chromium 渲染引擎）
-// 用户手动关闭时保留软件渲染回退，避免部分旧显卡驱动导致黑屏。
-if (!gpuAcceleration) app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("enable-zero-copy");
-app.commandLine.appendSwitch("ignore-gpu-blacklist");
-app.commandLine.appendSwitch("enable-accelerated-video-decode");
-app.commandLine.appendSwitch("enable-accelerated-video-encode");
-app.commandLine.appendSwitch("enable-features", "VaapiVideoDecoder,CanvasOopRasterization");
-app.commandLine.appendSwitch("enable-native-gpu-memory-buffers");
-app.commandLine.appendSwitch("enable-gpu-memory-buffer-video-frames");
-
-// WebGL 相关优化
-app.commandLine.appendSwitch("enable-webgl");
-app.commandLine.appendSwitch("enable-webgl2");
-app.commandLine.appendSwitch("enable-unsafe-webgpu");
-
-// 禁用可能干扰的 Chromium 特性
-app.commandLine.appendSwitch("disable-features", "UseChromeOSDirectVideoDecoder");
-
-// 强制使用独立 GPU（如果有双显卡）
-app.commandLine.appendSwitch("force_high_performance_gpu");
-
-// 禁用 GPU 沙箱以获得更好的 GPU 访问权限
-app.commandLine.appendSwitch("disable-gpu-sandbox");
+// 启用 GPU 硬件加速（Chromium 渲染引擎）。不要强制打开实验性 GPU
+// 开关：部分 Windows 驱动会因此让渲染进程崩溃，最终表现为黑屏。
+// Chromium 会根据驱动黑名单自行选择 WebGL/GPU 路径；用户关闭时使用软件渲染。
+if (!gpuAcceleration) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+} else {
+  app.commandLine.appendSwitch("enable-accelerated-video-decode");
+  app.commandLine.appendSwitch("enable-accelerated-video-encode");
+}
 
 // ============================================================
 // 应用配置
@@ -73,7 +59,41 @@ let isQuitting = false;
 let crashCount = 0;
 const MAX_CRASH_RECOVERY = 3;
 
-function findParamikoPython(){const candidates=[];const add=(command,args=[])=>{if(typeof command==="string"&&command.trim())candidates.push({command:command.trim(),args})};add(process.env.AI_CANVAS_PYTHON);if(process.env.LOCALAPPDATA){const root=path.join(process.env.LOCALAPPDATA,"Programs","Python");try{for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(entry.isDirectory()&&/^Python3\d+$/i.test(entry.name))add(path.join(root,entry.name,"python.exe"))}}catch{}}if(process.platform==="win32"){add("py.exe",["-3"]);for(const command of ["python.exe","python3.exe"]){try{String(execFileSync("where.exe",[command],{encoding:"utf8",windowsHide:true})).split(/\r?\n/).forEach(value=>add(value))}catch{}}}else{add("python3");add("python")}const unique=[...new Map(candidates.map(candidate=>[`${candidate.command}\0${candidate.args.join("\0")}`,candidate])).values()];for(const candidate of unique){if(path.isAbsolute(candidate.command)&&!fs.existsSync(candidate.command))continue;try{execFileSync(candidate.command,[...candidate.args,"-c","import paramiko"],{stdio:"ignore",windowsHide:true,timeout:5000});return candidate}catch{}}return null}
+function findParamikoPython() {
+  // Keep the executable and its arguments separate: on Windows `py -3` is
+  // a launcher command, not a path that can be passed to spawn().
+  const candidates = [];
+  const add = (command, args = []) => {
+    if (typeof command === "string" && command.trim()) candidates.push({ command: command.trim(), args });
+  };
+  add(process.env.AI_CANVAS_PYTHON);
+  if (process.env.LOCALAPPDATA) {
+    const pythonRoot = path.join(process.env.LOCALAPPDATA, "Programs", "Python");
+    try {
+      for (const entry of fs.readdirSync(pythonRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && /^Python3\d+$/i.test(entry.name)) add(path.join(pythonRoot, entry.name, "python.exe"));
+      }
+    } catch {}
+  }
+  if (process.platform === "win32") {
+    add("py.exe", ["-3"]);
+    for (const command of ["python.exe", "python3.exe"]) {
+      try { String(execFileSync("where.exe", [command], { encoding: "utf8", windowsHide: true })).split(/\r?\n/).forEach(value => add(value)); } catch {}
+    }
+  } else {
+    add("python3");
+    add("python");
+  }
+  const unique = [...new Map(candidates.map(candidate => [`${candidate.command}\0${candidate.args.join("\0")}`, candidate])).values()];
+  for (const candidate of unique) {
+    if (path.isAbsolute(candidate.command) && !fs.existsSync(candidate.command)) continue;
+    try {
+      execFileSync(candidate.command, [...candidate.args, "-c", "import paramiko"], { stdio: "ignore", windowsHide: true, timeout: 5000 });
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
 
 function collectSshPerformance(config) {
   return new Promise((resolve, reject) => {
@@ -85,8 +105,9 @@ function collectSshPerformance(config) {
       "_,o,e=s.exec_command(cmd,timeout=20); out=o.read().decode('utf8','replace'); err=e.read().decode('utf8','replace'); s.close()",
       "print(json.dumps({'out':out,'err':err},ensure_ascii=False))"
     ].join("\n");
-    const python=findParamikoPython(); if(!python){reject(new Error("未找到可用的 Python + Paramiko。请安装 Python 3.11，并执行：python -m pip install paramiko"));return;}
-    const child = spawn(python.command, [...python.args, "-c", script], { windowsHide:true, stdio: ["pipe", "pipe", "pipe"] });
+    const python = findParamikoPython();
+    if (!python) { reject(new Error("未找到 Python。请安装 Python 3.11，并安装 paramiko：python -m pip install paramiko")); return; }
+    const child = spawn(python.command, [...python.args, "-c", script], { windowsHide:true, stdio:["pipe","pipe","pipe"] });
     let stdout="", stderr=""; child.stdout.on("data", d=>stdout+=d); child.stderr.on("data", d=>stderr+=d);
     const timer=setTimeout(()=>{try{child.kill()}catch{};reject(new Error("SSH 性能采集超时（请检查主机、端口、防火墙和网络）"))},35000);
     child.on("error", e=>{clearTimeout(timer);reject(e)}); child.on("close", code=>{clearTimeout(timer); if(code!==0)return reject(new Error(stderr||"SSH 性能采集失败")); try{resolve(JSON.parse(stdout.trim()))}catch{reject(new Error("SSH 返回格式错误"))}});
@@ -205,6 +226,10 @@ function createWindow() {
     minHeight: 600,
     title: APP_NAME,
     backgroundColor: "#0f0f0f",
+    // Windows 原生标题栏覆盖到应用顶部栏，避免出现白色系统区域；
+    // 右侧最小化/最大化/关闭按钮仍由系统提供。
+    // 完全使用应用自己的主题化标题栏，避免系统按钮覆盖右侧配置面板。
+    frame: false,
     show: false,
     icon: path.join(__dirname, "assets", "icon1.ico"),
     webPreferences: {
@@ -217,11 +242,27 @@ function createWindow() {
     },
   });
 
+  const sendWindowState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("window-state-changed", { maximized: mainWindow.isMaximized() });
+    }
+  };
+  mainWindow.on("maximize", sendWindowState);
+  mainWindow.on("unmaximize", sendWindowState);
+  mainWindow.webContents.once("did-finish-load", sendWindowState);
   const indexPath = path.join(__dirname, "dist", "index.html");
-  
-  console.log(`[App] 加载页面: ${indexPath}`);
-  
-  if (fs.existsSync(indexPath)) {
+  const devServerUrl = process.env.AI_CANVAS_DEV_SERVER_URL || "http://127.0.0.1:5173";
+  const useDevServer = !app.isPackaged && (process.env.AI_CANVAS_DEV_SERVER === "1" || process.argv.includes("--dev-server"));
+
+  console.log(`[App] 鍔犺浇椤甸潰: ${useDevServer ? devServerUrl : indexPath}`);
+
+  if (useDevServer) {
+    mainWindow.loadURL(devServerUrl).catch((error) => {
+      console.error(`[App] Vite 鏀€鍏崇鍔犺浇澶辫触: ${error.message}`);
+      mainWindow.loadFile(indexPath);
+    });
+    mainWindow.webContents.openDevTools();
+  } else if (fs.existsSync(indexPath)) {
     mainWindow.loadFile(indexPath).catch((error) => {
       console.error(`[App] 页面加载失败: ${error.message}`);
       mainWindow.loadURL(`data:text/html;charset=utf-8,<html><body style="font-family:sans-serif;background:#0f0f1a;color:#eee;padding:40px"><h2>AI 无限画布加载失败</h2><p>${encodeURIComponent(error.message)}</p><p>请关闭所有窗口后重新启动。</p></body></html>`);
@@ -304,7 +345,9 @@ app.whenReady().then(async () => {
   console.log(`  Electron: ${process.versions.electron}`);
   console.log("========================================");
 
-  console.log("[GPU] GPU 加速已启用");
+  // 原生英文菜单栏会在 Windows 上创建白色区域；应用内顶部栏提供实际功能菜单。
+  Menu.setApplicationMenu(null);
+  console.log("[GPU] GPU 鍔犻€熷凡鍚敤");
 
   const serverStarted = await startServer();
   if (!serverStarted) {
@@ -349,6 +392,26 @@ ipcMain.handle("get-app-info", () => ({
   platform: process.platform,
   arch: process.arch,
 }));
+
+ipcMain.handle("choose-project-folder", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: "选择项目保存文件夹", properties: ["openDirectory", "createDirectory"] });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("save-project-file", async (_event, payload) => {
+  if (!payload || typeof payload.folder !== "string" || typeof payload.name !== "string") throw new Error("项目保存参数不完整");
+  const folder = path.resolve(payload.folder); fs.mkdirSync(folder, { recursive: true });
+  const safeName = path.basename(payload.name).replace(/[\\/:*?"<>|]/g, "_").trim() || "未命名项目";
+  const target = path.join(folder, `${safeName}.jacecanvas.json`);
+  fs.writeFileSync(target, JSON.stringify({ format: "jacecanvas", version: 1, savedAt: Date.now(), name: safeName, nodes: payload.nodes || [], edges: payload.edges || [] }, null, 2), "utf8");
+  return { path: target, name: safeName };
+});
+
+ipcMain.handle("open-project-file", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: "打开 JaceCanvas 项目", properties: ["openFile"], filters: [{ name: "JaceCanvas 项目", extensions: ["json"] }] });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const file = result.filePaths[0]; return { path: file, data: JSON.parse(fs.readFileSync(file, "utf8")) };
+});
 
 ipcMain.handle("ssh-performance", async (_event, config) => {
   if (!config || typeof config.host !== "string" || typeof config.username !== "string" || typeof config.password !== "string") throw new Error("SSH 配置不完整");
@@ -411,11 +474,23 @@ function findFfmpeg() {
   return candidates.find(candidate => candidate === "ffmpeg.exe" || candidate === "ffmpeg" || fs.existsSync(candidate)) || null;
 }
 
-function localMediaPath(value) {
+async function localMediaPath(value) {
   if (typeof value !== "string" || !value) throw new Error("视频路径为空");
   if (/^file:/i.test(value)) return fileURLToPath(value);
-  if (/^https?:/i.test(value)) throw new Error("FFmpeg 剪辑需要本地视频文件，请先将视频保存到素材库");
-  return path.resolve(value);
+  if (/^https?:/i.test(value)) {
+    const response = await fetch(value);
+    if (!response.ok) throw new Error(`无法下载输入视频（HTTP ${response.status}）`);
+    const sourceDir = path.join(app.getPath("userData"), "ffmpeg-input");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    const rawName = decodeURIComponent(value.split("/").pop()?.split("?")[0] || "input.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${/\.[a-z0-9]{2,5}$/i.test(rawName) ? rawName : "input.mp4"}`;
+    const local = path.join(sourceDir, filename);
+    fs.writeFileSync(local, Buffer.from(await response.arrayBuffer()));
+    return local;
+  }
+  const resolved = path.resolve(value);
+  if (!fs.existsSync(resolved)) throw new Error("输入视频文件不存在");
+  return resolved;
 }
 
 function runFfmpeg(binary, args) {
@@ -430,23 +505,95 @@ function runFfmpeg(binary, args) {
 
 // Video2X 必须使用应用随附的完整目录，禁止回退到 PATH 或系统安装目录。
 function findBundledVideo2x() {
-  const root = app.isPackaged ? path.join(process.resourcesPath, "video2x") : path.join(__dirname, "assets", "video2x");
+  const root = app.isPackaged
+    ? path.join(process.resourcesPath, "video2x")
+    : path.join(__dirname, "assets", "video2x");
   const binary = path.join(root, process.platform === "win32" ? "video2x.exe" : "video2x");
   if (!fs.existsSync(binary)) throw new Error("未找到应用内置的 Video2X Qt6。请重新安装包含本地模型的版本。");
   return { root, binary };
 }
-function runVideo2x(binary, cwd, args) { return new Promise((resolve, reject) => { const child=spawn(binary,args,{cwd,windowsHide:true}); let stderr=""; child.stderr.on("data",d=>{stderr+=String(d)}); child.on("error",reject); child.on("close",code=>code===0?resolve():reject(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0]||`Video2X 退出码 ${code}`))); }); }
+
+function runVideo2x(binary, cwd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, { cwd, windowsHide: true });
+    let stderr = "";
+    let stdout = "";
+    child.stdout?.on("data", data => { stdout += String(data); });
+    child.stderr?.on("data", data => { stderr += String(data); });
+    child.on("error", reject);
+    child.on("close", code => {
+      if (code === 0) return resolve();
+      const output = `${stderr}\n${stdout}`.trim();
+      reject(new Error(output.split(/\r?\n/).filter(Boolean).slice(-1)[0] || `Video2X 退出码 ${code}`));
+    });
+  });
+}
+
+async function resolveVideo2xInput(value) {
+  if (typeof value !== "string" || !value) throw new Error("视频路径为空");
+  if (/^file:/i.test(value)) return fileURLToPath(value);
+  if (!/^https?:/i.test(value)) {
+    const local = path.resolve(value);
+    if (!fs.existsSync(local)) throw new Error("输入视频文件不存在");
+    return local;
+  }
+  // 上游 ComfyUI 结果通常是远程 URL，Video2X 只能读取本地文件。
+  // 下载到用户数据目录后再交给本地 Video2X，避免要求用户手动另存视频。
+  const response = await fetch(value);
+  if (!response.ok) throw new Error(`无法下载输入视频 (HTTP ${response.status})`);
+  const sourceDir = path.join(app.getPath("userData"), "video2x-input");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  const rawName = decodeURIComponent(value.split("/").pop()?.split("?")[0] || "input.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${/\.[a-z0-9]{2,5}$/i.test(rawName) ? rawName : "input.mp4"}`;
+  const local = path.join(sourceDir, filename);
+  fs.writeFileSync(local, Buffer.from(await response.arrayBuffer()));
+  return local;
+}
+
 ipcMain.handle("video2x-process", async (_event, payload) => {
-  const input=localMediaPath(payload?.input); if(!fs.existsSync(input)) throw new Error("输入视频文件不存在"); const {root,binary}=findBundledVideo2x();
-  const mode=["upscale","interpolate","both"].includes(payload?.mode)?payload.mode:"upscale"; const scale=Math.max(2,Math.min(4,Number(payload?.scale)||2)); const mul=[2,4].includes(Number(payload?.frameRateMul))?Number(payload.frameRateMul):2; const model=String(payload?.model||"realesr-animevideov3"); const outDir=path.join(app.getPath("userData"),"video2x-output"); fs.mkdirSync(outDir,{recursive:true}); const id=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`; const first=path.join(outDir,`${id}-upscaled.mp4`); const output=path.join(outDir,`${id}.mp4`);
-  if(mode==="upscale"||mode==="both"){const args=["-i",input,"-o",mode==="both"?first:output,"-p",model==="realcugan"?"realcugan":"realesrgan","-s",String(scale),"--no-progress"];if(model==="realcugan")args.push("--realcugan-model","models-se");await runVideo2x(binary,root,args)} if(mode==="interpolate"||mode==="both") await runVideo2x(binary,root,["-i",mode==="both"?first:input,"-o",output,"-p","rife","-m",String(mul),"--rife-model",model.startsWith("rife-")?model:"rife-v4.26","--no-progress"]);
-  return {path:output,url:pathToFileURL(output).toString(),filename:path.basename(output)};
+  try {
+    const input = await resolveVideo2xInput(payload?.input);
+    const { root, binary } = findBundledVideo2x();
+    if (!fs.existsSync(path.join(root, "models"))) throw new Error("未找到 Video2X 模型目录，请重新安装完整桌面版");
+  const mode = ["upscale", "interpolate", "both"].includes(payload?.mode) ? payload.mode : "upscale";
+  const scale = Math.max(2, Math.min(4, Number(payload?.scale) || 2));
+  const frameRateMul = [2, 4].includes(Number(payload?.frameRateMul)) ? Number(payload.frameRateMul) : 2;
+  const model = String(payload?.model || "realesr-animevideov3");
+  const outDir = path.join(app.getPath("userData"), "video2x-output");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const firstOutput = path.join(outDir, `${id}-upscaled.mp4`);
+  const output = path.join(outDir, `${id}.mp4`);
+  if (mode === "upscale" || mode === "both") {
+    // RIFE 是补帧模型，不可作为 RealESRGAN 的超分模型传入。
+    const processor = model === "realcugan" ? "realcugan" : "realesrgan";
+    const upscaleArgs = ["-i", input, "-o", mode === "both" ? firstOutput : output, "-p", processor, "-s", String(scale), "--no-progress"];
+    if (processor === "realcugan") upscaleArgs.push("--realcugan-model", "models-se");
+    if (processor === "realesrgan") {
+      const modelName = ["realesr-animevideov3", "realesrgan-plus-anime", "realesrgan-plus"].includes(model) ? model : "realesr-animevideov3";
+      upscaleArgs.push("--realesrgan-model", modelName);
+    }
+    await runVideo2x(binary, root, upscaleArgs);
+  }
+  if (mode === "interpolate" || mode === "both") {
+    const source = mode === "both" ? firstOutput : input;
+    const rifeModel = model.startsWith("rife-") ? model : "rife-v4.26";
+    await runVideo2x(binary, root, ["-i", source, "-o", output, "-p", "rife", "-m", String(frameRateMul), "--rife-model", rifeModel, "--no-progress"]);
+  }
+  const finalPath = mode === "upscale" ? output : output;
+    if (!fs.existsSync(finalPath)) throw new Error("Video2X 进程结束但没有生成输出文件，请检查输入视频、模型和显卡驱动");
+    if (fs.statSync(finalPath).size <= 0) throw new Error("Video2X 输出文件为空");
+    return { path: finalPath, url: pathToFileURL(finalPath).toString(), filename: path.basename(finalPath) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Video2X 处理失败：${message}`);
+  }
 });
 
 ipcMain.handle("ffmpeg-trim-video", async (_event, payload) => {
   const binary = findFfmpeg();
   if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
-  const input = localMediaPath(payload?.input);
+  const input = await localMediaPath(payload?.input);
   if (!fs.existsSync(input)) throw new Error("输入视频文件不存在");
   const fps = Math.max(1, Number(payload?.fps) || 30);
   const startFrame = Math.max(0, Math.round(Number(payload?.startFrame) || 0));
@@ -469,6 +616,19 @@ ipcMain.handle("ffmpeg-trim-video", async (_event, payload) => {
 
 ipcMain.on("minimize-window", () => {
   if (mainWindow) mainWindow.minimize();
+});
+
+ipcMain.on("toggle-maximize-window", () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
+});
+
+ipcMain.on("close-window", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+});
+
+ipcMain.on("open-devtools", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.openDevTools({ mode: "detach" });
 });
 
 // ============================================================

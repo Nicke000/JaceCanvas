@@ -54,6 +54,11 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
+### 下载渠道
+
+- **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/5W1UlxGpbdd8LN0MgGLB7yQ>
+- **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>
+
 ---
 
 ## 🏗️ 从源码构建
@@ -142,7 +147,7 @@ npm run build         # electron-builder → release-v4.6.8/（内置 opensource
 | 项目文件 | 用户自选目录，`.jacecanvas.json`（自动保存 + 版本快照） |
 | 服务器缓存 | localStorage（按服务器分 key） |
 
-> ⚠️ 不要把 API Key、SSH 密码、GitHub 凭据、私有主控地址写入公开文档、截图或日志。开源时请阅读 [OPEN_SOURCE_GUIDE.md](./开源使用说明.md)。
+> ⚠️ 不要把 API Key、SSH 密码、GitHub 凭据、私有主控地址写入公开文档、截图或日志。开源时请阅读 [OPEN_SOURCE_GUIDE.md](./OPEN_SOURCE_GUIDE.md)。
 
 ---
 
@@ -196,6 +201,6 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📄 许可证
 
-MIT License（第三方组件保留各自许可证与版权声明，详见 [OPEN_SOURCE_GUIDE.md](./开源使用说明.md)）。
+MIT License（第三方组件保留各自许可证与版权声明，详见 [OPEN_SOURCE_GUIDE.md](./OPEN_SOURCE_GUIDE.md)）。
 
 **如有问题，请查看控制台输出的错误信息进行排查。**

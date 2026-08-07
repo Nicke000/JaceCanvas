@@ -57,6 +57,7 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 ### 下载渠道
 
 - **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/5W1UlxGpbdd8LN0MgGLB7yQ>
+- **夸克网盘：** <https://pan.quark.cn/s/d92b688d5502?pwd=KEJp>（提取码 `KEJp`）
 - **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>
 
 ---

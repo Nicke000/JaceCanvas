@@ -1,0 +1,21 @@
+{
+  "appId": "com.jacecanvas.desktop",
+  "productName": "JaceCanvas",
+  "directories": { "output": "release-pure-install" },
+  "compression": "store",
+  "files": [
+    "main.js",
+    "preload.js",
+    "server/**/*",
+    "dist/**/*",
+    "assets/**/*",
+    "config/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    { "from": "server", "to": "server", "filter": ["**/*"] },
+    { "from": "server/data", "to": "server/data" },
+    { "from": "assets/ffmpeg", "to": "ffmpeg", "filter": ["**/*"] }
+  ],
+  "electronDownload": { "mirror": "https://npmmirror.com/mirrors/electron/" }
+}

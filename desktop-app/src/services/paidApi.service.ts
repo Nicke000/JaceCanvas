@@ -19,12 +19,13 @@ export interface PaidApiConfig {
   videoPath?: string;
   taskPath?: string;
   capabilityPath?: string;
-  authMode?: 'bearer' | 'x-api-key' | 'query-key' | 'none';
+  authMode?: 'bearer' | 'x-api-key' | 'query-key' | 'x-key' | 'key' | 'none';
 }
-export interface PaidGenerationResult { url: string; type: 'image' | 'video'; taskId?: string; raw?: unknown; }
+export interface PaidGenerationResult { url: string; type: 'image' | 'video' | 'audio' | '3d'; taskId?: string; raw?: unknown; }
 
 export type PaidCapability =
-  | 'text-to-image' | 'image-to-image' | 'text-to-video' | 'image-to-video'
+  | 'text-to-image' | 'image-to-image' | 'text-to-video' | 'image-to-video' | 'text-to-speech'
+  | 'text-to-3d' | 'image-to-3d'
   | 'first-frame-to-image' | 'first-frame-to-video' | 'first-last-to-video' | 'image-upscale' | 'remove-background' | 'outpaint'
   | 'background-generation' | 'style-transfer' | 'reference-to-video'
   | 'motion-video' | 'video-swap' | 'video-edit' | 'dance-video'
@@ -35,7 +36,7 @@ export interface PaidCapabilityDefinition {
   label: string;
   description: string;
   input: 'text' | 'image' | 'first-last' | 'video' | 'image-video';
-  output: 'image' | 'video';
+  output: 'image' | 'video' | 'audio' | '3d';
   /** Based on the vendor directory/index reviewed for this release. */
   providers: string[];
 }
@@ -46,6 +47,9 @@ export interface PaidCapabilityDefinition {
  * adapters because their actual routes are supplied by the user.
  */
 export const PAID_CAPABILITIES: Record<PaidCapability, PaidCapabilityDefinition> = {
+  'text-to-3d': { label:'文生3D', description:'根据文字生成 3D 模型（GLB，preview→refine 两阶段贴图）', input:'text', output:'3d', providers:['custom','gateway','meshy'] },
+  'image-to-3d': { label:'图生3D', description:'根据图片生成 3D 模型（GLB）', input:'image', output:'3d', providers:['custom','gateway','meshy'] },
+  'text-to-speech': { label:'文字转语音', description:'根据文本生成语音（配音/旁白），支持音色选择', input:'text', output:'audio', providers:['custom','gateway','minimax','elevenlabs'] },
   'text-to-image': { label:'文生图', description:'根据文字生成图片', input:'text', output:'image', providers:['custom','gateway','kling','jimeng','tongyi','zhipu','minimax','baidu','openai','google','midjourney','stability'] },
   'first-frame-to-image': { label:'首帧生图', description:'使用首帧参考图和提示词生成图片', input:'image', output:'image', providers:['custom','gateway','kling','jimeng','tongyi','zhipu','minimax','openai','google','stability'] },
   'first-frame-to-video': { label:'首帧生视频', description:'使用首帧图片和提示词生成视频', input:'image', output:'video', providers:['custom','gateway','kling','jimeng','tongyi','zhipu','minimax','runway','openai','google'] },
@@ -107,8 +111,10 @@ function providerPath(provider: string, kind: 'models' | 'image' | 'video' | 'ta
 function authHeaders(config: PaidApiConfig): Record<string, string> {
   if (config.authMode === 'none') return { 'Content-Type': 'application/json' };
   if (config.authMode === 'x-api-key') return { 'Content-Type': 'application/json', 'X-API-Key': config.apiKey };
+  if (config.authMode === 'x-key') return { 'Content-Type': 'application/json', 'x-key': config.apiKey };
+  if (config.authMode === 'key') return { 'Content-Type': 'application/json', Authorization: `Key ${config.apiKey}` };
   if (config.authMode === 'query-key') return { 'Content-Type': 'application/json' };
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` };
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${(config.apiKey || '').replace(/\s+/g, '')}` }; // Key 去空格（复制粘贴常混入）
 }
 
 // ========== 提供商预设 ==========
@@ -275,19 +281,28 @@ async function pollTask(baseUrl: string, endpoint: string, config: PaidApiConfig
       if (!url) throw new Error('任务已完成，但接口没有返回媒体地址');
       return { url, type: /\.(mp4|mov|webm|mkv)(?:[?#]|$)/i.test(url) ? 'video' : 'image', raw: data };
     }
-    if (['FAILED', 'ERROR', 'FAILURE', 'CANCELLED'].includes(status)) throw new Error(data.message || data.data?.task_status_msg || data.error?.message || '任务执行失败');
+    if (['FAILED', 'ERROR', 'FAILURE', 'CANCELLED', 'EXPIRED'].includes(status)) throw new Error(data.message || data.data?.task_status_msg || data.error?.message || '任务执行失败');
   }
   throw new Error('任务超时，请稍后查看结果');
 }
 
 function extractMediaUrl(data: any): string {
   const candidates = [
+    data?.content?.video_url, data?.content?.last_frame_url, data?.content?.url,
+    data?.images?.[0]?.url, data?.result?.sample,
     data?.media_url, data?.output?.media_url, data?.output?.video_url, data?.output?.image_url,
     data?.output?.url, data?.output?.results?.[0]?.url, data?.data?.[0]?.url,
     data?.data?.[0]?.image_url, data?.video_url, data?.image_url, data?.url,
     data?.result?.url, data?.result?.media_url, data?.data?.task_result?.videos?.[0]?.url, data?.data?.task_result?.videos?.[0]?.watermark_url,
   ];
   return candidates.find(value => typeof value === 'string' && value.trim())?.trim() || '';
+}
+
+function mediaType(url: string, isVideo: boolean): 'image' | 'video' | 'audio' | '3d' {
+  if (isVideo || /\.(mp4|mov|webm|mkv)(?:[?#]|$)/i.test(url)) return 'video';
+  if (/\.(mp3|wav|ogg|m4a|flac|aac|opus)(?:[?#]|$)/i.test(url)) return 'audio';
+  if (/\.(glb|gltf|obj|fbx|stl|usdz|3mf)(?:[?#]|$)/i.test(url)) return '3d';
+  return 'image';
 }
 
 function normalizeMediaUrl(url: string, baseUrl: string): string {
@@ -298,7 +313,7 @@ function normalizeMediaUrl(url: string, baseUrl: string): string {
 // ========== 调用付费 API ==========
 export async function callPaidApi(config: PaidApiConfig, params: {
   type: PaidCapability;
-  prompt: string; negativePrompt?: string; imageUrl?: string; lastImageUrl?: string; videoUrl?: string; audioUrl?: string; templateId?: string; width?: number; height?: number; aspectRatio?: string; resolution?: number; duration?: number; frameRate?: number; seed?: number;
+  prompt: string; negativePrompt?: string; imageUrl?: string; lastImageUrl?: string; videoUrl?: string; audioUrl?: string; templateId?: string; width?: number; height?: number; aspectRatio?: string; resolution?: number; duration?: number; frameRate?: number; seed?: number; voiceId?: string;
 }): Promise<PaidGenerationResult> {
   const provider = normalizeProvider(config.provider);
   const p = PAID_PROVIDERS[provider] || (() => {
@@ -318,6 +333,10 @@ export async function callPaidApi(config: PaidApiConfig, params: {
   if (provider === 'gemini') return callGeminiNative(config, params);
   if (provider === 'openai') return callOpenAINative(config, params);
   if (provider === 'volcengine') return callVolcengineNative(config, params);
+  if (provider === 'flux') return callFluxNative(config, params);
+  if (provider === 'fal') return callFalNative(config, params);
+  if (provider === 'meshy') return callMeshyNative(config, params);
+  if (provider === 'elevenlabs') return callElevenLabsNative(config, params);
 
   const isVideo = PAID_CAPABILITIES[params.type]?.output === 'video';
   const headers: Record<string, string> = authHeaders(config);
@@ -349,7 +368,7 @@ export async function callPaidApi(config: PaidApiConfig, params: {
     const googleData = await googleResponse.json();
     const googleUrl = normalizeMediaUrl(extractMediaUrl(googleData), baseUrl);
     if (!googleUrl) throw new Error('厂商 google 已响应，但没有返回媒体地址');
-    return { url: googleUrl, type: isVideo ? 'video' : 'image', raw: googleData };
+    return { url: googleUrl, type: mediaType(googleUrl, isVideo), raw: googleData };
   }
   // 网关使用 image_url/image_urls 和 ar；OpenAI/custom 保留 OpenAI 兼容字段。
   if (provider !== 'openai' && provider !== 'custom') {
@@ -376,14 +395,14 @@ export async function callPaidApi(config: PaidApiConfig, params: {
   }
   const url = immediateUrl;
   if (!url) throw new Error('接口已响应，但没有返回图片或视频地址');
-  return { url, type: isVideo ? 'video' : 'image', taskId, raw: data };
+  return { url, type: mediaType(url, isVideo), taskId, raw: data };
 }
 
 type PaidCallParams = Parameters<typeof callPaidApi>[1];
 
 async function readJsonResponse(response: Response, provider: string): Promise<any> {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`${provider} 接口失败（HTTP ${response.status}）：${data.message || data.error?.message || data.code || '未提供错误详情'}`);
+  if (!response.ok) throw new Error(`${provider} 接口失败（HTTP ${response.status}）：${data.message || data.error?.message || data.code || (response.status === 404 ? '请检查：① API Key 是否正确（厂商控制台复制）② 所选模型是否已在该厂商控制台开通服务（如 qwen-image / z-image 需在百炼控制台开通）' : '未提供错误详情')}`);
   return data;
 }
 
@@ -393,6 +412,10 @@ function firstMedia(data: any): string {
 
 async function callBailianNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
   const isVideo = PAID_CAPABILITIES[params.type]?.output === 'video';
+  // 百炼图像/视频模型只能走 DashScope 原生接口（compatible-mode 不支持图像生成端点）。
+  // 用户配置的 baseUrl 可能带 /compatible-mode/v1 前缀——原生端点必须拼在工作区根域名上，否则 404。
+  const rawBase = (config.baseUrl || 'https://dashscope.aliyuncs.com').replace(/\/+$/, '');
+  const bailianBase = rawBase.replace(/\/compatible-mode(\/v1)?$/i, '');
   const endpoint = isVideo ? '/api/v1/services/aigc/video-generation/video-synthesis' : '/api/v1/services/aigc/multimodal-generation/generation';
   const image = params.imageUrl ? [{ image: params.imageUrl }] : [];
   const content = [{ text: params.prompt }, ...image];
@@ -408,7 +431,7 @@ async function callBailianNative(config: PaidApiConfig, params: PaidCallParams):
   const region = config.region || 'cn-beijing';
   const regionalBase = config.workspaceId && region !== 'custom'
     ? `https://${config.workspaceId}.${region}.maas.aliyuncs.com`
-    : (config.baseUrl || 'https://dashscope.aliyuncs.com');
+    : bailianBase;
   const response = await fetch(joinUrl(regionalBase, endpoint), { method:'POST', headers:{...authHeaders(config), ...(isVideo ? {'X-DashScope-Async':'enable'} : {})}, body:JSON.stringify(body) });
   const data = await readJsonResponse(response, '阿里云百炼');
   const immediate = firstMedia(data);
@@ -419,6 +442,26 @@ async function callBailianNative(config: PaidApiConfig, params: PaidCallParams):
 }
 
 async function callMiniMaxNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  // 文字转语音：同步 t2a_v2，output_format=url 返回 24 小时有效下载链接（自动下载到本地缓存后不依赖有效期）
+  if (params.type === 'text-to-speech') {
+    const response = await fetch(joinUrl(config.baseUrl || 'https://api.minimaxi.com', '/v1/t2a_v2'), {
+      method:'POST', headers:authHeaders(config),
+      body:JSON.stringify({
+        model: config.model || 'speech-2.8-turbo',
+        text: params.prompt,
+        stream: false,
+        output_format: 'url',
+        ...(params.voiceId ? { voice_setting: { voice_id: params.voiceId } } : {}),
+      }),
+    });
+    const data = await readJsonResponse(response, 'MiniMax');
+    if (data.base_resp && data.base_resp.status_code !== 0) {
+      throw new Error(`MiniMax TTS 失败（${data.base_resp.status_code}）：${data.base_resp.status_msg || '未知错误'}`);
+    }
+    const url = data.data?.audio || extractMediaUrl(data);
+    if (!url) throw new Error('MiniMax TTS 没有返回音频地址');
+    return { url, type: 'audio', raw: data };
+  }
   const content: any[] = [{ type:'text', text:params.prompt }];
   if (params.imageUrl) content.push({ type:'image_url', image_url:{url:params.imageUrl}, role:'first_frame' });
   if (params.lastImageUrl) content.push({ type:'image_url', image_url:{url:params.lastImageUrl}, role:'last_frame' });
@@ -452,9 +495,163 @@ async function callOpenAINative(config: PaidApiConfig, params: PaidCallParams): 
 }
 
 async function callVolcengineNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
-  const contents:any[]=[{type:'text',text:params.prompt}]; if(params.imageUrl) contents.push({type:'image_url',image_url:{url:params.imageUrl}}); if(params.videoUrl) contents.push({type:'video_url',video_url:{url:params.videoUrl}}); if(params.audioUrl) contents.push({type:'audio_url',audio_url:{url:params.audioUrl}});
-  const data=await readJsonResponse(await fetch(joinUrl(config.baseUrl||'https://ark.cn-beijing.volces.com/api/v3','/contents/generations/tasks'),{method:'POST',headers:authHeaders(config),body:JSON.stringify({model:config.model,content:contents})}),'火山方舟');
-  const taskId=data.id||data.task_id||data.data?.task_id;if(!taskId)throw new Error('火山方舟响应中没有任务 ID');return pollTask(config.baseUrl||'https://ark.cn-beijing.volces.com/api/v3',`/contents/generations/tasks/${taskId}`,config,taskId);
+  const baseUrl = (config.baseUrl || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/+$/, '');
+  // 文生图 / 图生图 / 首帧生图：同步 /images/generations
+  if (params.type === 'text-to-image' || params.type === 'image-to-image' || params.type === 'first-frame-to-image') {
+    const body: Record<string, unknown> = { model: config.model, prompt: params.prompt, response_format: 'url' };
+    if (params.imageUrl) body.image = params.imageUrl;
+    if (params.width && params.height) body.size = `${params.width}x${params.height}`;
+    if (params.seed !== undefined) body.seed = params.seed;
+    const data = await readJsonResponse(await fetch(joinUrl(baseUrl, '/images/generations'), { method: 'POST', headers: authHeaders(config), body: JSON.stringify(body) }), '火山方舟');
+    const url = normalizeMediaUrl(extractMediaUrl(data), baseUrl);
+    if (!url) throw new Error('火山方舟没有返回图片地址');
+    return { url, type: 'image', raw: data };
+  }
+  // 视频 / 多模态参考：异步任务创建 + 轮询
+  const contents: any[] = [{ type: 'text', text: params.prompt }];
+  if (params.imageUrl) contents.push({ type: 'image_url', image_url: { url: params.imageUrl }, role: 'first_frame' });
+  if (params.lastImageUrl) contents.push({ type: 'image_url', image_url: { url: params.lastImageUrl }, role: 'last_frame' });
+  if (params.videoUrl) contents.push({ type: 'video_url', video_url: { url: params.videoUrl }, role: 'reference_video' });
+  if (params.audioUrl) contents.push({ type: 'audio_url', audio_url: { url: params.audioUrl }, role: 'reference_audio' });
+  const body: Record<string, unknown> = { model: config.model, content: contents };
+  if (params.duration) body.duration = params.duration;
+  if (params.resolution) body.resolution = `${params.resolution}p`;
+  if (params.aspectRatio) body.ratio = params.aspectRatio;
+  if (params.seed !== undefined) body.seed = params.seed;
+  const data = await readJsonResponse(await fetch(joinUrl(baseUrl, '/contents/generations/tasks'), { method: 'POST', headers: authHeaders(config), body: JSON.stringify(body) }), '火山方舟');
+  const taskId = data.id || data.task_id || data.data?.task_id;
+  if (!taskId) throw new Error('火山方舟响应中没有任务 ID');
+  return pollTask(baseUrl, `/contents/generations/tasks/${taskId}`, config, taskId);
+}
+
+async function callFluxNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  const baseUrl = (config.baseUrl || 'https://api.bfl.ai').replace(/\/+$/, '');
+  const model = config.model || 'flux-2-pro-preview';
+  const body: Record<string, unknown> = { prompt: params.prompt };
+  if (params.imageUrl) body.input_image = params.imageUrl; // FLUX.2 图生图：公网图片 URL
+  if (params.width && params.height) { body.width = params.width; body.height = params.height; }
+  if (params.seed !== undefined) body.seed = params.seed;
+  const data = await readJsonResponse(await fetch(joinUrl(baseUrl, `/v1/${model}`), { method: 'POST', headers: authHeaders(config), body: JSON.stringify(body) }), 'Flux');
+  const pollingUrl = data.polling_url;
+  if (!pollingUrl) throw new Error('Flux 响应中没有 polling_url');
+  for (let i = 0; i < 90; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch(pollingUrl, { method: 'GET', headers: { accept: 'application/json', ...authHeaders(config) } });
+    if (!res.ok) continue;
+    const statusData = await res.json();
+    const status = String(statusData.status || '');
+    if (status === 'Ready') {
+      const url = statusData.result?.sample;
+      if (!url) throw new Error('Flux 任务完成但没有返回图片地址');
+      return { url, type: 'image', raw: statusData };
+    }
+    if (['Error', 'Failed', 'Task not found', 'Request Moderated', 'Content Moderated'].includes(status)) {
+      const reasons = statusData.details?.message || statusData.result?.error || JSON.stringify(statusData.details || {});
+      throw new Error(`Flux 任务失败（${status}）：${reasons}`);
+    }
+  }
+  throw new Error('Flux 任务超时，请稍后查看结果');
+}
+
+async function callElevenLabsNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  const baseUrl = (config.baseUrl || 'https://api.elevenlabs.io').replace(/\/+$/, '');
+  const voiceId = config.model || '21m00Tcm4TlvDq8ikWAM';
+  const requestUrl = joinUrl(baseUrl, `/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`);
+  const payload = { text: params.prompt };
+  const headers = { 'xi-api-key': config.apiKey, 'Content-Type': 'application/json' };
+  // 主进程代理（规避 CORS）；浏览器开发模式回退直连
+  try {
+    const res = await (window as any).electronAPI?.proxyFetch?.({ url: requestUrl, method: 'POST', headers, body: payload });
+    if (res?.b64) {
+      const bytes = Uint8Array.from(atob(res.b64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: res.mime || 'audio/mpeg' }));
+      return { url, type: 'audio', raw: res };
+    }
+  } catch (error) {
+    if ((window as any).electronAPI?.proxyFetch) throw error instanceof Error ? error : new Error(String(error));
+  }
+  const r = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
+  if (!r.ok) throw new Error(`ElevenLabs 失败（HTTP ${r.status}）`);
+  const blob = await r.blob();
+  return { url: URL.createObjectURL(blob), type: 'audio', raw: null };
+}
+
+async function callMeshyNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  const baseUrl = (config.baseUrl || 'https://api.meshy.ai').replace(/\/+$/, '');
+  const headers = authHeaders(config);
+  const aiModel = config.model && config.model !== 'latest' ? { ai_model: config.model } : {};
+  const pollMeshy = async (endpoint: string, taskId: string): Promise<any> => {
+    for (let i = 0; i < 120; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const res = await fetch(joinUrl(baseUrl, `${endpoint}/${taskId}`), { method: 'GET', headers });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const status = String(data.status || '').toUpperCase();
+      if (status === 'SUCCEEDED') return data;
+      if (['FAILED', 'CANCELED'].includes(status)) {
+        throw new Error(`Meshy 任务失败：${data.task_error?.message || data.message || status}`);
+      }
+    }
+    throw new Error('Meshy 任务超时，请稍后查看结果');
+  };
+  const extractModelUrl = (data: any): string => data?.model_urls?.glb || data?.model_urls?.obj || data?.model_urls?.gltf || '';
+  // 文生 3D：preview（网格）→ refine（贴图）两阶段
+  if (params.type === 'text-to-3d') {
+    const preview = await readJsonResponse(await fetch(joinUrl(baseUrl, '/openapi/v2/text-to-3d'), {
+      method:'POST', headers, body:JSON.stringify({ mode:'preview', prompt: params.prompt, ...aiModel }),
+    }), 'Meshy');
+    if (!preview.result) throw new Error('Meshy 响应中没有任务 ID');
+    await pollMeshy('/openapi/v2/text-to-3d', preview.result);
+    const refine = await readJsonResponse(await fetch(joinUrl(baseUrl, '/openapi/v2/text-to-3d'), {
+      method:'POST', headers, body:JSON.stringify({ mode:'refine', preview_task_id: preview.result, enable_pbr: true, texture_resolution: '2k', target_formats: ['glb'], ...aiModel }),
+    }), 'Meshy');
+    if (!refine.result) throw new Error('Meshy refine 响应中没有任务 ID');
+    const finalData = await pollMeshy('/openapi/v2/text-to-3d', refine.result);
+    const url = extractModelUrl(finalData);
+    if (!url) throw new Error('Meshy 没有返回模型地址');
+    return { url, type: '3d', raw: finalData };
+  }
+  // 图生 3D：单任务
+  if (!params.imageUrl) throw new Error('图生 3D 需要连接图片输入');
+  const created = await readJsonResponse(await fetch(joinUrl(baseUrl, '/openapi/v1/image-to-3d'), {
+    method:'POST', headers, body:JSON.stringify({ image_url: params.imageUrl, enable_pbr: true, should_texture: true, target_formats: ['glb'], ...aiModel }),
+  }), 'Meshy');
+  if (!created.result) throw new Error('Meshy 响应中没有任务 ID');
+  const data = await pollMeshy('/openapi/v1/image-to-3d', created.result);
+  const url = extractModelUrl(data);
+  if (!url) throw new Error('Meshy 没有返回模型地址');
+  return { url, type: '3d', raw: data };
+}
+
+async function callFalNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  const baseUrl = (config.baseUrl || 'https://queue.fal.run').replace(/\/+$/, '');
+  const model = config.model || 'fal-ai/flux/dev';
+  const isImg2Img = params.type === 'image-to-image' && !!params.imageUrl;
+  const endpoint = isImg2Img ? `${model}/image-to-image` : model;
+  const body: Record<string, unknown> = { prompt: params.prompt };
+  if (params.imageUrl) body.image_url = params.imageUrl;
+  if (params.width && params.height) body.image_size = { width: params.width, height: params.height };
+  else if (params.aspectRatio) body.image_size = params.aspectRatio;
+  if (params.seed !== undefined) body.seed = params.seed;
+  const headers = { accept: 'application/json', ...authHeaders(config) };
+  const data = await readJsonResponse(await fetch(joinUrl(baseUrl, endpoint), { method: 'POST', headers, body: JSON.stringify(body) }), 'Fal');
+  const requestId = data.request_id;
+  if (!requestId) throw new Error('Fal 响应中没有 request_id');
+  for (let i = 0; i < 120; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch(joinUrl(baseUrl, `${endpoint}/requests/${requestId}/status`), { method: 'GET', headers });
+    if (!res.ok) continue;
+    const statusData = await res.json();
+    const status = String(statusData.status || '');
+    if (status === 'COMPLETED') {
+      const result = await readJsonResponse(await fetch(joinUrl(baseUrl, `${endpoint}/requests/${requestId}`), { method: 'GET', headers }), 'Fal');
+      const url = extractMediaUrl(result);
+      if (!url) throw new Error('Fal 任务完成但没有返回媒体地址');
+      return { url, type: /\.(mp4|mov|webm|mkv)(?:[?#]|$)/i.test(url) ? 'video' : 'image', raw: result };
+    }
+    if (['ERROR', 'FAILED', 'CANCELLED'].includes(status)) throw new Error(statusData.error?.message || statusData.detail || `Fal 任务失败（${status}）`);
+  }
+  throw new Error('Fal 任务超时，请稍后查看结果');
 }
 
 async function callKlingVideo(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {

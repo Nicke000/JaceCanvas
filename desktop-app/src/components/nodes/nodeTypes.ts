@@ -1,7 +1,7 @@
 import type { NodeTypes } from '@xyflow/react';
 import {
   TextInputNode, ScriptInputNode, SceneSettingsNode, CompareNode, ImageGenerationNode, ImageToImageNode,
-  VideoGenerationNode, AssetNode, UploadNode, PreviewNode, GenericNode, StoryboardPromptNode, CinematographyKnowledgeNode, DirectorStudioNode, VideoTrimNode, Video2XLocalNode, ChatNode, ImageCropNode, PaidGenerationNode, BailianTextToImageNode,
+  VideoGenerationNode, AssetNode, UploadNode, PreviewNode, GenericNode, StoryboardPromptNode, StoryboardRenderNode, TimelineRenderNode, CinematographyKnowledgeNode, VideoTrimNode, ChatNode, ImageCropNode, PaidGenerationNode, BailianTextToImageNode, NoteNode, FrameNode, RerouteNode, LocalWorkflowNode,
 } from './index';
 
 export const nodeTypes: NodeTypes = {
@@ -13,6 +13,9 @@ export const nodeTypes: NodeTypes = {
   imageGeneration: ImageGenerationNode,
   imageToImage: ImageToImageNode,
   videoGeneration: VideoGenerationNode,
+  note: NoteNode,
+  frame: FrameNode,
+  reroute: RerouteNode,
   preview: PreviewNode,
   // New 25 types use GenericNode
   qwenImageGen: GenericNode, qwenImageEdit: GenericNode,
@@ -30,12 +33,13 @@ export const nodeTypes: NodeTypes = {
   refImageClear: GenericNode, refImageToVideo: GenericNode,
   uploadNode: UploadNode, downloadNode: GenericNode,
   apiNode: GenericNode,
+  localWorkflow: LocalWorkflowNode,
   chatNode: ChatNode,
   storyboardPrompt: StoryboardPromptNode,
+  storyboardRender: StoryboardRenderNode,
+  timelineRender: TimelineRenderNode,
   cinematographyKnowledge: CinematographyKnowledgeNode,
-  directorStudio: DirectorStudioNode,
   videoTrim: VideoTrimNode,
-  video2xLocal: Video2XLocalNode,
   imageCrop: ImageCropNode,
   paidTextToImage: PaidGenerationNode, paidImageToImage: PaidGenerationNode,
   paidTextToVideo: PaidGenerationNode, paidImageToVideo: PaidGenerationNode, paidCapability: PaidGenerationNode,

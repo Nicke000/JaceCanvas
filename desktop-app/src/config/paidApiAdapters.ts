@@ -1,8 +1,8 @@
 import type { PaidCapability } from '@/services/paidApi.service';
 
-export type PaidProviderId = 'bailian' | 'kling' | 'minimax' | 'gemini' | 'openai' | 'volcengine';
+export type PaidProviderId = 'bailian' | 'kling' | 'minimax' | 'gemini' | 'openai' | 'volcengine' | 'flux' | 'fal' | 'meshy' | 'elevenlabs';
 export type PaidInputField = 'prompt' | 'image' | 'images' | 'firstImage' | 'lastImage' | 'video' | 'audio' | 'duration' | 'ratio' | 'resolution' | 'fps' | 'seed' | 'template';
-export type PaidAuthMode = 'bearer' | 'query-key' | 'x-api-key';
+export type PaidAuthMode = 'bearer' | 'query-key' | 'x-api-key' | 'x-key' | 'key';
 
 export interface PaidModelDefinition {
   id: string;
@@ -77,8 +77,12 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
     id: 'minimax', label: 'MiniMax 海螺', shortLabel: 'MiniMax',
     description: 'MiniMax H3 多模态视频接口，支持文本、图片、视频和音频内容数组。',
     defaultBaseUrl: 'https://api.minimaxi.com', authMode: 'bearer',
-    models: [{ id: 'MiniMax-H3', label: 'MiniMax H3', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] }],
-    capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'],
+    models: [
+      { id: 'MiniMax-H3', label: 'MiniMax H3', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] },
+      { id: 'speech-2.8-turbo', label: '语音 2.8 Turbo（快/便宜）', capabilities: ['text-to-speech'] },
+      { id: 'speech-2.8-hd', label: '语音 2.8 HD（音质佳）', capabilities: ['text-to-speech'] },
+    ],
+    capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit', 'text-to-speech'],
     docs: '付费api节点整理/视频.docx',
   },
   gemini: {
@@ -108,13 +112,65 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
   },
   volcengine: {
     id: 'volcengine', label: '火山方舟', shortLabel: '火山',
-    description: 'Seedance 多模态参考和有声视频接口，使用 Ark 任务创建/查询流程。',
+    description: '豆包 Seedream 文生图/图生图 + Seedance 视频，Ark 任务创建/查询流程。',
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3', authMode: 'bearer',
     models: [
+      { id: 'doubao-seedream-5-0-260128', label: 'Seedream 5.0', capabilities: ['text-to-image', 'image-to-image', 'first-frame-to-image'] },
       { id: 'doubao-seedance-2-0', label: 'Seedance 2.0', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] },
     ],
-    capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'],
+    capabilities: ['text-to-image', 'image-to-image', 'first-frame-to-image', 'text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'],
     docs: '付费api节点整理/视频.docx、火山方舟.pdf',
+  },
+  flux: {
+    id: 'flux', label: 'Flux 官方', shortLabel: 'Flux',
+    description: 'Black Forest Labs 官方 API：FLUX.2 Pro/Klein/Flex 文生图与图生图，异步任务轮询，x-key 鉴权。',
+    defaultBaseUrl: 'https://api.bfl.ai', authMode: 'x-key',
+    models: [
+      { id: 'flux-2-pro-preview', label: 'FLUX.2 Pro', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-2-klein-9b', label: 'FLUX.2 Klein 9B', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-2-flex', label: 'FLUX.2 Flex', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-1.1-pro', label: 'FLUX.1.1 Pro', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-dev', label: 'FLUX.1 Dev', capabilities: ['text-to-image', 'image-to-image'] },
+    ],
+    capabilities: ['text-to-image', 'image-to-image'],
+    docs: 'https://docs.bfl.ai',
+  },
+  fal: {
+    id: 'fal', label: 'Fal.ai 聚合', shortLabel: 'Fal',
+    description: 'fal.ai 聚合平台：FLUX.1 Dev/Schnell/Pro、SD3.5 等模型，队列异步任务，Key 鉴权。',
+    defaultBaseUrl: 'https://queue.fal.run', authMode: 'key',
+    models: [
+      { id: 'fal-ai/flux/dev', label: 'FLUX.1 Dev', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'fal-ai/flux/schnell', label: 'FLUX.1 Schnell', capabilities: ['text-to-image'] },
+      { id: 'fal-ai/flux-pro/v1.1', label: 'FLUX.1 Pro v1.1', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'fal-ai/stable-diffusion-v35-large', label: 'SD3.5 Large', capabilities: ['text-to-image'] },
+    ],
+    capabilities: ['text-to-image', 'image-to-image'],
+    docs: 'https://fal.ai/docs',
+  },
+  elevenlabs: {
+    id: 'elevenlabs', label: 'ElevenLabs 语音', shortLabel: 'EL',
+    description: 'ElevenLabs 多语言语音合成（英文音质标杆），xi-api-key 鉴权，模型即音色。',
+    defaultBaseUrl: 'https://api.elevenlabs.io', authMode: 'x-api-key',
+    models: [
+      { id: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel（英文默认）', capabilities: ['text-to-speech'] },
+      { id: 'EXAVITQu4vr4xnSDxMaL', label: 'Bella', capabilities: ['text-to-speech'] },
+      { id: 'onwK4e9ZLuTAKqWW03F9', label: 'Domi', capabilities: ['text-to-speech'] },
+      { id: 'pNInz6obpgDQGcFmaJgB', label: 'Adam', capabilities: ['text-to-speech'] },
+    ],
+    capabilities: ['text-to-speech'],
+    docs: 'https://elevenlabs.io/docs',
+  },
+  meshy: {
+    id: 'meshy', label: 'Meshy 3D', shortLabel: '3D',
+    description: 'Meshy 文生3D/图生3D：生成 GLB 模型，文生3D 为 preview→refine 两阶段贴图。',
+    defaultBaseUrl: 'https://api.meshy.ai', authMode: 'bearer',
+    models: [
+      { id: 'meshy-6', label: 'Meshy 6（最新）', capabilities: ['text-to-3d', 'image-to-3d'] },
+      { id: 'meshy-5', label: 'Meshy 5', capabilities: ['text-to-3d', 'image-to-3d'] },
+    ],
+    capabilities: ['text-to-3d', 'image-to-3d'],
+    docs: 'https://docs.meshy.ai',
   },
 };
 

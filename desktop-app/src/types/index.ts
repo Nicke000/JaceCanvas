@@ -1,22 +1,22 @@
 import type { Node, Edge } from '@xyflow/react';
 
 export type NodeComponentType =
-  | 'textInput' | 'scriptInput' | 'sceneSettings' | 'compare' | 'asset' | 'imageGeneration' | 'imageToImage' | 'videoGeneration' | 'preview'
-  // 22 new node types
+  | 'textInput' | 'scriptInput' | 'sceneSettings' | 'compare' | 'asset' | 'imageGeneration' | 'imageToImage' | 'videoGeneration' | 'preview' | 'note' | 'frame' | 'reroute'
   | 'qwenImageGen' | 'qwenImageEdit' | 'zimageGen' | 'fluxImageGen' | 'sdxlIL'
   | 'fireRedEdit' | 'wanVideoGen' | 'ltxVideoGen' | 'lipSyncHuman' | 'personReplace'
   | 'gaussianSplat' | 'upscaleWatermark' | 'audioGen' | 'motionTransfer'
   | 'storyboardGPT' | 'intentImage' | 'booguImage' | 'kreaImage'
   | 'universalMaker' | 'toolSettings' | 'joyAIEcho'
   | 'refMultiFusion' | 'refWashImage' | 'refImageClear' | 'refImageToVideo'
-  | 'storyboardPrompt' | 'cinematographyKnowledge' | 'directorStudio'
+  | 'storyboardPrompt' | 'storyboardRender' | 'timelineRender' | 'cinematographyKnowledge'
   | 'uploadNode' | 'downloadNode'
   | 'apiNode'  // 通用API节点（17个工作流）
-  | 'chatNode' | 'videoTrim' | 'video2xLocal' | 'imageCrop'
+  | 'localWorkflow'  // 本地导入的 ComfyUI 工作流 JSON 节点
+  | 'chatNode' | 'videoTrim' | 'imageCrop'
   | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage';
 
 /* ========== IO 定义 ========== */
-export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select';
+export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select' | '3d';
 
 export interface PortDefinition {
   name: string;
@@ -102,6 +102,17 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
     outputs: [{ name: 'output', label: '当前预览', type: 'image' }],
     params: {},
   },
+  note: {
+    inputs: [], outputs: [], params: { text: '' },
+  },
+  frame: {
+    inputs: [], outputs: [], params: { label: '分组' },
+  },
+  reroute: {
+    inputs: [{ name: 'input', label: '输入', type: 'text' }],
+    outputs: [{ name: 'output', label: '输出', type: 'text' }],
+    params: {},
+  },
   // A-F: 图像类节点
   qwenImageGen: { inputs: [
     { name: 'prompt', label: '提示词', type: 'text', required: true },
@@ -153,6 +164,8 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
     outputs: [], params: {} },
   apiNode: { inputs: [], outputs: [{ name: 'output', label: '输出', type: 'image' }], params: {} },
   chatNode: { inputs: [{ name: 'image', label: '图片', type: 'image' }, { name:'file', label:'文件/音视频', type:'audio' }], outputs: [{ name: 'text', label: '回复', type: 'text' }, { name: 'image', label: '图片', type: 'image' }, { name: 'video', label: '视频', type: 'video' }], params: { message: '', memory: true, historyLimit: 20 } },
+  storyboardRender: { inputs: [{ name: 'script', label: '分镜JSON', type: 'text' }], outputs: [{ name: 'result', label: '结果', type: 'text' }], params: { provider: '', model: '', variants: 1, useEnglish: true, generateVideo: false, videoModel: '' } },
+  timelineRender: { inputs: [{ name: 'results', label: '分镜结果', type: 'image' }], outputs: [{ name: 'video', label: '成片视频', type: 'video' }], params: {} },
   imageCrop: { inputs: [{ name: 'image', label: '输入图片', type: 'image', required: true }], outputs: [{ name: 'image', label: '裁切后图片', type: 'image' }], params: { x: 0, y: 0, width: 512, height: 512, aspectRatio: '1:1' } },
   paidTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
   paidImageToImage: { inputs: [{ name: 'image', label: '参考图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
@@ -160,11 +173,6 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
   paidImageToVideo: { inputs: [{ name: 'image', label: '起始图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },
   paidCapability: { inputs: [{ name: 'image', label: '人物图片', type: 'image' }, { name: 'video', label: '参考视频', type: 'video' }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'output', label: '生成结果', type: 'image' }], params: { capability: 'image-upscale', prompt: '', model: '' } },
   bailianTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', ratio: '1:1', resolution: 1024, seed: -1 } },
-  video2xLocal: {
-    inputs: [{ name: 'video', label: '输入视频', type: 'video', required: true }],
-    outputs: [{ name: 'video', label: '处理后视频', type: 'video' }],
-    params: { mode: 'upscale', scale: 2, model: 'realesr-animevideov3', frameRateMul: 2, inputPath: '' },
-  },
 };
 
 /* ========== 画布节点数据 ========== */
@@ -174,7 +182,12 @@ export interface CanvasNodeData {
   content?: string;
   color?: string;
   nodeType: NodeComponentType;
-  inputText?: string;
+  /** 节点绑定的服务器（多服务器并行执行）；留空则跟随当前默认服务器。 */
+  serverId?: string;
+  /** 锁定：不可拖动/编辑 */
+  locked?: boolean;
+  /** 隐藏：不在画布显示 */
+  hidden?: boolean;
   resultUrl?: string;
   prompt?: string;
   /** 节点配置参数 */
@@ -191,7 +204,7 @@ export interface CanvasNodeData {
   currentNodeProgress?: number;
   currentNodeId?: string;
   promptId?: string;
-  results?: Array<{ type: 'image' | 'video' | 'audio' | 'text'; url: string; filename?: string }>;
+  results?: Array<{ type: 'image' | 'video' | 'audio' | 'text' | '3d'; url: string; filename?: string }>;
   generationStartedAt?: number;
   generationDurationMs?: number;
   /** 错误信息 */
@@ -208,6 +221,8 @@ export interface HistorySnapshot { nodes: AppNode[]; edges: Edge[]; }
 export interface Project {
   id: string; name: string; createdAt: number; updatedAt: number;
   canvasData: { nodes: AppNode[]; edges: Edge[]; };
+  /** 项目关联的服务器配置快照（换环境时自动补入，防止节点 serverId 失效） */
+  servers?: Array<{ id: string; name?: string; baseUrl: string; apiKey?: string; type?: string }>;
 }
 export interface ChatMessage {
   id: string;

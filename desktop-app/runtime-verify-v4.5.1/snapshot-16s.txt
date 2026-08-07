@@ -1,0 +1,85 @@
+﻿--- 16s processes ---
+
+
+ProcessId       : 8140
+ParentProcessId : 8888
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --user-data-dir=E:\AIhuabu\Jace
+                  Canvas\desktop-app\runtime-verify-v4.5.1\profile --enab
+                  le-logging=stderr --log-level=0 
+
+ProcessId       : 10756
+ParentProcessId : 8140
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=gpu-process --disable-gp
+                  u-sandbox --force_high_performance_gpu --user-data-dir=
+                  "E:\AIhuabu\JaceCanvas\desktop-app\runtime-verify-v4.5.
+                  1\profile" --gpu-preferences=UAAAAAAAAADgAAAEAAAAAAAAAA
+                  AAAAAAAABgAAEAAAAAAAAAAAAAAAAAAACGAAAAAAAAAAAAAAAAAAAAA
+                  AAAABAAAAAAAAAAEAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAA --field
+                  -trial-handle=1680,i,8179137985907623176,40501219830722
+                  75048,262144 --enable-features=CanvasOopRasterization,P
+                  dfUseShowSaveFilePicker,VaapiVideoDecoder --disable-fea
+                  tures=SpareRendererForSitePerProcess,UseChromeOSDirectV
+                  ideoDecoder,WinDelaySpellcheckServiceInit --variations-
+                  seed-version --log-level=0 --mojo-platform-channel-hand
+                  le=1672 /prefetch:2
+
+ProcessId       : 39148
+ParentProcessId : 8140
+Name            : node.exe
+CommandLine     : node E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\w
+                  in-unpacked\resources\server\index.js
+
+ProcessId       : 28428
+ParentProcessId : 8140
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=utility --utility-sub-ty
+                  pe=network.mojom.NetworkService --lang=zh-CN --service-
+                  sandbox-type=none --user-data-dir="E:\AIhuabu\JaceCanva
+                  s\desktop-app\runtime-verify-v4.5.1\profile" --field-tr
+                  ial-handle=1680,i,8179137985907623176,40501219830722750
+                  48,262144 --enable-features=CanvasOopRasterization,PdfU
+                  seShowSaveFilePicker,VaapiVideoDecoder --disable-featur
+                  es=SpareRendererForSitePerProcess,UseChromeOSDirectVide
+                  oDecoder,WinDelaySpellcheckServiceInit --variations-see
+                  d-version --log-level=0 --mojo-platform-channel-handle=
+                  1728 /prefetch:11
+
+ProcessId       : 28528
+ParentProcessId : 8140
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=renderer --user-data-dir
+                  ="E:\AIhuabu\JaceCanvas\desktop-app\runtime-verify-v4.5
+                  .1\profile" --app-path="E:\AIhuabu\JaceCanvas\desktop-a
+                  pp\release-v4.5.1\win-unpacked\resources\app.asar" --no
+                  -sandbox --no-zygote --enable-gpu-memory-buffer-video-f
+                  rames --enable-unsafe-webgpu --video-capture-use-gpu-me
+                  mory-buffer --lang=zh-CN --device-scale-factor=1 --num-
+                  raster-threads=4 --enable-zero-copy --enable-main-frame
+                  -before-activation --renderer-client-id=4 --time-ticks-
+                  at-unix-epoch=-1785297181769736 --launch-time-ticks=227
+                  349073587 --field-trial-handle=1680,i,81791379859076231
+                  76,4050121983072275048,262144 --enable-features=CanvasO
+                  opRasterization,PdfUseShowSaveFilePicker,VaapiVideoDeco
+                  der --disable-features=SpareRendererForSitePerProcess,U
+                  seChromeOSDirectVideoDecoder,WinDelaySpellcheckServiceI
+                  nit --variations-seed-version --log-level=0 --mojo-plat
+                  form-channel-handle=2824 /prefetch:1
+
+
+
+
+--- 16s port ---
+
+LocalAddress LocalPort    State OwningProcess
+------------ ---------    ----- -------------
+::1               3001 FinWait2         39148
+::                3001   Listen         39148
+
+
+

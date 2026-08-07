@@ -12,7 +12,8 @@
     "start": "electron .",
     "start:source": "set AI_CANVAS_DEV_SERVER=1&& electron . --dev-server",
     "build": "electron-builder",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "lint:tokens": "node scripts/lint-tokens.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "5.6.1",
@@ -52,7 +53,9 @@
       {
         "from": "server",
         "to": "server",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "server/data",
@@ -61,19 +64,22 @@
       {
         "from": "assets/ffmpeg",
         "to": "ffmpeg",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
-        "from": "assets/video2x",
-        "to": "video2x",
-        "filter": ["**/*"]
+        "from": "opensource-resource",
+        "to": "opensource"
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico",
@@ -88,6 +94,17 @@
       "shortcutName": "JaceCanvas",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico"
+    },
+    "beforePack": "scripts/prepare-opensource.cjs",
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
     }
+  },
+  "devDependencies": {
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "35.7.5",
+    "electron-builder": "^25.1.8",
+    "vite": "^5.4.21"
   }
 }

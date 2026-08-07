@@ -1,0 +1,100 @@
+﻿
+
+ProcessId       : 32704
+ParentProcessId : 8888
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --user-data-dir=E:\AIhuabu\Jace
+                  Canvas\desktop-app\runtime-verify-sw-v4.5.1\profile --d
+                  isable-gpu --disable-gpu-compositing --enable-logging=s
+                  tderr --log-level=0 
+
+ProcessId       : 14516
+ParentProcessId : 32704
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=gpu-process --disable-gp
+                  u-sandbox --force_high_performance_gpu --user-data-dir=
+                  "E:\AIhuabu\JaceCanvas\desktop-app\runtime-verify-sw-v4
+                  .5.1\profile" --gpu-preferences=UAAAAAAAAADgAAAEAAAAAAA
+                  AAAAAAAAAAABgAAAAAAAAAAAAAAAAAAAAAACGAAAAAAAAAAAAAAAAAA
+                  AAAAAAABAAAAAAAAAAEAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAA --us
+                  e-gl=angle --use-angle=swiftshader-webgl --field-trial-
+                  handle=1664,i,2992438251399649318,7003675665150553934,2
+                  62144 --enable-features=CanvasOopRasterization,PdfUseSh
+                  owSaveFilePicker,VaapiVideoDecoder --disable-features=S
+                  pareRendererForSitePerProcess,UseChromeOSDirectVideoDec
+                  oder,WinDelaySpellcheckServiceInit --variations-seed-ve
+                  rsion --log-level=0 --mojo-platform-channel-handle=1660
+                   /prefetch:2
+
+ProcessId       : 26820
+ParentProcessId : 32704
+Name            : node.exe
+CommandLine     : node E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\w
+                  in-unpacked\resources\server\index.js
+
+ProcessId       : 7788
+ParentProcessId : 32704
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=utility --utility-sub-ty
+                  pe=network.mojom.NetworkService --lang=zh-CN --service-
+                  sandbox-type=none --user-data-dir="E:\AIhuabu\JaceCanva
+                  s\desktop-app\runtime-verify-sw-v4.5.1\profile" --field
+                  -trial-handle=1664,i,2992438251399649318,70036756651505
+                  53934,262144 --enable-features=CanvasOopRasterization,P
+                  dfUseShowSaveFilePicker,VaapiVideoDecoder --disable-fea
+                  tures=SpareRendererForSitePerProcess,UseChromeOSDirectV
+                  ideoDecoder,WinDelaySpellcheckServiceInit --variations-
+                  seed-version --log-level=0 --mojo-platform-channel-hand
+                  le=1864 /prefetch:11
+
+ProcessId       : 41332
+ParentProcessId : 32704
+Name            : JaceCanvas.exe
+CommandLine     : "E:\AIhuabu\JaceCanvas\desktop-app\release-v4.5.1\win-u
+                  npacked\JaceCanvas.exe" --type=renderer --user-data-dir
+                  ="E:\AIhuabu\JaceCanvas\desktop-app\runtime-verify-sw-v
+                  4.5.1\profile" --app-path="E:\AIhuabu\JaceCanvas\deskto
+                  p-app\release-v4.5.1\win-unpacked\resources\app.asar" -
+                  -no-sandbox --no-zygote --enable-gpu-memory-buffer-vide
+                  o-frames --enable-unsafe-webgpu --disable-gpu-compositi
+                  ng --video-capture-use-gpu-memory-buffer --lang=zh-CN -
+                  -device-scale-factor=1 --num-raster-threads=4 --enable-
+                  zero-copy --enable-main-frame-before-activation --rende
+                  rer-client-id=4 --time-ticks-at-unix-epoch=-17852971817
+                  69736 --launch-time-ticks=227411661341 --field-trial-ha
+                  ndle=1664,i,2992438251399649318,7003675665150553934,262
+                  144 --enable-features=CanvasOopRasterization,PdfUseShow
+                  SaveFilePicker,VaapiVideoDecoder --disable-features=Spa
+                  reRendererForSitePerProcess,UseChromeOSDirectVideoDecod
+                  er,WinDelaySpellcheckServiceInit --variations-seed-vers
+                  ion --log-level=0 --mojo-platform-channel-handle=2852 /
+                  prefetch:1
+
+
+
+
+--- ports ---
+
+LocalAddress LocalPort    State OwningProcess
+------------ ---------    ----- -------------
+::1               3001 TimeWait             0
+::                3001   Listen         26820
+
+
+
+http-api=ERROR:远程服务器返回错误: (404) 未找到。
+
+
+Id          : 32704
+ProcessName : JaceCanvas
+Responding  : True
+CPU         : 0.859375
+StartTime   : 2026/8/1 3:03:12
+
+
+
+
+remaining=0

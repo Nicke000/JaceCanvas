@@ -1,40 +1,26 @@
-# GitHub repository and Release page plan
+# GitHub Release 发布计划（v4.6.8）
 
 ## Repository description
 
-`JaceCanvas — open-source AI infinite canvas, workflow nodes, StoryAI director desk, and optional local Video2X super-resolution/frame interpolation.`
+`JaceCanvas — open-source AI infinite canvas with dynamic workflow nodes, multi-server (ComfyUI / control platforms), paid API adapters, short-drama studio, AI chat and DevAgent.`
 
 ## Suggested topics
 
-`ai`, `node-editor`, `infinite-canvas`, `react`, `electron`, `comfyui`,
-`video-upscaling`, `frame-interpolation`, `video2x`, `director-tools`, `open-source`
+`ai`, `node-editor`, `infinite-canvas`, `react`, `electron`, `comfyui`, `workflow-nodes`, `short-drama`, `open-source`
 
-## README page layout
+## Release 资产（三版本）
 
-1. Project title and badges.
-2. Short product statement and screenshot/GIF supplied by the maintainer.
-3. Feature cards: canvas, dynamic nodes, director desk, startup animation,
-   Video2X local node and Windows desktop packaging.
-4. Quick install and source build.
-5. A dedicated Video2X license/third-party warning block.
-6. Canvas modification and contribution statement.
-7. System requirements and troubleshooting.
-8. License and security links.
+1. `JaceCanvas-4.6.8-pure-install.exe` — 纯安装版（应用本体）
+2. `JaceCanvas-4.6.8-install-with-opensource.exe` — 安装版 + 内置完整开源（resources/opensource）
+3. `JaceCanvas-4.6.8-opensource.zip` — 纯开源源码包（不含 node_modules）
 
-## Release checklist
+## Release 前检查清单
 
-- Build the source without private configuration.
-- Verify `npm run build:web` for desktop-app.
-- Verify the packaged app contains `app.asar` and, when distributed,
-  `resources/video2x/video2x.exe` plus all upstream notices.
-- Attach SHA256 checksums for installers.
-- Do not upload passwords, API keys, databases, logs, `node_modules`, or
-  unreviewed third-party models.
-- State clearly whether a Release is a source-only build, portable build or
-  installer with bundled third-party runtime.
-
-## Safe GitHub authentication
-
-Do not use an account password in a remote URL or script. Use GitHub CLI login,
-a fine-grained Personal Access Token, or an SSH key. Revoke any password that
-has been shared in chat or stored in shell history.
+- [ ] 源码不含个人配置（config/prompt-settings.json 不提交，只提交 .example.json）
+- [ ] 不提交 release/dist/node_modules/opensource-resource/日志/数据库
+- [ ] 无真实域名、IP、Token、API Key
+- [ ] 无 Video2X 残留（本地 assets/video2x 已移除）
+- [ ] `npm run build:web` 通过；`npm run lint:tokens` 通过
+- [ ] 安装包 SHA256 校验和随 Release 发布
+- [ ] 干净 Windows（无 Node.js）安装测试通过
+- [ ] 文档（README / 安装说明 / 开源使用说明 / THIRD_PARTY_NOTICES）与当前版本一致

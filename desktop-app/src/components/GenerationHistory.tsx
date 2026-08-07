@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Tag, Tooltip } from 'antd';
-import { HistoryOutlined, ReloadOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons';
+import { HistoryOutlined, ReloadOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined, InfoOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { downloadMedia } from '@/utils/downloadMedia';
 import { loadChatSessions, deleteChatSession } from '@/utils';
@@ -14,6 +14,13 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [expandedChats, setExpandedChats] = useState<Set<string>>(new Set());
+  const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
+  const formatTrace = (it: any) => {
+    const p = it.params || {};
+    const pick: Array<[string, string]> = [['prompt', '提示词'], ['negativePrompt', '负面词'], ['model', '模型'], ['provider', '厂商'], ['width', '宽'], ['height', '高'], ['ratio', '比例'], ['variants', '变体数'], ['duration', '时长'], ['workflow_id', '工作流'], ['seed', '种子']];
+    const lines = pick.filter(([k]) => p[k] !== undefined && p[k] !== '').map(([k, label]) => `${label}：${String(p[k]).slice(0, 120)}`);
+    return ['类型：' + (it.nodeType || '—') + ' · ' + new Date(it.timestamp).toLocaleString(), ...lines].join('\n');
+  };
   const [tab, setTab] = useState<'generation'|'chat'>('generation');
   const [height, setHeight] = useState(()=>Math.max(140,Number(localStorage.getItem('ai-canvas-history-height'))||200));
   const exec = useCanvasStore(s => s.enqueueNode);
@@ -98,24 +105,28 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
           <div key={it.id} draggable={Boolean(it.resultUrl||it.results?.length)} onDragStart={e=>dragHistory(e,it)} style={{width:120,background:'var(--theme-surface)',borderRadius:8,padding:8,fontSize:11,color:'var(--theme-text)',cursor:it.resultUrl||it.results?.length?'grab':'pointer',border:'1px solid var(--theme-border)'}}
             onClick={()=>sel(it.nodeId)}>
             {(it.results?.[0]?.url||it.resultUrl) ? (it.results?.[0]?.type==='video'?<video src={it.results[0].url} muted style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>:<img src={it.results?.[0]?.url||it.resultUrl} style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>) :
-             <div style={{width:'100%',aspectRatio:'1',background:'var(--theme-input)',borderRadius:4,marginBottom:4,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--theme-muted)'}}>🎨</div>}
+             <div style={{width:'100%',aspectRatio:'1',background:'var(--theme-input)',borderRadius:4,marginBottom:4,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--theme-text-3)',fontSize:10}}>无预览</div>}
             <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{it.nodeName}</div>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4}}>
               <Tag color={it.status==='success'?'green':it.status==='error'?'red':'default'} style={{fontSize:10,lineHeight:'16px'}}>{it.status==='success'?'完成':'失败'}</Tag>
               <span style={{display:'flex',gap:8}}>
                 {it.status==='error'&&<ReloadOutlined style={{color:'var(--theme-muted)',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();exec(it.nodeId);}}/>}
+                <InfoOutlined style={{color:expandedTraceId===it.id?'#60a5fa':'var(--theme-muted)',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setExpandedTraceId(cur=>cur===it.id?null:it.id);}}/>
                 {(it.resultUrl||it.results?.length)&&<DownloadOutlined style={{color:'#60a5fa',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveItem(it);}}/>}
               </span>
               <span style={{fontSize:9,color:'var(--theme-muted)'}}>{new Date(it.timestamp).toLocaleTimeString()}</span>
               <DeleteOutlined style={{color:'#ef4444',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();removeItem(it.id);}}/>
             </div>
+            {expandedTraceId === it.id && (
+              <div style={{ marginTop: 6, fontSize: 9, color: 'var(--theme-muted)', borderTop: '1px solid var(--theme-border)', paddingTop: 4, maxHeight: 110, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.5 }}>{formatTrace(it)}</div>
+            )}
           </div>
         ))}
         {tab === 'chat' && chatSessions.length === 0 && <div style={{color:'var(--theme-muted)',fontSize:12,padding:16}}>暂无聊天记录</div>}
         {tab === 'chat' && chatSessions.map(session => {
           const expanded = expandedChats.has(session.id);
           return <div className={`chat-history-card ${expanded ? 'is-expanded' : ''}`} key={session.id}>
-            <button className="chat-history-card__title" onClick={() => setExpandedChats(current => { const next = new Set(current); if (next.has(session.id)) next.delete(session.id); else next.add(session.id); return next; })}>✦ {session.title}<span>{expanded ? '收起' : '展开'}</span></button>
+            <button className="chat-history-card__title" onClick={() => setExpandedChats(current => { const next = new Set(current); if (next.has(session.id)) next.delete(session.id); else next.add(session.id); return next; })}>{session.title}<span>{expanded ? '收起' : '展开'}</span></button>
             <div className="chat-history-card__meta">{Math.ceil(session.messages.length / 2)} 轮 · {new Date(session.updatedAt).toLocaleString()}</div>
             <div className="chat-history-card__preview">{(expanded ? session.messages : session.messages.slice(-2)).map(item => <p key={item.id}><b>{item.role === 'user' ? '你' : 'AI'}：</b>{item.content}</p>)}</div>
             <div className="chat-history-card__actions">

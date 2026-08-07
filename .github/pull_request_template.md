@@ -4,15 +4,13 @@
 
 - [ ] Canvas/UI
 - [ ] Node/runtime
-- [ ] Video2X or other third-party integration
+- [ ] Server/API adapter
+- [ ] Paid API / AI service integration
 - [ ] Documentation
 - [ ] Build/release
 
-## Validation
+## Checklist
 
-- [ ] `npm run build:web`
-- [ ] Tested the relevant desktop flow
-- [ ] No credentials, private URLs, databases, logs or personal media included
-- [ ] Third-party licenses/notices reviewed if applicable
-
-## Notes for reviewers
+- [ ] 不含 API Key、Token、私密地址、数据库、日志或个人工作流
+- [ ] 未添加第三方二进制/模型（除非已确认再分发条款）
+- [ ] `npm run build:web` 与 `npm run lint:tokens` 通过

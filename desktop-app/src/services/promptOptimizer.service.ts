@@ -1,6 +1,14 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 
-export type PromptAction = 'optimize' | 'translate';
+export type PromptAction = 'optimize' | 'translate' | 'continue' | 'expand' | 'polish' | 'summarize';
+
+/** 文本节点 AI 操作指令 */
+const TEXT_ACTIONS: Record<string, string> = {
+  continue: '请继续续写下面的文本，保持风格与语气一致，自然衔接，只输出续写后的完整文本。',
+  expand: '请扩写下面的文本，丰富细节与表达层次，保持原意不变，只输出扩写后的完整文本。',
+  polish: '请润色下面的文本，使表达更流畅、更专业、更生动，保持原意不变，只输出润色后的完整文本。',
+  summarize: '请总结下面的文本，提炼核心要点，分条清晰呈现，只输出总结内容。',
+};
 export type PromptKind = 'image' | 'video' | 'image-to-video' | 'image-edit' | 'digital-human' | 'audio' | 'generic';
 
 export const SYSTEM_PROMPTS: Record<PromptKind, string> = {
@@ -15,7 +23,7 @@ export const SYSTEM_PROMPTS: Record<PromptKind, string> = {
 
 function endpoint(provider: string, base: string): string {
   const clean = base.replace(/\/+$/, '');
-  if (provider === 'gemini') return clean.includes('/models/') ? clean : `${clean}/models`;
+  if (provider === 'gemini') return clean.includes('/models/') ? clean : `${clean}${clean.includes('/v1beta') || clean.includes('/v1/') ? '' : '/v1beta'}/models`;
   if (provider === 'anthropic') return clean.endsWith('/messages') ? clean : `${clean}/messages`;
   if (provider === 'ollama') return clean.endsWith('/generate') ? clean : `${clean}/api/generate`;
   return clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
@@ -37,7 +45,7 @@ export async function optimizePrompt(input: { text: string; action: PromptAction
   if (!s.optimizerApiKey && s.optimizerProvider !== 'ollama') throw new Error('请先在设置中填写提示词 AI 的 API 密钥');
   const customPrompt = input.action === 'optimize' ? s.optimizerPromptOverrides?.[input.kind] : '';
   const systemPrompt = customPrompt?.trim() || SYSTEM_PROMPTS[input.kind];
-  const task = input.action === 'translate' ? '请将下面提示词翻译成自然、适合生成模型使用的英文，只输出英文提示词。' : `${systemPrompt}\n注意：这是提示词优化任务，必须直接生成优化后的最终提示词，不要把任务转交给下游模型，也不要解释优化过程。`;
+  const task = input.action === 'translate' ? '请将下面提示词翻译成自然、适合生成模型使用的英文，只输出英文提示词。' : input.action === 'optimize' ? `${systemPrompt}\n注意：这是提示词优化任务，必须直接生成优化后的最终提示词，不要把任务转交给下游模型，也不要解释优化过程。` : `${TEXT_ACTIONS[input.action]}\n直接输出处理后的文本，不要解释过程。`;
   const context = input.imageContext?.length ? `\n图片输入上下文：\n${input.imageContext.map((x, i) => `${i + 1}. ${x}`).join('\n')}` : '';
   const user = `这是一次全新的独立任务（request_id: ${requestId}）。不要引用或假设任何历史对话、历史提示词或之前的回答。\n${task}${context}\n\n本次用户提示词：\n${input.text}`;
   const url = endpoint(s.optimizerProvider, s.optimizerBaseUrl);

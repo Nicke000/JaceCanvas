@@ -24,8 +24,8 @@ const API_NODE_DEFS: ApiNodeDef[] = [
   { type:'wf_Qwen多视图', label:'Qwen·多视图', fullName:'Qwen多视图生成', icon:'🔲', color:'#6366f1', category:'文生图', workflows:['Qwen多视图生成'] },
   { type:'wf_Qwen人物展示', label:'Qwen·人物展示', fullName:'Qwen人物多角度展示', icon:'👤', color:'#6366f1', category:'文生图', workflows:['Qwen人物多角度展示'] },
   // ====== 图编辑 ======
-  { type:'wf_Qwen编辑', label:'Qwen·换装换姿', fullName:'Qwen编辑（换装+换姿势+换动作）', icon:'✏️', color:'#818cf8', category:'图编辑', workflows:['Qwen编辑（换装+换姿势+换动作）'] },
-  { type:'wf_Qwen二次元转真人', label:'Qwen·二次元转真人', fullName:'Qwen二次元转真人+高清放大', icon:'✨', color:'#818cf8', category:'图编辑', workflows:['Qwen二次元转真人+高清放大'] },
+  { type:'wf_Qwen编辑', label:'Qwen·换装换姿', fullName:'Qwen编辑（换装+换姿势+换动作）', icon:'✏️', color:'var(--theme-accent)', category:'图编辑', workflows:['Qwen编辑（换装+换姿势+换动作）'] },
+  { type:'wf_Qwen二次元转真人', label:'Qwen·二次元转真人', fullName:'Qwen二次元转真人+高清放大', icon:'✨', color:'var(--theme-accent)', category:'图编辑', workflows:['Qwen二次元转真人+高清放大'] },
   { type:'wf_SeedVR2放大', label:'Seed·高清放大', fullName:'Seed VR2图片高清放大', icon:'🔍', color:'#14b8a6', category:'图编辑', workflows:['Seed VR2图片高清放大'] },
   // ====== 视频 ======
   { type:'wf_LTX四宫格', label:'LTX·四宫格短剧', fullName:'LTX-2.3-4宫格V3短剧', icon:'🎬', color:'#22c55e', category:'视频', workflows:['LTX-2.3-4宫格V3短剧'] },

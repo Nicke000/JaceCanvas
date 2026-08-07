@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Button, Space, Tooltip, message } from 'antd';
-import { TranslationOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { optimizePrompt, type PromptKind } from '@/services/promptOptimizer.service';
+import { TranslationOutlined, ThunderboltOutlined, BulbOutlined } from '@ant-design/icons';
+import { Dropdown } from 'antd';
+import { optimizePrompt, type PromptKind, type PromptAction } from '@/services/promptOptimizer.service';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 export function syncPromptToSources(nodeId: string, text: string) {
@@ -25,8 +26,8 @@ export function syncPromptToSources(nodeId: string, text: string) {
 }
 
 export const PromptActions: React.FC<{ nodeId: string; value: string; kind: PromptKind; fieldKey?: string; imageContext?: string[]; onChange: (value: string) => void }> = ({ nodeId, value, kind, fieldKey = 'prompt', imageContext, onChange }) => {
-  const [busy, setBusy] = useState<'optimize' | 'translate' | null>(null);
-  const run = async (action: 'optimize' | 'translate') => {
+  const [busy, setBusy] = useState<PromptAction | null>(null);
+  const run = async (action: PromptAction) => {
     if (!value.trim()) { message.warning('请先输入提示词'); return; }
     setBusy(action);
     try {
@@ -42,5 +43,12 @@ export const PromptActions: React.FC<{ nodeId: string; value: string; kind: Prom
   return <Space size={2}>
     <Tooltip title="使用已配置的提示词 AI 优化"><Button size="small" type="text" loading={busy === 'optimize'} icon={<ThunderboltOutlined/>} onClick={() => void run('optimize')}>优化</Button></Tooltip>
     <Tooltip title="翻译为英文提示词"><Button size="small" type="text" loading={busy === 'translate'} icon={<TranslationOutlined/>} onClick={() => void run('translate')}>翻译</Button></Tooltip>
+    <Dropdown menu={{ items: [
+      { key: 'continue', label: '续写', onClick: () => void run('continue') },
+      { key: 'expand', label: '扩写', onClick: () => void run('expand') },
+      { key: 'summarize', label: '总结', onClick: () => void run('summarize') },
+    ] }}>
+      <Tooltip title="AI 文本操作（续写/扩写/润色/总结）"><Button size="small" type="text" loading={!!busy && busy !== 'optimize' && busy !== 'translate'} icon={<BulbOutlined/>}>AI</Button></Tooltip>
+    </Dropdown>
   </Space>;
 };

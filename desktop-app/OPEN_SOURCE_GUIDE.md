@@ -1,10 +1,10 @@
 # JaceCanvas 开源与主控节点配置说明
 
-> 发布前请同时阅读开源目录中的 `LICENSE`、`THIRD_PARTY_NOTICES.md`、`安装说明.md` 和 `CONTRIBUTING.md`。JaceCanvas 自有画布源码允许所有人修改和二次开发；Video2X、模型、FFmpeg、Qt 等第三方内容不自动继承 JaceCanvas 的 MIT License。
+> JaceCanvas 自有画布源码允许所有人修改和二次开发（MIT License）。第三方依赖（Electron、React、Three.js、FFmpeg、模型等）保留各自上游许可证与版权声明，不自动继承 JaceCanvas 的 MIT License。
 
 ## 1. 先理解节点来源
 
-JaceCanvas 的“工作流节点”不是固定写死在应用里的模型节点。节点目录由用户配置的主控平台提供：
+JaceCanvas 的"工作流节点"不是固定写死在应用里的模型节点。节点目录由用户配置的**主控平台**动态提供：
 
 1. 应用请求主控平台的 `GET /api/workflow/list`，读取当前账号可用的工作流目录。
 2. 用户点击某个工作流时，应用请求 `GET /api/workflow/config/{workflow_id}`。
@@ -21,7 +21,7 @@ JaceCanvas 的“工作流节点”不是固定写死在应用里的模型节点
 - Electron 主进程、React 画布和通用节点运行时
 - 主控 API 调用逻辑
 - 动态工作流列表和动态工作流配置逻辑
-- 不含密钥的配置示例
+- 不含密钥的配置示例（`config/prompt-settings.example.json`）
 - 构建脚本、类型定义和通用文档
 
 ### 不应提交到公共仓库的内容
@@ -31,22 +31,17 @@ JaceCanvas 的“工作流节点”不是固定写死在应用里的模型节点
 - `localStorage` 导出的个人设置
 - 个人工作流目录、工作流 JSON、模型名称和私有节点参数
 - 运行产生的数据库、上传素材、日志和安装包
-- 含有真实连接信息的“问题”文档或调试记录
+- 含有真实连接信息的"问题"文档或调试记录
 
 应用源码中的 `src/config/workflowPresets.ts`、`src/config/webWorkflowDirectory.json` 和 `src/config/_workflows_config.json` 是离线兼容和历史工作流的兜底数据，不应被当作所有用户的标准节点清单。主控在线可用时，界面以主控返回的目录和配置为准。
 
 ## 3. 用户配置自己的主控平台
 
 1. 启动应用。
-2. 打开设置，填写自己的主控 API 基地址，例如：
-
-   ```text
-   https://your-control.example.com:8443
-   ```
-
-3. 如主控需要认证，在设置中填写 API Key。
-4. 打开“节点库”，点击刷新。
-5. 节点库显示的工作流应与该主控账号的 `/api/workflow/list` 返回一致。
+2. 打开设置 → 服务器管理 → 添加服务器，选择类型"主控服务器（工作流 API）"。
+3. 填写主控 API 基地址，例如 `https://your-control.example.com:8443`；如主控需要认证，填写 API 密钥。
+4. **主控双地址（可选）**：如果节点地址与性能检测地址不同（常见于 seetacloud 等平台），把另一个链接填到"性能检测地址"——节点与生成走「地址」，性能检测走「性能检测地址」，两者互不影响。
+5. 打开"节点库"，点击刷新，节点列表应与该主控账号的 `/api/workflow/list` 返回一致。
 6. 添加节点后，应用会读取对应的 `/api/workflow/config/{workflow_id}`；如果参数变更，重新添加或刷新节点即可获得最新配置。
 
 主控接口至少需要提供：
@@ -76,24 +71,22 @@ JaceCanvas 的“工作流节点”不是固定写死在应用里的模型节点
 
 - [ ] 搜索并删除真实域名、IP、SSH 端口、密码、Token、API Key
 - [ ] 确认 `config/prompt-settings.json` 不提交，只提交 `.example.json`
-- [ ] 删除 `release*`、`dist`、日志、SQLite 数据库和上传素材
-- [ ] 不提交 `问题.docx`、API 调试导出文件和个人工作流 JSON
+- [ ] 删除 `release*`、`dist`、`opensource-resource`、日志、SQLite 数据库和上传素材
+- [ ] 不提交"问题"文档、API 调试导出文件和个人工作流 JSON
 - [ ] 使用全新的主控地址运行一次节点库刷新
 - [ ] 验证主控返回 0 个节点时应用仍能启动，并显示清晰提示
 - [ ] 验证新增、删除、改名工作流后，节点库刷新结果正确
 - [ ] 验证旧画布中的 `apiNode` 仍能使用原来的 `workflow_id`
 - [ ] 重新构建安装包，并在没有 Node.js 的干净 Windows 环境测试
 
-### Video2X 超分/补帧节点专项检查
+## 6. AI 能力与第三方服务边界
 
-- [ ] 节点显示“开源本地模型”及“不一定适配所有电脑”的提示
-- [ ] 节点来源明确指向 `https://github.com/k4yt3x/video2x`
-- [ ] 发布二进制时保留 Video2X、RealESRGAN、RealCUGAN、RIFE、FFmpeg、Qt、NCNN/Vulkan 的上游许可证和版权文件
-- [ ] 不把第三方程序或模型描述为 JaceCanvas 自研，不承诺第三方模型的商业授权
-- [ ] 用户确认输入素材、输出内容和模型使用权，禁止侵权使用
-- [ ] 开源仓库默认不提交约 394 MB 的 Video2X 运行时和模型；仅在完成许可证审核后作为 Release/独立下载提供
+- **分镜 AI / 聊天 AI / DevAgent**：调用的是用户自己配置的 API（OpenAI 兼容 / Gemini / Anthropic / Ollama / dashscope 等），密钥保存在用户本机，开源代码不含任何真实密钥。
+- **付费 API 节点**（火山、Flux、Fal、MiniMax 等）：适配器调用各厂商公开接口，密钥由用户配置，不随源码分发。
+- **FFmpeg**（合成/剪辑）：`assets/ffmpeg` 为第三方二进制，保留其上游许可证；发布时不承诺其商业授权。
+- **模型与工作流**：所有生成模型均由主控平台/厂商提供，JaceCanvas 不内置、不转售任何生成模型。
 
-## 6. 推荐的贡献方式
+## 7. 推荐的贡献方式
 
 不要直接修改公共源码来加入个人工作流。推荐提交以下之一：
 
@@ -105,6 +98,6 @@ JaceCanvas 的“工作流节点”不是固定写死在应用里的模型节点
 
 个人节点只应通过自己的主控平台配置提供给自己的应用实例。
 
-## 7. 画布修改与二次开发授权
+## 8. 画布修改与二次开发授权
 
-在 MIT License 和第三方许可证允许的范围内，所有人都可以修改画布 UI、节点组件、导演台、数据服务和主控适配器，也可以开发自己的节点、模板和衍生发行版。发布修改版时请保留本项目版权/许可证声明，标注重要修改，并保留第三方组件的独立版权和协议说明。
+在 MIT License 和第三方许可证允许的范围内，所有人都可以修改画布 UI、节点组件、数据服务和主控适配器，也可以开发自己的节点、模板和衍生发行版。发布修改版时请保留本项目版权/许可证声明，标注重要修改，并保留第三方组件的独立版权和协议说明。

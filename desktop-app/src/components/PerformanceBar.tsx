@@ -10,6 +10,7 @@ export const PerformanceBar: React.FC<{ compact?: boolean }> = ({ compact = fals
   const sshHost = useSettingsStore(s=>s.sshHost);
   const sshPort = useSettingsStore(s=>s.sshPort);
   const sshUsername = useSettingsStore(s=>s.sshUsername);
+  const activeServerName = useSettingsStore(s => s.servers.find(x => x.id === s.activeServerId)?.name || '未选服务器');
   const nodes = useCanvasStore(s=>s.nodes);
   const [info,setInfo]=useState<PerformanceInfo|null>(null);
   const [online,setOnline]=useState(false);
@@ -24,7 +25,7 @@ export const PerformanceBar: React.FC<{ compact?: boolean }> = ({ compact = fals
     <span className="performance-metric__icon" style={{color}}>{icon}</span><span className="performance-metric__body"><span className="performance-metric__label">{label}</span><span className="performance-metric__value">{value==null?'--':`${Math.round(value)}%`} <small>{detail}</small></span><span className="performance-meter"><i style={{width:`${meter(value)}%`,background:color}}/></span></span>
   </div>;
   return <div className={`performance-bar ${compact?'is-compact':''}`} role="status" aria-label="服务器性能状态">
-    <span className={`performance-dot ${online?'is-online':''}`}/><span>{info?.source==='ssh'?'SSH 实时':online?'HTTP 在线':'离线'}</span>
+    <span className={`performance-dot ${online?'is-online':''}`}/><span title="当前服务器">{activeServerName} · {info?.source==='ssh'?'SSH 实时':online?'HTTP 在线':'离线'}</span>
     <span className="performance-sep"/>
     <button className="performance-queue-link" onClick={()=>{const node=nodes.find(n=>n.data.status==='running');if(node)(window as any).__focusCanvasNode?.(node.id)}}>执行中 {Math.max(info?.runningCount ?? 0,getRunningTaskCount(),nodes.filter(n=>n.data.status==='running').length)}</button>
     <button className="performance-queue-link" onClick={()=>{const id=getQueuedTaskIds().find(taskId=>nodes.some(n=>n.id===taskId&&n.data.status!=='running'));if(id)(window as any).__focusCanvasNode?.(id)}}>排队中 {Math.max(info?.pendingCount ?? 0,getQueuedTaskIds().filter(id=>nodes.some(n=>n.id===id&&n.data.status!=='running')).length)}</button>

@@ -1,23 +1,30 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { addGenerationHistory, autoSaveToAssets } from '@/utils/generationHistory';
+import { parseWorkflowParams, defaultParamVisible, workflowPorts, workflowImageInputs } from '@/utils/comfyWorkflow';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { CanvasNodeData } from '@/types';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { downsampleImage } from '@/utils/imageUtils';
 import { getApiBase, uploadFile, type ResultItem } from '@/services/comfyui.service';
 import { mediaFilesFromDrop, mediaTypeForFile } from '@/utils/fileDrop';
 import { PromptActions } from '@/components/PromptActions';
 import { CINEMATOGRAPHY_EFFECTS, EFFECT_GROUPS, formatEffects } from '@/config/cinematographyKnowledge';
 import { optimizePrompt } from '@/services/promptOptimizer.service';
-import { message } from 'antd';
+import { message, Modal, Input, Button } from 'antd';
 import { useSettingsStore, type PaidApiNodeSettings } from '@/stores/settingsStore';
 import { fetchModelsFromApi, sendChat, type ChatAttachment, type ChatTurn } from '@/services/chat.service';
 import { ASPECT_RATIOS, PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
+import { ModelViewer } from '../ModelViewer';
 import { callPaidManage, type PaidManageItem } from '@/services/paidApi.service';
 import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
+import { getAllStyles, saveCustomStyle, deleteCustomStyle } from '@/config/stylePresets';
 import { getSupportedPaidCapabilities, PAID_CAPABILITY_LABELS } from '@/config/paidCapabilityCatalog';
 import { PAID_API_ADAPTERS, getPaidModelsForAdapter, getPaidProvidersForCapability, type PaidProviderId } from '@/config/paidApiAdapters';
 import { BAILIAN_RATIO_OPTIONS, BAILIAN_RESOLUTION_OPTIONS, BAILIAN_VIDEO_RATIO_OPTIONS, BAILIAN_VIDEO_RESOLUTION_OPTIONS } from '@/services/bailianTextToImage.service';
 import { generateId, saveChatSession } from '@/utils';
+import { UserRound, Mic, Music, Video, Paperclip, Type as TypeIcon, Image as ImageIcon, Plug, WandSparkles } from 'lucide-react';
+import { NodeIcon } from '@/config/nodeIcons';
 import { getBailianImageSize } from '@/services/bailianTextToImage.service';
 
 const ST: Record<string, { bg: string; icon: string; glow: string }> = {
@@ -32,9 +39,9 @@ const ST: Record<string, { bg: string; icon: string; glow: string }> = {
 const DIMS = [{ l:'512',w:512,h:512 },{ l:'HD',w:768,h:1136 },{ l:'FHD',w:1080,h:1920 },{ l:'2K',w:1440,h:2560 },{ l:'4K',w:2160,h:3840 },{ l:'1:1',w:1024,h:1024 }];
 
 type PortSpec = { id:string; label:string; type?:string };
-type SP = { data: any; id: string; selected: boolean; icon: string; color: string; hasInput?: boolean; hasOutput?: boolean; inputs?:PortSpec[]; outputs?:PortSpec[]; resizable?: boolean; hideExec?: boolean; children?: React.ReactNode };
+type SP = { data: any; id: string; selected: boolean; icon?: React.ReactNode; color: string; hasInput?: boolean; hasOutput?: boolean; inputs?:PortSpec[]; outputs?:PortSpec[]; resizable?: boolean; hideExec?: boolean; children?: React.ReactNode };
 
-const portColor=(type?:string)=>type==='text'?'#a78bfa':type==='video'?'#f472b6':type==='audio'?'#fbbf24':'#38bdf8';
+const portColor=(type?:string)=>type==='text'?'#a78bfa':type==='video'?'#f472b6':type==='audio'?'var(--theme-warning)':type==='3d'?'#34d399':'#38bdf8';
 const openTextEditor=(nodeId:string,field:string,value:string,label:string,kind:'text'|'script'|'scene')=>window.dispatchEvent(new CustomEvent('ai-canvas-open-text-editor',{detail:{nodeId,field,value,label,kind}}));
 
 function formatDuration(ms?: number) {
@@ -91,7 +98,7 @@ export const VideoTrimNode = memo((p: NodeProps) => {
     event.target.value = '';
   };
   useEffect(()=>{ setOutputs({}); if(!input)return; },[input]);
-  return <NodeShell {...p} icon="✂" color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'}]} resizable>
+  return <NodeShell {...p} color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'}]} resizable>
     <div className="video-trim-node">
       {input?<video ref={ref} src={input} controls playsInline className="video-trim-preview" onLoadedMetadata={e=>{const v=e.currentTarget;const duration=v.duration||0;setMeta(m=>({duration,fps:m.fps}));setRange(r=>({start:Math.min(r.start,Math.max(0,Math.round(duration*meta.fps)-1)),end:r.end||Math.max(1,Math.round(duration*meta.fps)-1)}));}}/>:<div className="video-trim-empty">连接视频、从素材库拖入，或选择本地文件</div>}
       <button className="nodrag" onClick={chooseVideo} style={{marginBottom:5,fontSize:10}}>选择本地视频</button><input ref={fileInputRef} hidden type="file" accept="video/*,.mp4,.mov,.mkv,.avi,.webm" onChange={onChooseVideo}/>
@@ -104,6 +111,13 @@ export const VideoTrimNode = memo((p: NodeProps) => {
 });
 
 export const ChatNode = memo((p: NodeProps) => {
+  // AI 聊天已改为右下角悬浮助手（FloatingAssistant），画布节点仅作提示占位
+  return (
+    <div style={{ width: 210, padding: 14, borderRadius: 12, border: '1px dashed rgba(255,255,255,.22)', background: 'rgba(255,255,255,.04)', textAlign: 'center' }}>
+      <div style={{ fontSize: 24, color: 'var(--theme-text-3)' }}>…</div>
+      <div style={{ fontSize: 11, color: 'var(--theme-muted)', marginTop: 6, lineHeight: 1.6 }}>AI 聊天已移至右下角悬浮助手<br />（可拖动 · 点击展开）</div>
+    </div>
+  );
   const d = p.data as unknown as CanvasNodeData;
   const update = useCanvasStore(s => s.setNodeConfig);
   const config = d.config || {};
@@ -185,16 +199,16 @@ export const ChatNode = memo((p: NodeProps) => {
   const modelInitial = (selectedModel || settings.chatModel || 'AI').charAt(0).toUpperCase();
   const renderAttachThumb = (att: ChatAttachment) => {
     const url = att.dataUrl || att.url || '';
-    if (att.mimeType?.startsWith('image/') && url) return <img src={url} alt={att.name} className="chat-bubble-attach-thumb" />;
-    if (att.mimeType?.startsWith('video/') && url) return <span className="chat-bubble-attach-icon">🎬</span>;
-    return <span className="chat-bubble-attach-icon">📎</span>;
+    if (att.mimeType?.startsWith('image/') && url) return <img loading="lazy" src={url} alt={att.name} className="chat-bubble-attach-thumb" />;
+    if (att.mimeType?.startsWith('video/') && url) return <span className="chat-bubble-attach-icon"><Video size={12} /></span>;
+    return <span className="chat-bubble-attach-icon"><Paperclip size={12} /></span>;
   };
-  return <NodeShell {...p} icon="✦" color="#22d3ee" inputs={[{ id: 'prompt', label: '消息', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'file', label: '文件/音视频', type: 'audio' }]} outputs={[{ id: 'text', label: '回复', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'video', label: '视频', type: 'video' }]} resizable>
+  return <NodeShell {...p} color="#22d3ee" inputs={[{ id: 'prompt', label: '消息', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'file', label: '文件/音视频', type: 'audio' }]} outputs={[{ id: 'text', label: '回复', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'video', label: '视频', type: 'video' }]} resizable>
     <div className="chat-node-content nodrag" style={{ userSelect: 'text' }}>
       <div className="chat-node-toolbar">
         <span className="chat-node-status">{busy ? '正在思考…' : '在线对话'}</span>
-        {chatModels.length > 0 ? <select className="chat-node-model-select nodrag" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ fontSize: 9, padding: '1px 4px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: '#67e8f9', maxWidth: 120 }}>{chatModels.map(m => <option key={m} value={m}>{m}</option>)}</select> : <button className="nodrag" onClick={fetchModels} disabled={fetching} style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: 'transparent', color: '#67e8f9', cursor: 'pointer' }}>{fetching ? '…' : '拉取模型'}</button>}
-        <select className="chat-node-model-select nodrag" value={thinkingMode} onChange={e => update(p.id,{thinkingMode:e.target.value})} style={{ fontSize: 9, padding: '1px 3px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: '#67e8f9', maxWidth: 54 }}><option value="auto">自动</option><option value="fast">快速</option><option value="deep">深度</option></select>
+        {chatModels.length > 0 ? <select className="chat-node-model-select nodrag" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ fontSize: 9, padding: '1px 4px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: 'var(--theme-accent)', maxWidth: 120 }}>{chatModels.map(m => <option key={m} value={m}>{m}</option>)}</select> : <button className="nodrag" onClick={fetchModels} disabled={fetching} style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: 'transparent', color: 'var(--theme-accent)', cursor: 'pointer' }}>{fetching ? '…' : '拉取模型'}</button>}
+        <select className="chat-node-model-select nodrag" value={thinkingMode} onChange={e => update(p.id,{thinkingMode:e.target.value})} style={{ fontSize: 9, padding: '1px 3px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: 'var(--theme-accent)', maxWidth: 54 }}><option value="auto">自动</option><option value="fast">快速</option><option value="deep">深度</option></select>
         <span>{history.length / 2} 轮记忆</span>
         <button className="chat-node-clear" onClick={() => update(p.id, { history: [], content: '' })}>清空</button>
       </div>
@@ -214,54 +228,15 @@ export const ChatNode = memo((p: NodeProps) => {
   </NodeShell>;
 });
 
-/** Video2X 开源本地模型节点：只由应用内置的 Video2XQt6 执行，不调用系统安装版本。 */
-export const Video2XLocalNode = memo((p: NodeProps) => {
-  const d = p.data as unknown as CanvasNodeData;
-  const setConfig = useCanvasStore(s => s.setNodeConfig);
-  const [busy, setBusy] = useState(false);
-  const input = String(d.config?.inputPath || d.inputValues?.video || '');
-  const preview = String(d.config?.previewUrl || d.inputValues?.video || '');
-  const mode = String(d.config?.mode || 'upscale');
-  const pickVideo = async () => {
-    const inputEl = document.createElement('input'); inputEl.type = 'file'; inputEl.accept = 'video/*,.mp4,.mkv,.mov,.avi';
-    const file = await new Promise<File | undefined>(resolve => { inputEl.onchange = () => resolve(inputEl.files?.[0]); inputEl.click(); });
-    if (!file) return;
-    const api = (window as any).electronAPI;
-    if (!api?.saveLocalAsset) { useCanvasStore.getState().updateNodeData(p.id, { status:'error', error:'请使用 Electron 桌面版运行 Video2X 本地节点' }); return; }
-    const data = await new Promise<string>(resolve => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.readAsDataURL(file); });
-    const saved = await api.saveLocalAsset({ name: file.name, data });
-    setConfig(p.id, { inputPath: saved.path, previewUrl: saved.url });
-  };
-  const process = async () => {
-    if (!input) return;
-    const api = (window as any).electronAPI;
-    if (!api?.video2xProcess) { useCanvasStore.getState().updateNodeData(p.id, { status:'error', error:'请使用 Electron 桌面版运行 Video2X 本地节点' }); return; }
-    setBusy(true); useCanvasStore.getState().updateNodeData(p.id, { status:'running', progress:0, error:undefined });
-    try {
-      const result = await api.video2xProcess({ input, mode, scale:Number(d.config?.scale)||2, model:String(d.config?.model||'realesr-animevideov3'), frameRateMul:Number(d.config?.frameRateMul)||2 });
-      const values = { video: result.url, output: result.url };
-      useCanvasStore.getState().updateNodeData(p.id, { status:'success', progress:100, resultUrl:result.url, outputValues:values, results:[{type:'video',url:result.url,filename:result.filename}], content:'Video2X 处理完成' });
-      useCanvasStore.getState().propagateData(p.id, 'video', result.url); useCanvasStore.getState().propagateData(p.id, 'output', result.url);
-    } catch (e) { useCanvasStore.getState().updateNodeData(p.id, { status:'error', error:e instanceof Error ? e.message : 'Video2X 处理失败' }); }
-    finally { setBusy(false); }
-  };
-  return <NodeShell {...p} icon="⚙" color="#06b6d4" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'video',label:'处理后视频',type:'video'}]} resizable>
-    <div className="nodrag" style={{fontSize:10,color:'#67e8f9',fontWeight:700}}>Video2X Qt6 · 开源本地模型</div>
-    <div className="nodrag" style={{fontSize:9,color:'#fbbf24',lineHeight:1.45,margin:'4px 0'}}>⚠ 本节点内置开源程序与模型，可能不适配所有电脑；请自行确认模型/素材许可证，不代表商业授权，禁止侵权使用。</div>
-    {preview && <video src={preview} controls muted className="video-trim-preview" style={{maxHeight:130}} />}
-    <div className="nodrag" style={{display:'grid',gap:4,marginTop:5}}>
-      <button onClick={pickVideo}>选择本地视频</button>
-      <select value={mode} onChange={e=>setConfig(p.id,{mode:e.target.value})}><option value="upscale">视频超分</option><option value="interpolate">视频补帧</option><option value="both">超分 + 补帧</option></select>
-      <select value={String(d.config?.model||'realesr-animevideov3')} onChange={e=>setConfig(p.id,{model:e.target.value})}><option value="realesr-animevideov3">RealESRGAN AnimeVideo</option><option value="realesrgan-plus">RealESRGAN Plus</option><option value="realcugan">RealCUGAN</option><option value="rife-v4.26">RIFE v4.26</option></select>
-      {(mode === 'upscale' || mode === 'both') && <select value={String(d.config?.scale||2)} onChange={e=>setConfig(p.id,{scale:Number(e.target.value)})}><option value="2">放大 2x</option><option value="3">放大 3x</option><option value="4">放大 4x</option></select>}
-      {(mode === 'interpolate' || mode === 'both') && <select value={String(d.config?.frameRateMul||2)} onChange={e=>setConfig(p.id,{frameRateMul:Number(e.target.value)})}><option value="2">补帧至 2 倍</option><option value="4">补帧至 4 倍</option></select>}
-      <button className="video-trim-primary" disabled={!input || busy} onClick={process}>{busy ? '处理中…' : '执行 Video2X'}</button>
-    </div>
-  </NodeShell>;
-});
+
 
 const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = true, hasOutput = true, inputs, outputs, resizable = false, hideExec = false, children }) => {
-  const nd = data as CanvasNodeData; const s = ST[nd.status || 'idle'];
+  const nd = data as CanvasNodeData;
+  // P1 去 emoji：icon 只接受 ReactNode；字符串（旧 emoji/符号）一律走节点类型 lucide 映射
+  const iconNode = React.isValidElement(icon) ? icon : <NodeIcon type={nd.nodeType} size={15} />;
+  const accent = String(nd.color || color); const s = ST[nd.status || 'idle'];
+  const servers = useSettingsStore(s => s.servers);
+  const serverName = nd.serverId ? (servers.find(item => item.id === nd.serverId)?.name || '') : '';
   const inputPorts:PortSpec[]=inputs?.length?inputs:(hasInput?[{id:'input',label:'输入'}]:[]);
   const outputPorts:PortSpec[]=outputs?.length?outputs:(hasOutput?[{id:'output',label:'输出'}]:[]);
   const portRows=Math.max(inputPorts.length,outputPorts.length);
@@ -276,6 +251,8 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
   const elapsed=nd.status==='running'&&nd.generationStartedAt?now-nd.generationStartedAt:nd.generationDurationMs;
   const overallProgress=nd.status==='success'?100:Math.max(0,Math.min(100,nd.progress||0));
   const stepProgress=nd.status==='success'?100:Math.max(0,Math.min(100,nd.currentNodeProgress ?? 0));
+  // 只有真实异步节点需要进度条：服务器工作流 / 付费 API / 耗时本地工具；瞬时本地节点与上传节点（有独立进度条）不显示
+  const showProgressBar = ['apiNode','textToSpeech','videoToVideo','audioToVideo','textToAudio','storyboardRender','timelineRender','imageGeneration','imageToImage','videoGeneration','qwenImageGen','qwenImageEdit','cinematographyKnowledge'].includes(nd.nodeType) || nd.nodeType.startsWith('paid');
   const doExec = useCallback((e: React.MouseEvent) => { e.stopPropagation(); if (nd.status === 'running') { pause(id); return; } enqueue(id); }, [id, enqueue, nd.status, pause]);
   useEffect(() => {
     // 可缩放节点的高度由 NodeResizer 完全控制，不能被内容观察器覆盖。
@@ -299,29 +276,30 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [id, portRows, updateNodeStyle, children, resizable]);
   return (
-    <div className={`node-shell ${selected ? 'is-selected' : ''} ${nd.queuedAt || nd.status === 'queued' ? 'is-queued' : ''}`} data-status={nd.status || 'idle'} onClick={() => sel(id)}
+    <div className={`node-shell ${selected ? 'is-selected' : ''} ${nd.queuedAt || nd.status === 'queued' ? 'is-queued' : ''}`} data-status={nd.status || 'idle'} onClick={(e) => { if (!e.shiftKey && !e.ctrlKey) sel(id); }}
       onPointerDown={e => {
         const target = e.target as HTMLElement;
         if (target.closest('input, textarea, select, button, audio, video, .nodrag, .react-flow__handle')) e.stopPropagation();
       }}
-      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); ctx(e.clientX, e.clientY, id); }}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); if (!selected) { useCanvasStore.getState().setSelectedNodeId(id); useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(m => ({ ...m, selected: m.id === id })) }); } ctx(e.clientX, e.clientY, id); }}
       style={{
         borderRadius: 10, background: 'var(--theme-panel)',
-        border: `2px solid ${selected ? color : 'var(--theme-border)'}`,
-        boxShadow: selected ? `0 0 20px ${color}44` : '0 1px 4px rgba(0,0,0,0.3)',
+        border: `2px solid ${selected ? accent : 'var(--theme-border)'}`,
+        boxShadow: selected ? `0 0 20px ${accent}44` : '0 1px 4px rgba(0,0,0,0.3)',
         width:'100%',height:resizable ? '100%' : 'auto',minWidth: portRows>3?280:220, minHeight: 150, maxWidth: resizable ? 'none' : 520, cursor: 'pointer',
         transition: 'border-color .15s ease, box-shadow .15s ease',
         opacity: nd.disabled ? 0.5 : 1, position: 'relative', color: 'var(--theme-text)', display: resizable ? 'flex' : undefined, flexDirection: resizable ? 'column' : undefined,
       }}>
-      {resizable&&<NodeResizer isVisible={selected} minWidth={220} minHeight={150} maxWidth={1600} maxHeight={1200} color={color} handleStyle={{width:10,height:10}}/>}
+      {resizable&&<NodeResizer isVisible={selected} minWidth={220} minHeight={150} maxWidth={1600} maxHeight={1200} color={accent} handleStyle={{width:10,height:10}}/>}
       <div style={{
-        background: `linear-gradient(135deg, ${color}22, ${color}11)`,
-        borderBottom: `1px solid ${color}22`,
+        background: `linear-gradient(135deg, ${accent}22, ${accent}11)`,
+        borderBottom: `1px solid ${accent}22`,
         padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8,
         borderTopLeftRadius: 8, borderTopRightRadius: 8,
       }}>
-        <span style={{ fontSize: 15 }}>{icon}</span>
-        <span style={{ fontWeight: 600, fontSize: 12, color: '#e0e0f0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nd.label}</span>
+        <span style={{ fontSize: 15 }}>{iconNode}</span>
+        <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--theme-text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nd.label}</span>
+        {serverName && <span className="node-server-badge" title={`服务器：${serverName}`}>{serverName}</span>}
         {!hideExec && <span onClick={doExec} title={nd.status === 'running' ? '点击取消任务' : nd.status + ' - 点击执行'}
           style={{
             width: 26, height: 26, borderRadius: '50%', background: s.bg,
@@ -337,27 +315,104 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
           return <div className="node-port-row" key={index}>
             <div className="node-port node-port--input">{input&&<>
               <Handle id={input.id} type="target" position={Position.Left} title={`${input.label} (${input.type||'通用'})`}
-                style={{background:portColor(input.type),left:3,top:'50%',border:'2px solid #16162a',zIndex:10}}/>
+                style={{background:portColor(input.type),left:3,top:'50%',border:'2px solid var(--theme-border)',zIndex:10}}/>
               <span title={input.label}>{input.label}</span>
             </>}</div>
             <div className="node-port node-port--output">{output&&<>
               <span title={output.label}>{output.label}</span>
               <Handle id={output.id} type="source" position={Position.Right} title={`${output.label} (${output.type||'通用'})`}
-                style={{background:portColor(output.type),right:3,top:'50%',border:'2px solid #16162a',zIndex:10}}/>
+                style={{background:portColor(output.type),right:3,top:'50%',border:'2px solid var(--theme-border)',zIndex:10}}/>
             </>}</div>
           </div>;
         })}
       </div>}
       <div ref={contentRef} className="node-shell__content" style={{ padding: '10px 14px', fontSize: 12, minWidth: 0, minHeight: 0, overflow: 'auto', flex: resizable ? 1 : undefined, display: resizable ? 'flex' : undefined, flexDirection: resizable ? 'column' : undefined }}>{children ?? <div style={{ color: '#555' }}>点击配置...</div>}</div>
-      {(nd.status === 'running' || nd.status === 'success') && <div className="node-progress-stack">
-        <div className="node-progress-row"><span>整体</span><div><i style={{width:`${overallProgress}%`}}/></div><b>{Math.round(overallProgress)}%</b></div>
-        <div className="node-progress-row"><span>步骤</span><div><i className="node-progress-step" style={{width:`${stepProgress}%`}}/></div><b>{Math.round(stepProgress)}%</b></div>
+      {(nd.status === 'running' || nd.status === 'success') && showProgressBar && <div className="node-progress-stack">
+        {nd.nodeType === 'apiNode' ? (
+          <div className="node-progress-row"><span>步骤</span><div><i className="node-progress-step" style={{width:`${stepProgress}%`}}/></div><b>{Math.round(stepProgress)}%</b></div>
+        ) : (
+          <div className="node-progress-row"><span>整体</span><div><i style={{width:`${overallProgress}%`}}/></div><b>{Math.round(overallProgress)}%</b></div>
+        )}
       </div>}
       {(elapsed!=null||nd.results?.length)&&<div className="node-stats">{elapsed!=null&&<span>耗时 {formatDuration(elapsed)}</span>}{nd.results?.length?<span>{nd.results.length} 个结果</span>:null}</div>}
-      {nd.status === 'error' && nd.error && <div className="node-error" title={nd.error}>{nd.error}</div>}
+      {nd.status === 'error' && nd.error && <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', margin: '0 14px 8px', background: 'rgba(248,113,113,.12)', border: '1px solid rgba(248,113,113,.35)', borderRadius: 6 }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--theme-error)', fontSize: 10 }} title={nd.error}>{nd.error}</span>
+        <button onClick={(e) => { e.stopPropagation(); enqueue(id); }} style={{ flexShrink: 0, background: 'var(--theme-error)', border: 'none', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}>重试</button>
+      </div>}
     </div>
   );
 };
+
+/** 节点端口标识：显示来源端口的名称（服务器名），颜色区分类型；节点从哪个端口下来就固定显示哪个端口 */
+function originTag(servers: Array<{ id: string; name?: string; type?: string; baseUrl?: string }>, serverId: string | undefined, activeServerId: string | undefined): { label: string; color: string } {
+  const s = servers.find(x => x.id === (serverId || activeServerId));
+  if (!s) return { label: '未绑定', color: '#6b7280' };
+  const name = s.name || s.baseUrl || s.id;
+  if (s.type === 'comfyui' && /127\.0\.0\.1|localhost/i.test(s.baseUrl || '')) return { label: name, color: '#10b981' };
+  if (s.type === 'comfyui') return { label: name, color: '#f59e0b' };
+  return { label: name, color: '#3b82f6' };
+}
+
+export const LocalWorkflowNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const cfg = (d.config || {}) as Record<string, any>;
+  const servers = useSettingsStore(s => s.servers);
+  const activeServerId = useSettingsStore(s => s.activeServerId);
+  const meta = React.useMemo(() => parseWorkflowParams(cfg.workflowJson), [cfg.workflowJson]);
+  const ports = React.useMemo(() => workflowPorts(cfg.workflowJson), [cfg.workflowJson]);
+  const origin = originTag(servers, d.serverId, activeServerId);
+  // 绑定端口的节点：NodeShell 已显示端口名（node-server-badge），这里只补「未绑定」提示，避免重复标签
+  return <NodeShell {...p} color="#0ea5e9" inputs={ports.inputs} outputs={ports.outputs}>
+    {!d.serverId && <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+      <span title="未绑定端口（执行时跟随当前服务器）" style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, color: '#fff', background: origin.color, fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>跟随：{origin.label}</span>
+      <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>{meta.length} 参数</span>
+    </div>}
+    {d.resultUrl && <img src={d.resultUrl} alt="" style={{ width: '100%', maxHeight: 130, objectFit: 'cover', borderRadius: 6, marginTop: 4 }} />}
+  </NodeShell>;
+});
+
+/* === Note 备注 === */
+export const NoteNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const setConfig = useCanvasStore(u => u.setNodeConfig);
+  return <NodeShell {...p} color="#d4a72c" hasInput={false} hasOutput={false} resizable>
+    <textarea className="nodrag" onFocus={()=>openTextEditor(p.id,'text',String(d.config?.text||''),'备注','text')}
+      placeholder="写下备注、灵感或注意事项..." value={String(d.config?.text||'')}
+      onChange={e=>setConfig(p.id,{text:e.target.value})}
+      style={{width:'100%',minHeight:90,flex:1,border:'1px solid rgba(212,167,44,.32)',borderRadius:6,padding:8,fontSize:12,resize:'none',outline:'none',fontFamily:'inherit',background:'rgba(212,167,44,.07)',color:'var(--theme-text)'}} />
+  </NodeShell>;
+});
+
+/* === Frame 分组框（对标 Blender/ComfyUI 的 Frame 分组） === */
+export const FrameNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  return (
+    <div className="frame-node">
+      <NodeResizer minWidth={160} minHeight={90} isVisible={p.selected} color="var(--theme-primary)" />
+      <div className="frame-node-title">{String(d.label || '分组')}</div>
+    </div>
+  );
+});
+
+/* === Reroute 转接点（梳理连线，自动透传） === */
+export const RerouteNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const input = String(d.inputValues?.input ?? d.inputValues?.image ?? '');
+  const prev = useRef(input);
+  useEffect(() => {
+    if (input && input !== prev.current) {
+      prev.current = input;
+      useCanvasStore.getState().updateNodeData(p.id, { outputValues: { ...(d.outputValues || {}), output: input } });
+      useCanvasStore.getState().propagateData(p.id, 'output', input);
+    }
+  });
+  return (
+    <div className="reroute-node" title="转接点：梳理连线，自动透传">
+      <Handle type="target" position={Position.Left} id="input" className="reroute-handle" />
+      <Handle type="source" position={Position.Right} id="output" className="reroute-handle" />
+    </div>
+  );
+});
 
 /* === TextInput === */
 export const TextInputNode = memo((p: NodeProps) => {
@@ -365,12 +420,12 @@ export const TextInputNode = memo((p: NodeProps) => {
   const scene = String(d.inputValues?.settings || '');
   const publish = (text: string) => useCanvasStore.getState().propagateData(p.id, 'text', scene ? `${scene}\n\n${text}` : text);
   useEffect(() => { publish(String(d.config?.text || '')); }, [scene]);
-  return <NodeShell {...p} icon="T" color="#6366f1" inputs={[{id:'settings',label:'场景设定',type:'text'}]} outputs={[{id:'text',label:'文本',type:'text'}]} resizable>
+  return <NodeShell {...p} color="#6366f1" inputs={[{id:'settings',label:'场景设定',type:'text'}]} outputs={[{id:'text',label:'文本',type:'text'}]} resizable>
     {scene && <div className="text-scene-context">已合并场景设定</div>}
     <div style={{display:'flex',justifyContent:'flex-end',marginBottom:2}}><PromptActions nodeId={p.id} value={(d.config?.text as string)||''} kind="generic" fieldKey="text" onChange={v=>{const store=useCanvasStore.getState();store.setNodeConfig(p.id,{text:v});publish(v)}}/></div>
     <textarea className="nodrag" onFocus={()=>openTextEditor(p.id,'text',String(d.config?.text||''),'文本输入','text')} onPointerDown={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()} onDoubleClick={e=>e.stopPropagation()} placeholder="输入文本..." value={(d.config?.text as string)||''}
       onChange={e => {const store=useCanvasStore.getState();store.setNodeConfig(p.id,{text:e.target.value});publish(e.target.value)}}
-      style={{width:'100%',height:'100%',flex:1,border:'1px solid #2a2a3e',borderRadius:6,padding:6,fontSize:12,resize:'none',minHeight:40,outline:'none',fontFamily:'inherit',background:'#0f0f1e',color:'#c0c0d0'}} />
+      style={{width:'100%',height:'100%',flex:1,border:'1px solid #2a2a3e',borderRadius:6,padding:6,fontSize:12,resize:'none',minHeight:40,outline:'none',fontFamily:'inherit',background:'var(--theme-input)',color:'var(--theme-text-2)'}} />
   </NodeShell>;
 });
 
@@ -381,12 +436,12 @@ export const ScriptInputNode = memo((p:NodeProps)=>{
   const setScripts=(next:typeof scripts)=>useCanvasStore.getState().setNodeConfig(p.id,{scripts:next});
   const change=(id:string,text:string)=>{const next=scripts.map(item=>item.id===id?{...item,text}:item);setScripts(next);useCanvasStore.getState().propagateData(p.id,`script-${id}`,text)};
   const add=()=>setScripts([...scripts,{id:`${Date.now().toString(36)}${Math.random().toString(36).slice(2,5)}`,label:`场景 ${scripts.length+1}`,text:''}]);
-  return <NodeShell {...p} icon="▤" color="#8b5cf6" hasInput={false} hasOutput={false}>
+  return <NodeShell {...p} color="#8b5cf6" hasInput={false} hasOutput={false}>
     <div className="script-list">{scripts.map((item,index)=><div className="script-row" key={item.id}>
       <input className="script-label nodrag" value={item.label} onChange={e=>setScripts(scripts.map(x=>x.id===item.id?{...x,label:e.target.value}:x))}/>
       <textarea className="script-text nodrag" onFocus={()=>openTextEditor(p.id,`script:${item.id}`,item.text,item.label,'script')} value={item.text} placeholder="输入该段剧本..." onChange={e=>change(item.id,e.target.value)}/>
       <span className="script-output-label">文本输出</span>
-      <Handle id={`script-${item.id}`} type="source" position={Position.Right} title={`${item.label}（文本）`} style={{background:portColor('text'),right:4,top:'50%',border:'2px solid #16162a'}}/>
+      <Handle id={`script-${item.id}`} type="source" position={Position.Right} title={`${item.label}（文本）`} style={{background:portColor('text'),right:4,top:'50%',border:'2px solid var(--theme-border)'}}/>
       {scripts.length>1&&<button className="script-remove nodrag" onClick={()=>setScripts(scripts.filter(x=>x.id!==item.id))}>×</button>}
     </div>)}</div>
     <button className="script-add nodrag" onClick={add}>＋ 添加剧本段落</button>
@@ -400,9 +455,9 @@ export const SceneSettingsNode = memo((p: NodeProps) => {
   const fields = [['era','时代'],['time','时间'],['location','地点'],['scene','场景'],['style','视觉风格'],['camera','镜头/画面'],['notes','其他要求']] as const;
   const save = () => { const value = JSON.stringify(d.config?.settings || d.config); const raw = JSON.parse(localStorage.getItem('ai-canvas-scene-settings') || '[]'); raw.unshift({id:Date.now().toString(36), name:`场景设定 ${new Date().toLocaleString()}`, value}); localStorage.setItem('ai-canvas-scene-settings',JSON.stringify(raw.slice(0,30))); alert('场景设定已保存'); };
   const publish = (config: Record<string, unknown>) => propagate(p.id, 'settings', Object.entries(config).filter(([,v])=>String(v).trim()).map(([k,v])=>`${k}: ${v}`).join('\n'));
-  return <NodeShell {...p} icon="🎬" color="#f59e0b" hasInput={false} outputs={[{id:'settings',label:'设定',type:'text'}]}>
-    <div style={{fontSize:10,color:'#fbbf24',marginBottom:5}}>视频/图片统一设定</div>
-    {fields.map(([key,label]) => <input className="nodrag" key={key} placeholder={label} onFocus={()=>openTextEditor(p.id,key,String(d.config?.[key]||''),label,'scene')} value={String(d.config?.[key] || '')} onChange={e=>{const next={...d.config,[key]:e.target.value};setConfig(p.id,{[key]:e.target.value});publish(next)}} style={{width:'100%',marginBottom:3,padding:4,background:'#0f0f1e',border:'1px solid #3d3320',borderRadius:4,color:'#ddd',fontSize:10}}/>)}
+  return <NodeShell {...p} color="#f59e0b" hasInput={false} outputs={[{id:'settings',label:'设定',type:'text'}]}>
+    <div style={{fontSize:10,color:'var(--theme-warning)',marginBottom:5}}>视频/图片统一设定</div>
+    {fields.map(([key,label]) => <input className="nodrag" key={key} placeholder={label} onFocus={()=>openTextEditor(p.id,key,String(d.config?.[key]||''),label,'scene')} value={String(d.config?.[key] || '')} onChange={e=>{const next={...d.config,[key]:e.target.value};setConfig(p.id,{[key]:e.target.value});publish(next)}} style={{width:'100%',marginBottom:3,padding:4,background:'var(--theme-input)',border:'1px solid #3d3320',borderRadius:4,color:'var(--theme-text-2)',fontSize:10}}/>)}
     <button className="script-add nodrag" onClick={e=>{e.stopPropagation();save()}}>保存设定</button>
   </NodeShell>;
 });
@@ -442,8 +497,31 @@ export const CompareNode = memo((p:NodeProps)=>{
   },[p.id,original,processed,updateStyle]);
   const media=(url:string,label:string,ref:React.RefObject<HTMLImageElement|HTMLVideoElement|HTMLAudioElement|null>)=>{if(!url)return <div className="compare-empty">等待{label}</div>;const kind=mediaKind(url);return kind==='video'?<video ref={ref as React.RefObject<HTMLVideoElement>} src={url} controls muted className="compare-media nodrag"/>:kind==='audio'?<audio ref={ref as React.RefObject<HTMLAudioElement>} src={url} controls className="compare-media nodrag"/>:<img ref={ref as React.RefObject<HTMLImageElement>} src={url} className="compare-media" alt={label}/>};
   useEffect(()=>{if(processed){const store=useCanvasStore.getState();store.updateNodeData(p.id,{outputValues:{processed,url:processed}});store.propagateData(p.id,'processed',processed)}},[p.id,processed]);
-  return <NodeShell {...p} icon="◐" color="#14b8a6" inputs={[{id:'original',label:'原图/原视频',type:'image'},{id:'processed',label:'处理后',type:'image'}]} outputs={[{id:'processed',label:'处理后',type:'image'}]} resizable>
-    <div className="compare-grid"><div><b>处理前</b>{media(original,'原始素材',originalRef)}</div><div><b>处理后</b>{media(processed,'处理后素材',processedRef)}</div></div>
+  // 蒙版对比：鼠标在画面内左右移动，左半显示原图、右半显示处理后（分割线跟随鼠标）；鼠标离开画面显示处理后
+  const [maskMode, setMaskMode] = useState(false);
+  const [maskPos, setMaskPos] = useState<number | null>(null);
+  const maskOnlyImage = original && processed && /^(image|img)/i.test(mediaKind(original) + '') && /^(image|img)/i.test(mediaKind(processed) + '');
+  return <NodeShell {...p} color="#14b8a6" inputs={[{id:'original',label:'原图/原视频',type:'image'},{id:'processed',label:'处理后',type:'image'}]} outputs={[{id:'processed',label:'处理后',type:'image'}]} resizable>
+    {maskOnlyImage && maskMode ? (
+      <div
+        className="nodrag"
+        style={{ position: 'relative', width: '100%', borderRadius: 6, overflow: 'hidden', userSelect: 'none', touchAction: 'none', cursor: 'ew-resize' }}
+        onMouseMove={e => { const r = e.currentTarget.getBoundingClientRect(); setMaskPos(Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100))); }}
+        onMouseLeave={() => setMaskPos(null)}
+        onMouseDown={e => { const r = e.currentTarget.getBoundingClientRect(); setMaskPos(Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100))); }}
+      >
+        <img src={processed} alt="处理后" draggable={false} style={{ width: '100%', display: 'block', borderRadius: 6 }} />
+        {maskPos !== null && <img src={original} alt="原图" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', clipPath: 'inset(0 ' + (100 - maskPos) + '% 0 0)' }} />}
+        {maskPos !== null && <div style={{ position: 'absolute', top: 0, bottom: 0, left: maskPos + '%', width: 2, background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,.7)' }} />}
+        <div style={{ position: 'absolute', top: 4, left: 4, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,.55)', padding: '1px 6px', borderRadius: 3 }}>左=原图 · 右=处理后（移动鼠标查看差异，移出画面显示处理后）</div>
+      </div>
+    ) : (
+      <div className="compare-grid"><div><b>处理前</b>{media(original,'原始素材',originalRef)}</div><div><b>处理后</b>{media(processed,'处理后素材',processedRef)}{processed && <div className="nodrag" style={{ display: 'flex', gap: 4, marginTop: 4, justifyContent: 'center' }}>
+        {maskOnlyImage && <Button size="small" style={{ fontSize: 10 }} onClick={() => setMaskMode(true)}>蒙版对比</Button>}
+        <Button size="small" style={{ fontSize: 10 }} onClick={() => autoSaveToAssets(processed, [{ type: mediaKind(processed), url: processed }], '对比结果')}>保存到资产库</Button>
+        <Button size="small" style={{ fontSize: 10 }} onClick={() => window.open(processed, '_blank')}>下载</Button>
+      </div>}</div></div>
+    )}
   </NodeShell>;
 });
 
@@ -452,9 +530,9 @@ export const AssetNode = memo((p: NodeProps) => {
   const d=p.data as unknown as CanvasNodeData;
   const type=String(d.config?.assetType||'image');
   const value=(d.outputValues?.[type]??d.outputValues?.url) as string;
-  return <NodeShell {...p} icon={type==='video'?'▶':type==='audio'?'♪':type==='text'?'T':'▧'} color="#0ea5e9" hasInput={false} outputs={[{id:type,label:type==='text'?'文本':'素材',type}]}>
+  return <NodeShell {...p} icon={type==='video'?<Video size={15}/>:type==='audio'?<Music size={15}/>:type==='text'?<TypeIcon size={15}/>:<ImageIcon size={15}/>} color="#0ea5e9" hasInput={false} outputs={[{id:type,label:type==='text'?'文本':'素材',type}]}>
     <div className="asset-node-type">{type==='image'?'图片':type==='video'?'视频':type==='audio'?'音频':'文字'}素材</div>
-    {type==='image'&&value&&<img src={value} className="asset-node-media" alt=""/>}
+    {type==='image'&&value&&<img loading="lazy" src={value} className="asset-node-media" alt=""/>}
     {type==='video'&&value&&<video src={value} className="asset-node-media" muted/>}
     {type==='audio'&&value&&<audio src={value} controls style={{width:'100%'}}/>}
     {type==='text'&&<div className="asset-node-text">{value||'空文本'}</div>}
@@ -486,20 +564,42 @@ export const UploadNode = memo((p: NodeProps) => {
     setUploading(true);
     setUploadProgress(0);
     const store=useCanvasStore.getState();
-    store.updateNodeData(p.id,{status:'running',progress:0,error:undefined,content:`正在上传 0/${files.length}`});
+    store.updateNodeData(p.id,{status:'running',progress:0,error:undefined,content:`正在读取 0/${files.length}`});
     try{
       const results:ResultItem[]=[...(store.nodes.find(n=>n.id===p.id)?.data.results||[]) as ResultItem[]];
+      const serverBase=getApiBase(p.data.serverId as string | undefined);
       for(let i=0;i<files.length;i++){
-        const file=files[i]; const filename=await uploadFile(file);
-        const url=`${getApiBase()}/api/comfy/view?filename=${encodeURIComponent(filename)}&type=input`;
+        const file=files[i];
+        let url=''; let filename=file.name;
+        if(serverBase){
+          try{
+            const name=await uploadFile(file);
+            url=`${getApiBase(p.data.serverId as string | undefined)}/api/comfy/view?filename=${encodeURIComponent(name)}&type=input`;
+            filename=name;
+          }catch{ url=''; }
+        }
+        if(!url){
+          // 本地模式：未配置服务器（仅接付费 API 或本地使用）时转 base64，
+          // 图片/视频仍可预览，且可作为付费 API 的输入。
+          url=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>{const raw=String(reader.result);if(file.type.startsWith('image/')){void downsampleImage(raw).then(resolve);}else{resolve(raw);}};reader.readAsDataURL(file);});
+        }
         results.push({type:mediaTypeForFile(file),url,filename});
-        store.updateNodeData(p.id,{progress:Math.round((i+1)/files.length*100),content:`正在上传 ${i+1}/${files.length}`});
+        store.updateNodeData(p.id,{progress:Math.round((i+1)/files.length*100),content:`正在读取 ${i+1}/${files.length}`});
         setUploadProgress(Math.round((i+1)/files.length*100));
       }
       publish(results);
     }catch(error){store.updateNodeData(p.id,{status:'error',error:error instanceof Error?error.message:'上传失败'});}
     finally{setUploading(false);setUploadProgress(0);}
   },[p.id,publish]);
+  // 接收从画布空白处拖入的本地文件（由 Canvas 派发，nodeId 定向到本节点）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { files?: File[]; nodeId?: string } | undefined;
+      if (detail?.files?.length && detail.nodeId === p.id) void uploadFiles(detail.files);
+    };
+    window.addEventListener('ai-canvas-files-dropped', handler);
+    return () => window.removeEventListener('ai-canvas-files-dropped', handler);
+  }, [uploadFiles, p.id]);
   const choose=useCallback((directory=false)=>{
     const input=document.createElement('input'); input.type='file'; input.multiple=true;
     input.accept='image/*,video/*,audio/*';
@@ -519,7 +619,7 @@ export const UploadNode = memo((p: NodeProps) => {
   const results=d.results||[];
   const removeFile=(index:number)=>{const next=results.filter((_,i)=>i!==index);const store=useCanvasStore.getState();if(!next.length){store.updateNodeData(p.id,{results:[],outputValues:{},resultUrl:undefined,status:'idle',content:'暂无上传文件'});return;}publish(next);};
   const uploadOutputs=results.map((item,index)=>({id:`file_${index+1}`,label:`${index+1}. ${item.filename||'未命名文件'}`,type:item.type}));
-  return <NodeShell {...p} icon="↥" color="#60a5fa" hasInput={false} outputs={uploadOutputs.length?uploadOutputs:[{id:'file_1',label:'文件1',type:'image'}]} resizable>
+  return <NodeShell {...p} color="#60a5fa" hasInput={false} outputs={uploadOutputs.length?uploadOutputs:[{id:'file_1',label:'文件1',type:'image'}]} resizable>
     <div className={`upload-node-zone nodrag ${dragging?'is-dragging':''}`}
       onDragEnter={e=>{e.preventDefault();e.stopPropagation();setDragging(true)}}
       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy'}}
@@ -532,7 +632,7 @@ export const UploadNode = memo((p: NodeProps) => {
         <button disabled={uploading} onClick={e=>{e.stopPropagation();choose(true)}}>选择文件夹</button>
       </div>
     </div>
-    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview">{item.type==='video'?<video src={item.url} controls className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<img src={item.url} className="upload-node-media" alt={item.filename||''}/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
+    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview">{item.type==='video'?<video src={item.url} controls className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<img loading="lazy" src={item.url} className="upload-node-media" alt={item.filename||''}/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
     {results.length>0&&<div className="upload-node-summary">
       <span>{results.length} 个文件</span>
       <span>{results.filter(r=>r.type==='image').length} 图 · {results.filter(r=>r.type==='video').length} 视频</span>
@@ -549,11 +649,11 @@ export const BailianTextToImageNode = memo((p: NodeProps) => {
   const resolution = Number(cfg.resolution) || 1024;
   const seed = Number(cfg.seed);
   const configured = Boolean(settings.bailianTextToImage?.apiKey);
-  return <NodeShell {...p} icon="🔥" color="#ff7a45" inputs={[{ id:'prompt', label:'提示词', type:'text' }]} outputs={[{ id:'image', label:'图片', type:'image' }]} resizable>
+  return <NodeShell {...p} color="#ff7a45" inputs={[{ id:'prompt', label:'提示词', type:'text' }]} outputs={[{ id:'image', label:'图片', type:'image' }]} resizable>
     <div className="nodrag" style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6, fontSize:10, color:'#ffd8bf' }}>
       <b style={{ flex:1 }}>文生图</b><span>z-image-turbo</span>
     </div>
-    {!configured && <div style={{ fontSize:10, color:'#fbbf24', lineHeight:1.5, marginBottom:5 }}>请先到“设置 → 付费 API → 文生图”填写 API Key。</div>}
+    {!configured && <div style={{ fontSize:10, color:'var(--theme-warning)', lineHeight:1.5, marginBottom:5 }}>请先到“设置 → 付费 API → 文生图”填写 API Key。</div>}
     <textarea className="nodrag" value={String(cfg.prompt || '')} onChange={e => update(p.id, { prompt:e.target.value })} placeholder="提示词（也可连接文本节点）" rows={3} style={{ width:'100%', resize:'vertical', background:'#21130e', color:'#fff1e8', border:'1px solid #7c2d12', borderRadius:5, padding:5, fontSize:10 }} />
     <div style={{ display:'flex', gap:4, marginTop:5 }}>
       <select className="nodrag" value={ratio} onChange={e => update(p.id, { ratio:e.target.value })} style={{ flex:1, background:'#21130e', color:'#fff1e8', border:'1px solid #7c2d12', borderRadius:5, padding:4, fontSize:10 }}>
@@ -569,7 +669,7 @@ export const BailianTextToImageNode = memo((p: NodeProps) => {
 
 
 /* === 4.6.8 可灵主体 / 音色管理节点 === */
-const manageInputStyle: React.CSSProperties = { width: '100%', padding: '4px 6px', fontSize: 10, color: '#dbeafe', background: '#0b1020', border: '1px solid #4b3c72', borderRadius: 5, outline: 'none' };
+const manageInputStyle: React.CSSProperties = { width: '100%', padding: '4px 6px', fontSize: 10, color: 'var(--theme-text)', background: 'var(--theme-input)', border: '1px solid #4b3c72', borderRadius: 5, outline: 'none' };
 const KlingManagePanel = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
   const settings = useSettingsStore();
@@ -623,9 +723,9 @@ const KlingManagePanel = memo((p: NodeProps) => {
     if (result.ok) await refresh();
   };
 
-  return <NodeShell {...p} icon={kind === 'element' ? '👤' : '🎙️'} color={kind === 'element' ? '#38bdf8' : '#fb923c'} hasInput={false} hasOutput={false} hideExec resizable>
+  return <NodeShell {...p} icon={kind === 'element' ? <UserRound size={15}/> : <Mic size={15}/>} color={kind === 'element' ? '#38bdf8' : '#fb923c'} hasInput={false} hasOutput={false} hideExec resizable>
     <div className="nodrag" style={{ marginBottom: 6 }}>
-      {!profile?.apiKey && <div style={{ fontSize: 10, color: '#fbbf24', lineHeight: 1.5, marginBottom: 5 }}>请到「设置 → 付费 API 厂商配置」填写可灵的 API Key 后使用。</div>}
+      {!profile?.apiKey && <div style={{ fontSize: 10, color: 'var(--theme-warning)', lineHeight: 1.5, marginBottom: 5 }}>请到「设置 → 付费 API 厂商配置」填写可灵的 API Key 后使用。</div>}
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 10, color: '#c4b5fd' }}>
         <select className="nodrag" value={provider} onChange={e => update(p.id, { provider: e.target.value })} style={manageInputStyle}>
           <option value="kling">{PAID_API_ADAPTERS.kling?.label || '快手·可灵'}</option>
@@ -638,28 +738,31 @@ const KlingManagePanel = memo((p: NodeProps) => {
       <input className="nodrag" placeholder={`${kindLabel}名称`} value={name} onChange={e => { setName(e.target.value); update(p.id, { manageName: e.target.value }); }} style={manageInputStyle} />
       {kind === 'element' && <input className="nodrag" placeholder="主体描述（可选）" value={desc} onChange={e => { setDesc(e.target.value); update(p.id, { manageDescription: e.target.value }); }} style={{ ...manageInputStyle, marginTop: 4 }} />}
       <input className="nodrag" placeholder={kind === 'element' ? '图片 URL（或连接图片输入端口）' : '音频 URL（或连接音频输入端口）'} value={mediaUrl} onChange={e => { setMediaUrl(e.target.value); update(p.id, { manageMediaUrl: e.target.value }); }} style={{ ...manageInputStyle, marginTop: 4 }} />
-      {(kind === 'element' && inputImage) && <div style={{ fontSize: 9, color: '#86efac', marginTop: 3 }}>✓ 已接收图片输入（用于创建主体）</div>}
-      {(kind === 'voice' && inputAudio) && <div style={{ fontSize: 9, color: '#86efac', marginTop: 3 }}>✓ 已接收音频输入（用于创建音色）</div>}
+      {(kind === 'element' && inputImage) && <div style={{ fontSize: 9, color: 'var(--theme-success)', marginTop: 3 }}>✓ 已接收图片输入（用于创建主体）</div>}
+      {(kind === 'voice' && inputAudio) && <div style={{ fontSize: 9, color: 'var(--theme-success)', marginTop: 3 }}>✓ 已接收音频输入（用于创建音色）</div>}
       <button className="nodrag" onClick={create} disabled={busy} style={{ marginTop: 6, width: '100%', fontSize: 10, padding: '5px 12px', borderRadius: 5, border: '1px solid #38bdf8', background: 'rgba(56,189,248,.22)', color: '#bae6fd', cursor: 'pointer' }}>{busy ? '处理中…' : `创建${kindLabel}`}</button>
     </div>
-    <div style={{ fontSize: 10, marginBottom: 4, color: '#94a3b8' }}>已创建{kindLabel}（{items.length}）</div>
+    <div style={{ fontSize: 10, marginBottom: 4, color: 'var(--theme-muted)' }}>已创建{kindLabel}（{items.length}）</div>
     <div style={{ maxHeight: 180, overflow: 'auto' }}>
-      {items.length === 0 && !busy && <div style={{ fontSize: 10, color: '#64748b', padding: 6, textAlign: 'center' }}>暂无{kindLabel}，点击上方创建</div>}
+      {items.length === 0 && !busy && <div style={{ fontSize: 10, color: 'var(--theme-muted)', padding: 6, textAlign: 'center' }}>暂无{kindLabel}，点击上方创建</div>}
       {items.map(item => (
         <div key={item.id} className="nodrag" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 6px', border: '1px solid var(--theme-border)', borderRadius: 6, marginBottom: 4, background: 'rgba(255,255,255,.02)' }}>
-          {item.preview && kind === 'element' ? <img src={item.preview} alt="" style={{ width: 26, height: 26, borderRadius: 4, objectFit: 'cover' }} /> : kind === 'voice' ? <span style={{ fontSize: 13 }}>🎙️</span> : <span style={{ fontSize: 13 }}>👤</span>}
+          {item.preview && kind === 'element' ? <img src={item.preview} alt="" style={{ width: 26, height: 26, borderRadius: 4, objectFit: 'cover' }} /> : kind === 'voice' ? <Mic size={13} /> : <UserRound size={13} />}
           <span style={{ flex: 1, fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name || item.id}</span>
           <button className="nodrag" onClick={() => remove(item.id)} disabled={busy} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, border: '1px solid #ef4444', background: 'rgba(239,68,68,.12)', color: '#fca5a5', cursor: 'pointer' }}>删除</button>
         </div>
       ))}
     </div>
-    {status && <div style={{ fontSize: 9, marginTop: 4, color: (/^已|^共|^✓/.test(status) ? '#86efac' : '#fbbf24') }}>{status}</div>}
+    {status && <div style={{ fontSize: 9, marginTop: 4, color: (/^已|^共|^✓/.test(status) ? 'var(--theme-success)' : 'var(--theme-warning)') }}>{status}</div>}
   </NodeShell>;
 });
 
 /* === PaidGeneration === */
 export const PaidGenerationNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
+  const [styleModal, setStyleModal] = useState(false);
+  const [styleName, setStyleName] = useState('');
+  const [styleWords, setStyleWords] = useState('');
   const settings = useSettingsStore();
   const update = useCanvasStore(s => s.setNodeConfig);
   const cfg = d.config || {};
@@ -672,8 +775,10 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
   const providerSettings = settings.paidApiProviders?.[configuredProvider];
   const modelOptions = getPaidModelsForAdapter(configuredProvider, capability);
   const isVideo = capabilityInfo?.output === 'video';
+  const isAudio = capabilityInfo?.output === 'audio';
+  const is3d = capabilityInfo?.output === '3d';
   const needsImage = Boolean(capabilityInfo && ['image', 'first-last', 'image-video'].includes(capabilityInfo.input));
-  const output = isVideo ? 'video' : 'image';
+  const output = isAudio ? 'audio' : is3d ? '3d' : isVideo ? 'video' : 'image';
   const inputPorts = capabilityInfo?.input === 'first-last'
     ? [{id:'firstImage',label:'首帧图片',type:'image'},{id:'lastImage',label:'尾帧图片',type:'image'}]
     : capabilityInfo?.input === 'video'
@@ -699,19 +804,49 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
   if (capability === 'element-manage' || capability === 'voice-manage') {
     return <KlingManagePanel {...p} />;
   }
-  return <NodeShell {...p} icon={isVideo ? '🎬' : '🎨'} color={isVideo ? '#ec4899' : '#a855f7'} inputs={[...inputPorts,...(isVideo && !inputPorts.some(port => port.id === 'audio') ? [{id:'audio',label:'音频输入',type:'audio'}] : []),{id:'prompt',label:'提示词',type:'text'}]} outputs={[{id:output,label:isVideo?'视频':'图片',type:output}]} resizable>
+  return <><NodeShell {...p} icon={isAudio ? <Music size={15}/> : isVideo ? <Video size={15}/> : <WandSparkles size={15}/>} color={isAudio ? '#fb923c' : isVideo ? '#ec4899' : '#a855f7'} inputs={[...inputPorts,...(isVideo && !inputPorts.some(port => port.id === 'audio') ? [{id:'audio',label:'音频输入',type:'audio'}] : []),{id:'prompt',label:isAudio?'台词文本':'提示词',type:'text'}]} outputs={[{id:output,label:isAudio?'音频':isVideo?'视频':'图片',type:output}]} resizable>
     <div className="nodrag" style={{display:'flex',gap:6,alignItems:'center',marginBottom:6,fontSize:10,color:'#c4b5fd'}}><b style={{flex:1}}>付费 API · {capabilityInfo?.label || '节点'}</b><span>{capabilityInfo?.description}</span></div>
     <div className="paid-node-provider-row nodrag"><select value={configuredProvider} onChange={e=>update(p.id,{provider:e.target.value,model:''})}>{providerOptions.map(id=><option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select><select value={selectedModel} onChange={e=>update(p.id,{model:e.target.value})}>{modelOptions.map(model=><option key={model.id} value={model.id}>{model.label}</option>)}</select></div>
-    {!providerSettings?.apiKey ? <div style={{fontSize:10,color:'#fbbf24',lineHeight:1.5}}>请到“设置 → 付费 API 厂商配置”填写 {provider?.label || '当前厂商'} 的 API Key。</div> : null}
-      <textarea className="nodrag" value={String(cfg.prompt || '')} onChange={e=>update(p.id,{prompt:e.target.value})} placeholder={capabilityInfo?.input === 'image' ? '可选：输入编辑指令' : '输入提示词，或连接文本节点'} style={{width:'100%',minHeight:55,resize:'none',background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,padding:5,fontSize:10}} />
-      <input className="nodrag" value={String(cfg.negativePrompt || '')} onChange={e=>update(p.id,{negativePrompt:e.target.value})} placeholder="负面提示词（可选）" style={{width:'100%',marginTop:4,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}} />
-      {needsImage && <div style={{fontSize:9,color:d.inputValues?.image?'#86efac':'#fbbf24',marginTop:4}}>{d.inputValues?.image ? '✓ 已接收图片输入' : '等待图片输入连接'}</div>}
-      <div style={{display:'flex',gap:4,marginTop:5}}><select className="nodrag" value={ratio} onChange={e=>setRatio(e.target.value)} style={{flex:1,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{ratioOptions.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}{!isBailian && <option value="custom">自定义</option>}</select>{isBailian && !isVideo && <select className="nodrag" value={resolution} onChange={e=>{ const value=Number(e.target.value); const size=getBailianImageSize(value,ratio).split('*').map(Number); update(p.id,{resolution:value,width:size[0],height:size[1]}); }} style={{width:92,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{BAILIAN_RESOLUTION_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.value}px</option>)}</select>}{ratio==='custom'&&<><input className="nodrag" type="number" value={Number(cfg.width)||1024} onChange={e=>update(p.id,{width:Number(e.target.value)})} style={{width:58,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,fontSize:10}}/><input className="nodrag" type="number" value={Number(cfg.height)||1024} onChange={e=>update(p.id,{height:Number(e.target.value)})} style={{width:58,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:5,fontSize:10}}/></>}</div>
-      <div style={{fontSize:9,color:'#94a3b8',marginTop:3}}>{isBailian && isVideo ? `输出规格：${resolution}P · ${ratio}（官方 resolution / ratio）` : `输出分辨率：${Number(cfg.width)||1024} × ${Number(cfg.height)||1024}`}</div>
-      <div style={{display:'flex',gap:5,marginTop:5,fontSize:10,color:'#cbd5e1',alignItems:'center'}}><label>种子 <input className="nodrag" type="number" min="-1" value={Number.isFinite(Number(cfg.seed)) ? Number(cfg.seed) : -1} onChange={e=>update(p.id,{seed:Number(e.target.value)})} style={{width:58,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:4}} /></label>{isVideo && <label>时长 <input className="nodrag" type="number" min="1" max="60" value={Number(cfg.duration)||5} onChange={e=>update(p.id,{duration:Number(e.target.value)})} style={{width:42,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:4}} /> 秒</label>}{isVideo && isBailian && <label>分辨率 <select className="nodrag" value={resolution} onChange={e=>update(p.id,{resolution:Number(e.target.value)})} style={{width:68,background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:4,fontSize:10}}>{videoResolutionOptions.map(value=><option key={value} value={value}>{value}P</option>)}</select></label>}</div>
-      {isVideo && <div style={{marginTop:5,fontSize:10,color:'#cbd5e1'}}>帧率 <input className="nodrag" type="number" min="1" max="120" value={Number(cfg.frameRate)||24} onChange={e=>update(p.id,{frameRate:Number(e.target.value)})} style={{width:48,margin:'0 4px',background:'#0b1020',color:'#dbeafe',border:'1px solid #4b3c72',borderRadius:4}} /> fps</div>}
-  </NodeShell>;
+    {!providerSettings?.apiKey ? <div style={{fontSize:10,color:'var(--theme-warning)',lineHeight:1.5}}>请到“设置 → 付费 API 厂商配置”填写 {provider?.label || '当前厂商'} 的 API Key。</div> : null}
+      <textarea className="nodrag" value={String(cfg.prompt || '')} onChange={e=>update(p.id,{prompt:e.target.value})} placeholder={capabilityInfo?.input === 'image' ? '可选：输入编辑指令' : '输入提示词，或连接文本节点'} style={{width:'100%',minHeight:55,resize:'none',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:5,fontSize:10}} />
+      {!isAudio && !is3d && <div style={{display:'flex',gap:4,marginTop:4,alignItems:'center'}}><select className="nodrag" value={String(cfg.style || 'none')} onChange={e=>update(p.id,{style:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{getAllStyles().map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><span style={{fontSize:9,color:'var(--theme-muted)'}}>风格</span>{String(cfg.style || '').startsWith('custom-') && <button className="nodrag" onClick={()=>{ if (window.confirm('删除该自定义风格？')) { deleteCustomStyle(String(cfg.style)); update(p.id,{style:'none'}); } }} style={{border:'1px solid #4b3c72',background:'transparent',color:'var(--theme-error)',borderRadius:4,fontSize:9,padding:'2px 5px',cursor:'pointer'}}>删</button>}<button className="nodrag" onClick={()=>setStyleModal(true)} style={{border:'1px solid #4b3c72',background:'transparent',color:'var(--theme-accent)',borderRadius:4,fontSize:10,padding:'2px 6px',cursor:'pointer'}}>＋保存</button></div>}
+      {!isAudio && !is3d && <input className="nodrag" value={String(cfg.negativePrompt || '')} onChange={e=>update(p.id,{negativePrompt:e.target.value})} placeholder="负面提示词（可选）" style={{width:'100%',marginTop:4,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}} />}
+      {isAudio && configuredProvider === 'minimax' && <div style={{display:'flex',gap:4,marginTop:5,alignItems:'center'}}><select className="nodrag" value={String(cfg.voice_id || 'female-tianmei')} onChange={e=>update(p.id,{voice_id:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{TTS_VOICE_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select><span style={{fontSize:9,color:'var(--theme-muted)'}}>音色</span></div>}
+      {isAudio && configuredProvider !== 'minimax' && <div style={{fontSize:9,color:'var(--theme-muted)',marginTop:4}}>当前厂商音色请在「模型」下拉中选择（模型即音色）。</div>}
+      {is3d && <div style={{fontSize:9,color:'var(--theme-success)',marginTop:4,lineHeight:1.5}}>3D 生成约需 2–5 分钟（文生3D 含网格+贴图两阶段），结果自动保存本地。</div>}
+      {needsImage && <div style={{fontSize:9,color:d.inputValues?.image?'var(--theme-success)':'var(--theme-warning)',marginTop:4}}>{d.inputValues?.image ? '✓ 已接收图片输入' : '等待图片输入连接'}</div>}
+      {!isAudio && !is3d && <div style={{display:'flex',gap:4,marginTop:5}}><select className="nodrag" value={ratio} onChange={e=>setRatio(e.target.value)} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{ratioOptions.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}{!isBailian && <option value="custom">自定义</option>}</select>{isBailian && !isVideo && <select className="nodrag" value={resolution} onChange={e=>{ const value=Number(e.target.value); const size=getBailianImageSize(value,ratio).split('*').map(Number); update(p.id,{resolution:value,width:size[0],height:size[1]}); }} style={{width:92,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{BAILIAN_RESOLUTION_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.value}px</option>)}</select>}{ratio==='custom'&&<><input className="nodrag" type="number" value={Number(cfg.width)||1024} onChange={e=>update(p.id,{width:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,fontSize:10}}/><input className="nodrag" type="number" value={Number(cfg.height)||1024} onChange={e=>update(p.id,{height:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,fontSize:10}}/></>}</div>}
+      {!isAudio && !is3d && <div style={{fontSize:9,color:'var(--theme-muted)',marginTop:3}}>{isBailian && isVideo ? `输出规格：${resolution}P · ${ratio}（官方 resolution / ratio）` : `输出分辨率：${Number(cfg.width)||1024} × ${Number(cfg.height)||1024}`}</div>}
+      {!isAudio && !is3d && <div style={{display:'flex',gap:5,marginTop:5,fontSize:10,color:'#cbd5e1',alignItems:'center'}}><label>种子 <input className="nodrag" type="number" min="-1" value={Number.isFinite(Number(cfg.seed)) ? Number(cfg.seed) : -1} onChange={e=>update(p.id,{seed:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:4}} /></label><label>变体 <input className="nodrag" type="number" min="1" max="8" value={Number(cfg.variants)||1} onChange={e=>update(p.id,{variants:Math.max(1,Math.min(8,Number(e.target.value)))})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:4}} title="一次生成 N 个变体（提示词中可用 {a|b|c}）" /></label>{isVideo && <label>时长 <input className="nodrag" type="number" min="1" max="60" value={Number(cfg.duration)||5} onChange={e=>update(p.id,{duration:Number(e.target.value)})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:4}} /> 秒</label>}{isVideo && isBailian && <label>分辨率 <select className="nodrag" value={resolution} onChange={e=>update(p.id,{resolution:Number(e.target.value)})} style={{width:68,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:4,fontSize:10}}>{videoResolutionOptions.map(value=><option key={value} value={value}>{value}P</option>)}</select></label>}</div>}
+      {isVideo && <div style={{marginTop:5,fontSize:10,color:'#cbd5e1'}}>帧率 <input className="nodrag" type="number" min="1" max="120" value={Number(cfg.frameRate)||24} onChange={e=>update(p.id,{frameRate:Number(e.target.value)})} style={{width:48,margin:'0 4px',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:4}} /> fps</div>}
+  </NodeShell>
+      {styleModal && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setStyleModal(false)}>
+          <div style={{ width: 380, maxWidth: '92vw', background: 'var(--theme-panel)', border: '1px solid var(--theme-border)', borderRadius: 12, padding: 16 }} onClick={e => e.stopPropagation()}>
+            <b style={{ fontSize: 13, color: 'var(--theme-text)' }}>保存自定义风格</b>
+            <input value={styleName} onChange={e => setStyleName(e.target.value)} placeholder="风格名称（如：我的暖色风）" style={{ width: '100%', marginTop: 10, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid #3b4258', borderRadius: 6, padding: 6, fontSize: 12 }} />
+            <textarea value={styleWords} onChange={e => setStyleWords(e.target.value)} placeholder="英文风格词（生成时附加到提示词，如 warm golden hour, soft bokeh）" rows={3} style={{ width: '100%', marginTop: 8, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid #3b4258', borderRadius: 6, padding: 6, fontSize: 11, resize: 'vertical' }} />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={() => setStyleModal(false)} style={{ border: '1px solid #3b4258', background: 'transparent', color: 'var(--theme-muted)', borderRadius: 6, padding: '5px 14px', fontSize: 11, cursor: 'pointer' }}>取消</button>
+              <button onClick={() => { if (!styleName.trim() || !styleWords.trim()) { message.warning('请填写名称和风格词'); return; } const id = saveCustomStyle(styleName.trim(), styleWords.trim()); update(p.id, { style: id }); setStyleName(''); setStyleWords(''); setStyleModal(false); message.success('已保存自定义风格'); }} style={{ border: 'none', background: 'linear-gradient(90deg,#818cf8,#c084fc)', color: '#fff', borderRadius: 6, padding: '5px 14px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>;
 });
+
+const TTS_VOICE_OPTIONS = [
+  { value: 'female-tianmei', label: '甜美女声' },
+  { value: 'female-shaonv', label: '少女声' },
+  { value: 'female-yujie', label: '御姐声' },
+  { value: 'female-chengshu', label: '成熟女声' },
+  { value: 'male-qn-qingse', label: '青涩男声' },
+  { value: 'male-qn-jingying', label: '精英男声' },
+  { value: 'male-qn-daxuesheng', label: '青年男声' },
+  { value: 'Chinese (Mandarin)_News_Anchor', label: '新闻女声' },
+  { value: 'Chinese (Mandarin)_Radio_Host', label: '电台男主播' },
+];
 
 /* === ImageCrop === */
 export const ImageCropNode = memo((p: NodeProps) => {
@@ -743,16 +878,22 @@ export const ImageCropNode = memo((p: NodeProps) => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
     if (!canvas || !img) return;
-    canvas.width = crop.w;
-    canvas.height = crop.h;
+    // 输出限制 2048px：裁切结果用于生成/展示足够，避免超大 canvas + PNG 编码撑爆内存
+    const outScale = Math.min(1, 2048 / Math.max(crop.w, crop.h));
+    const outW = Math.max(1, Math.round(crop.w * outScale));
+    const outH = Math.max(1, Math.round(crop.h * outScale));
+    canvas.width = outW;
+    canvas.height = outH;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, crop.w, crop.h);
-    const url = canvas.toDataURL('image/png');
+    ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, outW, outH);
+    const url = canvas.toDataURL('image/jpeg', 0.92);
     setOutputUrl(url);
     update(p.id, { x: crop.x, y: crop.y, width: crop.w, height: crop.h, aspectRatio: aspect, outputUrl: url });
     useCanvasStore.getState().propagateData(p.id, 'image', url);
-    useCanvasStore.getState().updateNodeData(p.id, { resultUrl: url, outputValues: { image: url }, status: 'success', content: '裁切完成' });
+    useCanvasStore.getState().updateNodeData(p.id, { resultUrl: url, outputValues: { image: url }, status: 'success', content: '裁切完成', results: [{ type: 'image', url }] });
+    addGenerationHistory({ id: 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), nodeId: p.id, nodeName: String(p.data.label || '裁切'), nodeType: 'imageCrop', params: { w: outW, h: outH }, resultUrl: url, status: 'success', timestamp: Date.now(), results: [{ type: 'image', url }] });
+    autoSaveToAssets(url, [{ type: 'image', url }], String(p.data.label || '裁切'));
   };
   const setAspectRatio = (value: string) => {
     setAspect(value);
@@ -771,7 +912,23 @@ export const ImageCropNode = memo((p: NodeProps) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) { useCanvasStore.getState().updateNodeData(p.id, { status: 'error', error: '请选择图片文件' }); return; }
     const reader = new FileReader();
-    reader.onload = () => update(p.id, { sourceImage: String(reader.result), sourceName: file.name });
+    reader.onload = () => {
+      const raw = String(reader.result);
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 2560;  // 超过 2560px 降采样（屏幕显示/生成输入足够，防多图内存崩溃）
+        const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
+        if (scale >= 1) { update(p.id, { sourceImage: raw, sourceName: file.name }); return; }
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { update(p.id, { sourceImage: raw, sourceName: file.name }); return; }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        update(p.id, { sourceImage: canvas.toDataURL('image/jpeg', 0.92), sourceName: file.name });
+      };
+      img.src = raw;
+    };
     reader.readAsDataURL(file);
     event.target.value = '';
   };
@@ -802,36 +959,35 @@ export const ImageCropNode = memo((p: NodeProps) => {
     if (aspect === 'free') setAspect('free');
   };
   const endVisualCrop = () => { setDragStart(null); setMoveStart(null); };
-  return <NodeShell {...p} icon="✂" color="#f97316" inputs={[{ id: 'image', label: '输入图片', type: 'image' }]} outputs={[{ id: 'image', label: '裁切后图片', type: 'image' }]} resizable>
-    <div className="nodrag" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#fbbf24', marginBottom: 4 }}><span style={{ flex: 1 }}>修图裁切</span><button onClick={chooseImage} style={{ border: '1px solid rgba(249,115,22,.55)', background: 'rgba(249,115,22,.14)', color: '#fbbf24', borderRadius: 4, fontSize: 9, padding: '2px 6px', cursor: 'pointer' }}>选择图片</button><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onChooseImage} /></div>
+  return <NodeShell {...p} color="#f97316" inputs={[{ id: 'image', label: '输入图片', type: 'image' }]} outputs={[{ id: 'image', label: '裁切后图片', type: 'image' }]} resizable>
+    <div className="nodrag" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--theme-warning)', marginBottom: 4 }}><span style={{ flex: 1 }}>修图裁切</span><button onClick={chooseImage} style={{ border: '1px solid rgba(249,115,22,.55)', background: 'rgba(249,115,22,.14)', color: 'var(--theme-warning)', borderRadius: 4, fontSize: 9, padding: '2px 6px', cursor: 'pointer' }}>选择图片</button><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onChooseImage} /></div>
     {inputImage ? <>
-      <img ref={imgRef} src={inputImage} alt="原图" style={{ display: 'none' }} onLoad={() => { const img = imgRef.current; if (img) { setImgSize({ w: img.naturalWidth, h: img.naturalHeight }); } }} />
-      <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 4 }}>原图: {imgSize.w}×{imgSize.h} | 裁切: {crop.w}×{crop.h} ({aspect})</div>
-      <div ref={cropPreviewRef} className="image-crop-preview nodrag" onPointerDown={startVisualCrop} onPointerMove={moveVisualCrop} onPointerUp={endVisualCrop} onPointerCancel={endVisualCrop} style={{position:'relative',width:'100%',maxHeight:260,overflow:'hidden',borderRadius:6,border:'1px solid rgba(249,115,22,.35)',cursor:'crosshair',marginBottom:5}}><img src={inputImage} alt="裁切选择" draggable={false} style={{display:'block',width:'100%',maxHeight:260,objectFit:'contain',pointerEvents:'none'}}/>{imgSize.w>0&&<div style={{position:'absolute',left:`${crop.x/imgSize.w*100}%`,top:`${crop.y/imgSize.h*100}%`,width:`${crop.w/imgSize.w*100}%`,height:`${crop.h/imgSize.h*100}%`,border:'2px solid #fbbf24',background:'rgba(251,191,36,.12)',boxShadow:'0 0 0 999px rgba(0,0,0,.4)',pointerEvents:'none'}}/>}</div>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>{ASPECTS.map(a => <button key={a.value} className="nodrag" onClick={() => setAspectRatio(a.value)} style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, border: aspect === a.value ? '1px solid #f97316' : '1px solid rgba(249,115,22,.3)', background: aspect === a.value ? 'rgba(249,115,22,.2)' : 'transparent', color: '#fbbf24', cursor: 'pointer' }}>{a.label}</button>)}</div>
+      <img ref={imgRef} src={inputImage} alt="原图" style={{ display: 'none' }} onLoad={() => { const img = imgRef.current; if (img) { setImgSize({ w: img.naturalWidth, h: img.naturalHeight }); setCrop(c => (c.w === 512 && c.h === 512 ? { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight } : c)); setAspect(a => a === 'original' ? 'original' : a); } }} />
+      <div style={{ fontSize: 9, color: 'var(--theme-muted)', marginBottom: 4 }}>原图: {imgSize.w}×{imgSize.h} | 裁切: {crop.w}×{crop.h} ({aspect})</div>
+      <div ref={cropPreviewRef} className="image-crop-preview nodrag" onPointerDown={startVisualCrop} onPointerMove={moveVisualCrop} onPointerUp={endVisualCrop} onPointerCancel={endVisualCrop} style={{position:'relative',width:'fit-content',maxWidth:'100%',margin:'0 auto',overflow:'hidden',borderRadius:6,border:'1px solid rgba(249,115,22,.35)',cursor:'crosshair',marginBottom:5}}><img loading="lazy" src={inputImage} alt="裁切选择" draggable={false} style={{display:'block',maxWidth:'100%',maxHeight:260,width:'auto',height:'auto',objectFit:'contain',pointerEvents:'none'}}/>{imgSize.w>0&&<div style={{position:'absolute',left:`${crop.x/imgSize.w*100}%`,top:`${crop.y/imgSize.h*100}%`,width:`${crop.w/imgSize.w*100}%`,height:`${crop.h/imgSize.h*100}%`,border:'2px solid #fbbf24',background:'rgba(251,191,36,.12)',boxShadow:'0 0 0 999px rgba(0,0,0,.4)',pointerEvents:'none'}}/>}</div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>{ASPECTS.map(a => <button key={a.value} className="nodrag" onClick={() => setAspectRatio(a.value)} style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, border: aspect === a.value ? '1px solid #f97316' : '1px solid rgba(249,115,22,.3)', background: aspect === a.value ? 'rgba(249,115,22,.2)' : 'transparent', color: 'var(--theme-warning)', cursor: 'pointer' }}>{a.label}</button>)}</div>
       <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-        <label style={{ fontSize: 9, color: '#94a3b8' }}>X: <input type="number" className="nodrag" value={crop.x} onChange={e => setCrop(c => ({ ...c, x: Math.max(0, Math.min(imgSize.w - crop.w, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
-        <label style={{ fontSize: 9, color: '#94a3b8' }}>Y: <input type="number" className="nodrag" value={crop.y} onChange={e => setCrop(c => ({ ...c, y: Math.max(0, Math.min(imgSize.h - crop.h, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
-        <label style={{ fontSize: 9, color: '#94a3b8' }}>W: <input type="number" className="nodrag" value={crop.w} onChange={e => setCrop(c => ({ ...c, w: Math.max(1, Math.min(imgSize.w - crop.x, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
-        <label style={{ fontSize: 9, color: '#94a3b8' }}>H: <input type="number" className="nodrag" value={crop.h} onChange={e => setCrop(c => ({ ...c, h: Math.max(1, Math.min(imgSize.h - crop.y, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
+        <label style={{ fontSize: 9, color: 'var(--theme-muted)' }}>X: <input type="number" className="nodrag" value={crop.x} onChange={e => setCrop(c => ({ ...c, x: Math.max(0, Math.min(imgSize.w - crop.w, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
+        <label style={{ fontSize: 9, color: 'var(--theme-muted)' }}>Y: <input type="number" className="nodrag" value={crop.y} onChange={e => setCrop(c => ({ ...c, y: Math.max(0, Math.min(imgSize.h - crop.h, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
+        <label style={{ fontSize: 9, color: 'var(--theme-muted)' }}>W: <input type="number" className="nodrag" value={crop.w} onChange={e => setCrop(c => ({ ...c, w: Math.max(1, Math.min(imgSize.w - crop.x, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
+        <label style={{ fontSize: 9, color: 'var(--theme-muted)' }}>H: <input type="number" className="nodrag" value={crop.h} onChange={e => setCrop(c => ({ ...c, h: Math.max(1, Math.min(imgSize.h - crop.y, Number(e.target.value))) }))} style={{ width: 50, fontSize: 9, padding: '1px 3px', borderRadius: 3, border: '1px solid rgba(249,115,22,.3)', background: '#0a1628', color: '#e0f2fe' }} /></label>
       </div>
-      <button className="nodrag" onClick={handleCrop} style={{ fontSize: 9, padding: '3px 12px', borderRadius: 4, border: '1px solid #f97316', background: 'rgba(249,115,22,.2)', color: '#fbbf24', cursor: 'pointer', marginBottom: 4 }}>执行裁切</button>
-      {outputUrl && <img src={outputUrl} alt="裁切结果" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 4, border: '1px solid rgba(249,115,22,.3)' }} />}
-    </> : <div style={{ fontSize: 9, color: '#64748b', padding: 8, textAlign: 'center' }}>点击“选择图片”导入，或从左侧资产/画布连接图片到输入端口</div>}
+      <button className="nodrag" onClick={handleCrop} style={{ fontSize: 9, padding: '3px 12px', borderRadius: 4, border: '1px solid #f97316', background: 'rgba(249,115,22,.2)', color: 'var(--theme-warning)', cursor: 'pointer', marginBottom: 4 }}>执行裁切</button>
+      {outputUrl && <img loading="lazy" src={outputUrl} alt="裁切结果" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 4, border: '1px solid rgba(249,115,22,.3)', display: 'block', flexShrink: 0, objectFit: 'contain', alignSelf: 'flex-start' }} />}
+    </> : <div style={{ fontSize: 9, color: 'var(--theme-muted)', padding: 8, textAlign: 'center' }}>点击“选择图片”导入，或从左侧资产/画布连接图片到输入端口</div>}
     <canvas ref={canvasRef} style={{ display: 'none' }} />
   </NodeShell>;
 });
 
-/* === ImageGeneration === */
 export const ImageGenerationNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
   const w=(d.config?.width as number)||768, h=(d.config?.height as number)||1136;
   const sc=useCanvasStore(u=>u.setNodeConfig); const id=p.id;
-  return <NodeShell {...p} icon="🎨" color="#a855f7" inputs={[{id:'text',label:'提示词',type:'text'}]} outputs={[{id:'image',label:'图片',type:'image'}]}>
+  return <NodeShell {...p} color="#a855f7" inputs={[{id:'text',label:'提示词',type:'text'}]} outputs={[{id:'image',label:'图片',type:'image'}]}>
     <div style={{display:'flex',justifyContent:'flex-end'}}><PromptActions nodeId={p.id} value={(d.config?.text as string)||''} kind="image" fieldKey="text" onChange={v=>sc(id,{text:v})}/></div>
     <input placeholder="提示词..." value={(d.config?.text as string)||''}
       onChange={e=>sc(id,{text:e.target.value})}
-      style={{width:'100%',border:'1px solid #2a2a3e',borderRadius:6,padding:6,fontSize:12,outline:'none',marginBottom:6,background:'#0f0f1e',color:'#c0c0d0'}} />
+      style={{width:'100%',border:'1px solid #2a2a3e',borderRadius:6,padding:6,fontSize:12,outline:'none',marginBottom:6,background:'var(--theme-input)',color:'var(--theme-text-2)'}} />
     <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:6}}>
       {DIMS.map(dm=><span key={dm.l} onClick={()=>sc(id,{width:dm.w,height:dm.h})}
         style={{fontSize:10,padding:'2px 6px',borderRadius:4,cursor:'pointer',transition:'all 0.15s',background:w===dm.w&&h===dm.h?'#a855f7':'#1e1e30',color:w===dm.w&&h===dm.h?'#fff':'#777'}}>{dm.l}</span>)}
@@ -843,7 +999,7 @@ export const ImageGenerationNode = memo((p: NodeProps) => {
 /* === ImageToImage === */
 export const ImageToImageNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
-  return <NodeShell {...p} icon="🔄" color="#06b6d4" inputs={[{id:'image',label:'参考图',type:'image'},{id:'prompt',label:'提示词',type:'text'}]} outputs={[{id:'image',label:'图片',type:'image'}]}>
+  return <NodeShell {...p} color="#06b6d4" inputs={[{id:'image',label:'参考图',type:'image'},{id:'prompt',label:'提示词',type:'text'}]} outputs={[{id:'image',label:'图片',type:'image'}]}>
     <div style={{display:'flex',justifyContent:'flex-end'}}><PromptActions nodeId={p.id} value={(d.config?.prompt as string)||''} kind="image-edit" fieldKey="prompt" imageContext={d.inputValues?.image?[`参考图/输入图：${String(d.inputValues.image)}`]:[]} onChange={v=>useCanvasStore.getState().setNodeConfig(p.id,{prompt:v})}/></div><div style={{fontSize:12}}><div>参考图: {d.inputValues?.image?'✅ 已接收':'⏳ 等待上游'}</div>
     <div style={{fontSize:10,color:'#666',marginTop:3}}>强度: {(d.config?.strength as number)||0.7}</div></div>
   </NodeShell>;
@@ -852,7 +1008,7 @@ export const ImageToImageNode = memo((p: NodeProps) => {
 /* === VideoGeneration === */
 export const VideoGenerationNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
-  return <NodeShell {...p} icon="🎬" color="#ec4899" inputs={[{id:'image',label:'起始图',type:'image'},{id:'prompt',label:'提示词',type:'text'}]} outputs={[{id:'video',label:'视频',type:'video'}]}>
+  return <NodeShell {...p} color="#ec4899" inputs={[{id:'image',label:'起始图',type:'image'},{id:'prompt',label:'提示词',type:'text'}]} outputs={[{id:'video',label:'视频',type:'video'}]}>
     <div style={{display:'flex',justifyContent:'flex-end'}}><PromptActions nodeId={p.id} value={(d.config?.prompt as string)||''} kind="image-to-video" fieldKey="prompt" imageContext={d.inputValues?.image?[`首图/起始图：${String(d.inputValues.image)}`]:[]} onChange={v=>useCanvasStore.getState().setNodeConfig(p.id,{prompt:v})}/></div><div style={{fontSize:12}}><div>{((d.config?.prompt as string)||'').slice(0,40)||'点击配置提示词'}</div>
     <div style={{fontSize:10,color:'#666',marginTop:3}}>时长: {String(d.config?.duration||5)}s</div></div>
   </NodeShell>;
@@ -861,7 +1017,8 @@ export const VideoGenerationNode = memo((p: NodeProps) => {
 /* === Preview === */
 export const PreviewNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
-  const [selected,setSelected]=useState(0);
+  const [selected, setSelected] = useState(0);
+  const [grid, setGrid] = useState(false);
   const updateStyle=useCanvasStore(u=>u.updateNodeStyle);
   const mediaRef=useRef<HTMLImageElement|HTMLVideoElement|null>(null);
   const raw=(d.inputValues?.results||d.results||[]) as Array<{type:string;url:string;filename?:string}>;
@@ -894,22 +1051,37 @@ export const PreviewNode = memo((p: NodeProps) => {
     const store=useCanvasStore.getState();
     const outputValues:Record<string,unknown>={results,url:current.url,filename:current.filename,[current.type]:current.url};
     results.forEach((item,i)=>{outputValues[`result-${i}`]=item.url;});
-    for(const type of ['image','video','audio','text'] as const){const urls=results.filter(item=>item.type===type).map(item=>item.url);if(urls.length)outputValues[`${type}s`]=urls;}
+    for(const type of ['image','video','audio','text','3d'] as const){const urls=results.filter(item=>item.type===type).map(item=>item.url);if(urls.length)outputValues[`${type}s`]=urls;}
     store.updateNodeData(p.id,{outputValues,results:results as CanvasNodeData['results'],resultUrl:current.url});
     Object.entries(outputValues).forEach(([key,value])=>store.propagateData(p.id,key,value));
   },[p.id,index,resultSignature]);
   const download=useCallback(async(e:React.MouseEvent)=>{
     e.stopPropagation();if(!current)return;
+    const ext=current.type==='video'?'mp4':current.type==='audio'?'mp3':current.type==='3d'?'glb':'png';
+    if(current.url.startsWith('file://')){
+      try{const r=await (window as any).electronAPI?.loadMediaB64?.({url:current.url});if(r?.b64){const bytes=Uint8Array.from(atob(r.b64),c=>c.charCodeAt(0));const blob=new Blob([bytes],{type:'application/octet-stream'});const objectUrl=URL.createObjectURL(blob);const a=document.createElement('a');a.href=objectUrl;a.download=current.filename||`preview.${ext}`;a.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);return;}}catch{/* 回退 */}}
     try{const response=await fetch(current.url);if(!response.ok)throw new Error();const blob=await response.blob();const objectUrl=URL.createObjectURL(blob);
-      const a=document.createElement('a');a.href=objectUrl;a.download=current.filename||`preview.${current.type==='video'?'mp4':current.type==='audio'?'mp3':'png'}`;a.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+      const a=document.createElement('a');a.href=objectUrl;a.download=current.filename||`preview.${ext}`;a.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
     }catch{window.open(current.url,'_blank');}
   },[current?.url,current?.filename,current?.type]);
   const resultOutputs=results.map((item,i)=>({id:`result-${i}`,label:`结果 ${i+1}`,type:item.type}));
-  return <NodeShell {...p} icon="◎" color="#22c55e" hasInput={false} inputs={[{id:'media',label:'图片/视频/结果',type:'image'}]} outputs={resultOutputs} hasOutput={false} resizable>
+  return <NodeShell {...p} color="#22c55e" hasInput={false} inputs={[{id:'media',label:'图片/视频/结果',type:'image'}]} outputs={resultOutputs} hasOutput={false} resizable>
     <div className="preview-content">
-      {current&&<button className="preview-download nodrag" onClick={download}>↓ 下载</button>}
-      {!current?<div className="preview-empty">连接生成或素材节点以预览</div>:current.type==='video'?<video ref={element=>{mediaRef.current=element}} src={current.url} controls className="preview-main"/>:current.type==='audio'?<audio src={current.url} controls style={{width:'100%'}}/>:current.type==='text'?<div className="preview-text">{current.url}</div>:<img ref={element=>{mediaRef.current=element}} src={current.url} className="preview-main" alt={current.filename||''}/>} 
-      {results.length>0&&<div className="preview-thumbs">{results.map((item,i)=><div className="preview-thumb-port" key={`${item.url}-${i}`}><button className={`${i===index?'is-active ':''}nodrag`} onClick={e=>{e.stopPropagation();setSelected(i)}}>{item.type==='image'?<img src={item.url} alt=""/>:<span>{item.type==='video'?'▶':item.type==='audio'?'♪':'T'} {i+1}</span>}</button><span className="preview-thumb-label">结果 {i+1}</span><Handle id={`result-${i}`} type="source" position={Position.Right} title={`连接第 ${i+1} 个结果`} style={{background:portColor(item.type),right:-6,bottom:3,top:'auto',border:'2px solid #16162a',zIndex:10}}/></div>)}</div>}
+      {current && <button className="preview-download nodrag" onClick={download}>↓ 下载</button>}
+      {results.length > 1 && <button className="preview-mode nodrag" onClick={e => { e.stopPropagation(); setGrid(g => !g); }}>{grid ? '单图' : '网格对比'}</button>}
+      {!current && !grid ? <div className="preview-empty">连接生成或素材节点以预览</div>
+        : grid ? (
+          <div className="preview-grid">
+            {results.map((item, i) => item.type === 'image'
+              ? <img key={`${item.url}-${i}`} src={item.url} className="preview-grid__img" alt={item.filename || ''} onClick={e => { e.stopPropagation(); setSelected(i); setGrid(false); }} title={item.filename || `结果 ${i + 1}`} />
+              : <div key={`${item.url}-${i}`} className="preview-grid__item">{item.type === 'video' ? '▶ 视频' : item.type === 'audio' ? '♪ 音频' : item.type === '3d' ? '🧊 3D' : 'T 文本'} {i + 1}</div>)}
+          </div>
+        ) : current.type === 'video' ? <video ref={element => { mediaRef.current = element; }} src={current.url} controls className="preview-main" />
+          : current.type === 'audio' ? <audio src={current.url} controls style={{ width: '100%' }} />
+          : current.type === 'text' ? <div className="preview-text">{current.url}</div>
+          : current.type === '3d' ? <ModelViewer url={current.url} />
+          : <img ref={element => { mediaRef.current = element; }} src={current.url} className="preview-main" alt={current.filename || ''} />}
+      {results.length>0&&<div className="preview-thumbs">{results.map((item,i)=><div className="preview-thumb-port" key={`${item.url}-${i}`}><button className={`${i===index?'is-active ':''}nodrag`} onClick={e=>{e.stopPropagation();setSelected(i)}}>{item.type==='image'?<img loading="lazy" src={item.url} alt=""/>:<span>{item.type==='video'?'▶':item.type==='audio'?'♪':item.type==='3d'?'🧊':'T'} {i+1}</span>}</button><span className="preview-thumb-label">结果 {i+1}</span><Handle id={`result-${i}`} type="source" position={Position.Right} title={`连接第 ${i+1} 个结果`} style={{background:portColor(item.type),right:-6,bottom:3,top:'auto',border:'2px solid var(--theme-border)',zIndex:10}}/></div>)}</div>}
     </div>
   </NodeShell>;
 });
@@ -936,11 +1108,11 @@ export const GenericNode = memo((p: NodeProps) => {
   const isApiNode = d.nodeType === 'apiNode';
   const apiLabel = (d.config?._apiLabel as string) || d.label;
 
-  if (!meta && !isApiNode) return <NodeShell {...p} icon="?" color="#666" hasInput={false} hasOutput={false}><div style={{color:'#888',fontSize:12}}>Unknown: {d.nodeType}</div></NodeShell>;
+  if (!meta && !isApiNode) return <NodeShell {...p} color="#666" hasInput={false} hasOutput={false}><div style={{color:'#888',fontSize:12}}>Unknown: {d.nodeType}</div></NodeShell>;
 
-  const cfg = d.config as Record<string, unknown>;
+  const cfg = (d.config || {}) as Record<string, unknown>;
   const shot = (cfg.shot && typeof cfg.shot === 'object' ? cfg.shot : {}) as Record<string, unknown>;
-  const icon = isApiNode ? (d.color || '🔌') : meta?.icon || '?';
+  const icon = isApiNode ? <Plug size={15}/> : <NodeIcon type={d.nodeType} size={15}/>;
   const color = isApiNode ? (d.color || '#6366f1') : meta?.color || '#666';
   const apiFields=(cfg._apiFields as Array<{key:string;label:string;field:string;fileType?:string;type:string}>)||[];
   const apiPorts=apiFields.filter(field=>field.fileType||['string','text','textarea'].includes(String(field.type).toLowerCase()))
@@ -952,7 +1124,7 @@ export const GenericNode = memo((p: NodeProps) => {
 
   const renderParam = (ip: any) => {
     const val = cfg[ip.name] ?? ip.default ?? '';
-    const s: React.CSSProperties = { width:'100%', border:'1px solid #2a2a3e', borderRadius:6, padding:4, fontSize:11, outline:'none', marginBottom:3, background:'#0f0f1e', color:'#c0c0d0' };
+    const s: React.CSSProperties = { width:'100%', border:'1px solid #2a2a3e', borderRadius:6, padding:4, fontSize:11, outline:'none', marginBottom:3, background:'var(--theme-input)', color:'var(--theme-text-2)' };
     if (ip.type === 'text') return <div><div style={{display:'flex',justifyContent:'flex-end'}}><PromptActions nodeId={id} value={String(val)} kind={/video|wan|ltx|motion/i.test(d.nodeType)?'image-to-video':/audio/i.test(d.nodeType)?'audio':/image|qwen|zimage|krea|flux/i.test(d.nodeType)?'image':'generic'} fieldKey={ip.name} onChange={v=>sc(id,{[ip.name]:v})}/></div><input placeholder={ip.label} value={String(val)} onChange={e=>sc(id,{[ip.name]:e.target.value})} style={s}/></div>;
     if (ip.type === 'number') return <input type="number" value={Number(val)} onChange={e=>sc(id,{[ip.name]:Number(e.target.value)})} style={s}/>;
     if (ip.type === 'select' && ip.options) return <select value={String(val)} onChange={e=>sc(id,{[ip.name]:e.target.value})} style={{...s,appearance:'auto'}}>{ip.options.map((o:any)=><option key={o.value} value={o.value}>{o.label}</option>)}</select>;
@@ -972,9 +1144,9 @@ export const GenericNode = memo((p: NodeProps) => {
   return <NodeShell {...p} icon={icon} color={color} hasInput={false} hasOutput={false} inputs={inputPorts} outputs={outputPorts}>
     <div style={{fontSize:10,color:'#888',marginBottom:3,fontWeight:600}}>{isApiNode ? apiLabel : meta?.label}</div>
     {d.nodeType === 'cinematographyKnowledge' && <div className="nodrag" style={{maxHeight:155,overflow:'auto',marginBottom:4}}>
-      <input value={String(cfg.search||'')} onChange={e=>sc(id,{search:e.target.value})} placeholder="搜索影视效果术语" style={{width:'100%',background:'#0f0f1e',color:'#c0c0d0',border:'1px solid #2a2a3e',borderRadius:5,padding:4,fontSize:10,marginBottom:4}} />
-      <div style={{display:'flex',flexWrap:'wrap',gap:3}}>{visibleEffects.map(effect=><button key={effect.id} onClick={()=>toggleKnowledgeEffect(effect.id)} style={{fontSize:9,padding:'2px 5px',borderRadius:4,border:'1px solid #3b3855',background:knowledgeSelected.includes(effect.id)?'#6651a8':'#202035',color:'#ddd',cursor:'pointer'}} title={`${effect.definition} ${effect.usage}`}>{effect.term}</button>)}</div>
-      {Array.isArray(cfg._knowledgePreview)&&cfg._knowledgePreview.length>0&&<div style={{fontSize:9,color:'#f59e0b',marginTop:4}}>⚠ {cfg._knowledgePreview.join(' ')}</div>}
+      <input value={String(cfg.search||'')} onChange={e=>sc(id,{search:e.target.value})} placeholder="搜索影视效果术语" style={{width:'100%',background:'var(--theme-input)',color:'var(--theme-text-2)',border:'1px solid #2a2a3e',borderRadius:5,padding:4,fontSize:10,marginBottom:4}} />
+      <div style={{display:'flex',flexWrap:'wrap',gap:3}}>{visibleEffects.map(effect=><button key={effect.id} onClick={()=>toggleKnowledgeEffect(effect.id)} style={{fontSize:9,padding:'2px 5px',borderRadius:4,border:'1px solid #3b3855',background:knowledgeSelected.includes(effect.id)?'#6651a8':'#202035',color:'var(--theme-text-2)',cursor:'pointer'}} title={`${effect.definition} ${effect.usage}`}>{effect.term}</button>)}</div>
+      {Array.isArray(cfg._knowledgePreview)&&cfg._knowledgePreview.length>0&&<div style={{fontSize:9,color:'var(--theme-warning)',marginTop:4}}>⚠ {cfg._knowledgePreview.join(' ')}</div>}
       <div style={{fontSize:9,color:'#777',marginTop:3}}>已选 {knowledgeSelected.length} 项，执行节点后输出结构化效果结果</div>
     </div>}
     {visInputs.map((ip: any) => <div key={ip.name}>{renderParam(ip)}</div>)}
@@ -1002,14 +1174,71 @@ export const CinematographyKnowledgeNode = memo((p: NodeProps) => {
   useEffect(()=>{const timer=window.setTimeout(()=>updateInternals(p.id),0);return()=>window.clearTimeout(timer)},[open,p.id,updateInternals]);
   const toggle=(id:string)=>setConfig(p.id,{selectedEffectIds:selected.includes(id)?selected.filter(x=>x!==id):[...selected,id]});
   const result=formatEffects(selected); const custom=String(cfg.customTerms||'').split(/[,，\n]/).map(x=>x.trim()).filter(Boolean);
-  return <NodeShell {...p} icon="🎥" color="#f59e0b" hasInput={false} resizable outputs={[{id:'promptText',label:'专业效果（可连接）',type:'text'}]}>
-    <div className="nodrag" style={{fontSize:10,color:'#fbbf24',marginBottom:5}}>影视专业效果知识库</div>
+  return <NodeShell {...p} color="#f59e0b" hasInput={false} resizable outputs={[{id:'promptText',label:'专业效果（可连接）',type:'text'}]}>
+    <div className="nodrag" style={{fontSize:10,color:'var(--theme-warning)',marginBottom:5}}>影视专业效果知识库</div>
     <div className="nodrag" style={{width:'100%'}}>{Object.entries(EFFECT_GROUPS).map(([category,terms])=><div key={category} style={{borderBottom:'1px solid #29263b'}}>
-      <button className="nodrag" onClick={()=>setOpen(v=>({...v,[category]:!v[category]}))} style={{width:'100%',textAlign:'left',background:'none',border:0,color:'#ddd',padding:'5px 2px',fontSize:10,cursor:'pointer'}}>{open[category]?'▾':'▸'} {category} <span style={{color:'#777'}}>({terms.length})</span></button>
+      <button className="nodrag" onClick={()=>setOpen(v=>({...v,[category]:!v[category]}))} style={{width:'100%',textAlign:'left',background:'none',border:0,color:'var(--theme-text-2)',padding:'5px 2px',fontSize:10,cursor:'pointer'}}>{open[category]?'▾':'▸'} {category} <span style={{color:'#777'}}>({terms.length})</span></button>
       {open[category]&&<div style={{display:'flex',flexWrap:'wrap',gap:3,padding:'0 2px 5px'}}>{terms.map(term=>{const item=CINEMATOGRAPHY_EFFECTS.find(e=>e.term===term&&e.category===category)!;return <button className="nodrag" key={item.id} onClick={()=>toggle(item.id)} title={`${item.definition}${item.usage}`} style={{border:'1px solid #3b3855',borderRadius:4,padding:'2px 5px',fontSize:9,color:selected.includes(item.id)?'#fff':'#aaa',background:selected.includes(item.id)?'#7958b5':'#202035'}}>{term}</button>})}</div>}
     </div>)}</div>
     <div style={{fontSize:9,color:'#a78bfa',marginTop:5}}>已选 {selected.length} 项{custom.length?`，自定义 ${custom.length} 项`:''}</div>
-    {result.constraints.length>0&&<div style={{fontSize:9,color:'#f59e0b',marginTop:3}}>⚠ {result.constraints.join(' ')}</div>}
+    {result.constraints.length>0&&<div style={{fontSize:9,color:'var(--theme-warning)',marginTop:3}}>⚠ {result.constraints.join(' ')}</div>}
+  </NodeShell>;
+});
+
+export const TimelineRenderNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const items = (Array.isArray(d.inputValues?.results) ? d.inputValues.results : Array.isArray(d.results) ? d.results : []) as Array<{ type?: string }>;
+  const videos = items.filter(r => r.type === 'video').length;
+  const audios = items.filter(r => r.type === 'audio').length;
+  return <NodeShell {...p} color="#22c55e" inputs={[{ id: 'results', label: '分镜结果', type: 'image' }]} outputs={[{ id: 'video', label: '成片视频', type: 'video' }]} resizable>
+    <div className="nodrag" style={{ fontSize: 10, color: 'var(--theme-success)', marginBottom: 6 }}><b>时间线合成</b> · {videos} 段视频{audios ? ` · ${audios} 段配音` : ''}</div>
+    <div className="nodrag" style={{ fontSize: 9, color: 'var(--theme-muted)', lineHeight: 1.6 }}>连接「分镜批量生成」的全部结果输出，执行后按镜头顺序合成为完整视频（自动配配音轨）。需 FFmpeg（设置 → 视频剪辑可检测）。</div>
+  </NodeShell>;
+});
+
+export const StoryboardRenderNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const update = useCanvasStore(s => s.setNodeConfig);
+  const cfg = d.config || {};
+  const rawScript = String(d.inputValues?.script || d.inputValues?.storyboard_list || cfg._segmentsJson || '');
+  let segments: any[] = [];
+  try { const parsed = JSON.parse(rawScript); segments = Array.isArray(parsed) ? parsed : parsed?.segments || []; } catch { /* 未连接 */ }
+  const providerOptions = getPaidProvidersForCapability('text-to-image').map(item => item.id);
+  const configuredProvider = String(cfg.provider || providerOptions[0] || '');
+  const providerSettings = useSettingsStore.getState().paidApiProviders?.[configuredProvider as keyof ReturnType<typeof useSettingsStore.getState>['paidApiProviders']];
+  const modelOptions = getPaidModelsForAdapter(configuredProvider, 'text-to-image');
+  const selectedModel = String(cfg.model || providerSettings?.selectedModel || modelOptions[0]?.id || '');
+  const variants = Math.max(1, Math.min(4, Number(cfg.variants) || 1));
+  const generateVideo = cfg.generateVideo === true;
+  const videoModelOptions = getPaidModelsForAdapter(configuredProvider, 'image-to-video');
+  const selectedVideoModel = String(cfg.videoModel || videoModelOptions[0]?.id || '');
+  const outputs: Array<{ id: string; label: string; type: 'image' | 'video' | 'text' }> = segments.length
+    ? [...segments.map((_, i) => [
+        { id: `shot_${i + 1}_image`, label: `镜头 ${i + 1} 图`, type: 'image' as const },
+        ...(generateVideo ? [{ id: `shot_${i + 1}_video`, label: `镜头 ${i + 1} 视频`, type: 'video' as const }] : []),
+      ]).flat(), { id: 'results', label: '全部结果', type: (generateVideo ? 'video' : 'image') as 'video' | 'image' }]
+    : [{ id: 'result', label: '结果', type: 'text' as const }];
+  return <NodeShell {...p} color="#8b5cf6" inputs={[{ id: 'script', label: '分镜JSON', type: 'text' }]} outputs={outputs} resizable>
+    <div className="nodrag" style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6, fontSize:10, color:'#c4b5fd' }}><b style={{flex:1}}>分镜批量生成</b><span>{segments.length ? `${segments.length} 镜` : '未连接分镜'}</span></div>
+    <div className="paid-node-provider-row nodrag"><select value={configuredProvider} onChange={e=>update(p.id,{provider:e.target.value,model:''})} style={{background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{providerOptions.map(id=><option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select><select value={selectedModel} onChange={e=>update(p.id,{model:e.target.value})} style={{background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:10}}>{modelOptions.map(model=><option key={model.id} value={model.id}>{model.label}</option>)}</select></div>
+    {segments.length > 0 && <div className="nodrag" style={{ maxHeight: 110, overflow: 'auto', fontSize: 9, color: 'var(--theme-muted)', marginBottom: 4 }}>
+      {segments.map((seg, i) => <div key={i} style={{ marginBottom: 2 }}>{i + 1}. {(seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '').slice(0, 26) || '(空提示词)'}</div>)}
+    </div>}
+    <textarea className="nodrag" value={String(cfg.characterNotes || '')} onChange={e=>update(p.id,{characterNotes:e.target.value})} placeholder="角色设定（自动附加到每镜提示词）：主角：红发少女，白色连衣裙；男二：黑西装，短发" style={{width:'100%',minHeight:38,resize:'none',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #4b3c72',borderRadius:5,padding:4,fontSize:9,marginBottom:4}} />
+    <div className="nodrag" style={{ display: 'flex', gap: 8, fontSize: 10, color: '#cbd5e1', alignItems: 'center', flexWrap: 'wrap' }}>
+      <label>每镜张数 <input type="number" min="1" max="4" value={variants} onChange={e=>update(p.id,{variants:Math.max(1,Math.min(4,Number(e.target.value)))})} style={{ width: 38, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid #4b3c72', borderRadius: 4 }} /></label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={cfg.useEnglish !== false} onChange={e=>update(p.id,{useEnglish:e.target.checked})} /> 用英文</label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={generateVideo} onChange={e=>update(p.id,{generateVideo:e.target.checked})} /> 生成视频</label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={cfg.generateAudio === true} onChange={e=>update(p.id,{generateAudio:e.target.checked})} /> 配音</label>
+    </div>
+    {cfg.generateAudio === true && <div className="nodrag" style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
+      <select value={String(cfg.voiceId || 'female-tianmei')} onChange={e=>update(p.id,{voiceId:e.target.value})} style={{ flex: 1, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid #4b3c72', borderRadius: 5, padding: 4, fontSize: 10 }}>{TTS_VOICE_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select>
+      <span style={{ fontSize: 9, color: 'var(--theme-muted)' }}>配音音色</span>
+    </div>}
+    {generateVideo && <div className="nodrag" style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
+      <select value={selectedVideoModel} onChange={e=>update(p.id,{videoModel:e.target.value})} style={{ flex: 1, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid #4b3c72', borderRadius: 5, padding: 4, fontSize: 10 }}>{videoModelOptions.map(model=><option key={model.id} value={model.id}>{model.label}</option>)}</select>
+      <span style={{ fontSize: 9, color: 'var(--theme-muted)' }}>视频模型</span>
+    </div>}
   </NodeShell>;
 });
 
@@ -1028,27 +1257,24 @@ export const StoryboardPromptNode = memo((p: NodeProps) => {
   const outputLabels=[{id:'storyboard_list',label:'完整分镜列表',type:'text'},{id:'error_warning',label:'错误/警告',type:'text'}] as PortSpec[];
   const personCount=Math.max(0,Math.min(12,Number(cfg.personCount) || 0)); const sceneCount=Math.max(0,Math.min(12-personCount,Number(cfg.sceneCount) || 0));
   const inputs=[{id:'script',label:'剧本输入',type:'text'}, {id:'customRequirements',label:'专业修改输入',type:'text'}, ...stablePorts('person','人物',personCount),...stablePorts('scene','场景',sceneCount)];
-  const inlinePrompt=(index:number,field:'firstFrame'|'lastFrame'|'videoPrompt',label:string,value:string,english:string)=>{const key=`${index}-${field}`;const outputId=`segment_${index+1}_${field==='firstFrame'?'first':field==='lastFrame'?'last':'video'}_prompt`;return <div style={{position:'relative',paddingRight:24,marginBottom:6}}><label style={{display:'block',fontSize:9,color:'#93c5fd'}}>{label}（中文，可修改）<textarea className="nodrag storyboard-prompt-editor" value={value} onChange={e=>updateSegment(index,field,e.target.value)} onMouseDown={e=>e.stopPropagation()}/></label><button className="nodrag storyboard-translate" onClick={()=>translate(index,field,value)} disabled={!value||translating[key]}>{translating[key]?'翻译中…':'翻译英文'}</button><label style={{display:'block',fontSize:9,color:'#86efac'}}>英文结果（可修改）<textarea className="nodrag storyboard-prompt-editor storyboard-prompt-editor--en" value={english} onChange={e=>updateSegment(index,field,value,e.target.value)} onMouseDown={e=>e.stopPropagation()}/></label><Handle id={outputId} type="source" position={Position.Right} title={`${label}英文输出`} style={{background:'#22c55e',right:0,top:'50%',border:'2px solid #16162a',zIndex:12}}/></div>};
-  return <NodeShell {...p} icon="🎞️" color="#0ea5e9" hasInput={false} resizable inputs={inputs} outputs={outputLabels}>
+  const inlinePrompt=(index:number,field:'firstFrame'|'lastFrame'|'videoPrompt',label:string,value:string,english:string)=>{const key=`${index}-${field}`;const outputId=`segment_${index+1}_${field==='firstFrame'?'first':field==='lastFrame'?'last':'video'}_prompt`;return <div style={{position:'relative',paddingRight:24,marginBottom:6}}><label style={{display:'block',fontSize:9,color:'#93c5fd'}}>{label}（中文，可修改）<textarea className="nodrag storyboard-prompt-editor" value={value} onChange={e=>updateSegment(index,field,e.target.value)} onMouseDown={e=>e.stopPropagation()}/></label><button className="nodrag storyboard-translate" onClick={()=>translate(index,field,value)} disabled={!value||translating[key]}>{translating[key]?'翻译中…':'翻译英文'}</button><label style={{display:'block',fontSize:9,color:'var(--theme-success)'}}>英文结果（可修改）<textarea className="nodrag storyboard-prompt-editor storyboard-prompt-editor--en" value={english} onChange={e=>updateSegment(index,field,value,e.target.value)} onMouseDown={e=>e.stopPropagation()}/></label><Handle id={outputId} type="source" position={Position.Right} title={`${label}英文输出`} style={{background:'#22c55e',right:0,top:'50%',border:'2px solid var(--theme-border)',zIndex:12}}/></div>};
+  return <NodeShell {...p} color="#0ea5e9" hasInput={false} resizable inputs={inputs} outputs={outputLabels}>
     <div style={{fontSize:10,color:'#7dd3fc',fontWeight:700}}>剧情分镜提示词</div>
     <div style={{fontSize:9,color:'#9ca3af',margin:'4px 0'}}>分镜 {count} 段 · 总时长 {String(cfg.totalDuration||0)} 秒</div>
-    {result.length>0?<div className="nodrag" style={{width:'100%'}}>{result.map((s:any,i:number)=><div key={i} style={{borderTop:'1px solid #2a2a3e',padding:'7px 0'}}><b style={{display:'block',fontSize:10,color:'#bae6fd',marginBottom:5}}>{s.segmentId||`分镜${i+1}`} · {s.duration||0}s</b>{inlinePrompt(i,'firstFrame','首图提示词',String(s.firstFrame?.prompt||''),String(s.firstFrame?.promptEn||''))}{inlinePrompt(i,'lastFrame','尾图提示词',String(s.lastFrame?.prompt||''),String(s.lastFrame?.promptEn||''))}{inlinePrompt(i,'videoPrompt','视频提示词',String(s.videoPrompt||''),String(s.videoPromptEn||''))}</div>)}</div>:<div style={{fontSize:9,color:'#64748b'}}>先通过连接点或右侧面板输入剧本和专业修改要求，再执行分析</div>}
+    <div className="nodrag" style={{ marginBottom: 6, padding: 6, background: 'rgba(125,211,252,.06)', borderRadius: 6 }}>
+      <div style={{ display:'flex', gap:6, alignItems:'center', fontSize:9, color:'#7dd3fc', marginBottom:4 }}>
+        <b style={{flex:1}}>角色设定</b>
+        <label style={{display:'flex',alignItems:'center',gap:4}}>人物 <input type="number" min="0" max="12" value={personCount} onChange={e=>useCanvasStore.getState().setNodeConfig(p.id,{personCount:Math.max(0,Math.min(12,Number(e.target.value)))})} style={{width:36,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #3b4258',borderRadius:4}} /></label>
+      </div>
+      {personCount > 0 && Array.from({length: personCount}, (_, i) => {
+        const key = `person_${i + 1}`;
+        const notes = (cfg.personNotes as Record<string, string>) || {};
+        return <input key={key} className="nodrag" value={String(notes[key] || '')} onChange={e=>useCanvasStore.getState().setNodeConfig(p.id,{personNotes:{...notes,[key]:e.target.value}})} placeholder={`角色 ${i + 1} 描述（外貌/服装/特征）`} style={{width:'100%',marginBottom:3,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #3b4258',borderRadius:4,padding:4,fontSize:9}} />;
+      })}
+      {personCount === 0 && <div style={{fontSize:8,color:'var(--theme-muted)'}}>设置人物数量后可添加角色描述（分镜会保持角色一致）</div>}
+    </div>
+    {result.length>0?<div className="nodrag" style={{width:'100%'}}>{result.map((s:any,i:number)=><div key={i} style={{borderTop:'1px solid #2a2a3e',padding:'7px 0'}}><b style={{display:'block',fontSize:10,color:'#bae6fd',marginBottom:5}}>{s.segmentId||`分镜${i+1}`} · {s.duration||0}s</b>{inlinePrompt(i,'firstFrame','首图提示词',String(s.firstFrame?.prompt||''),String(s.firstFrame?.promptEn||''))}{inlinePrompt(i,'lastFrame','尾图提示词',String(s.lastFrame?.prompt||''),String(s.lastFrame?.promptEn||''))}{inlinePrompt(i,'videoPrompt','视频提示词',String(s.videoPrompt||''),String(s.videoPromptEn||''))}<div style={{marginBottom:6}}><label style={{display:'flex',gap:4,alignItems:'center',fontSize:9,color:'#fcd34d'}}>台词（配音用）<input className="nodrag" value={String(s.dialogue||'')} onChange={e=>{const next=result.map((seg:any,j:number)=>j===i?{...seg,dialogue:e.target.value}:seg);useCanvasStore.getState().setNodeConfig(p.id,{_segments:next});useCanvasStore.getState().propagateData(p.id,'storyboard_list',JSON.stringify(next,null,2));}} placeholder="角色说的台词" style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid #3b4258',borderRadius:4,padding:4,fontSize:9}}/></label></div></div>)}</div>:<div style={{fontSize:9,color:'var(--theme-muted)'}}>先通过连接点或右侧面板输入剧本和专业修改要求，再执行分析</div>}
   </NodeShell>;
 });
 
 /** JA导演台节点：在画布中保留当前导演台的可视化快照和镜头摘要。 */
-export const DirectorStudioNode = memo((p: NodeProps) => {
-  const d = p.data as unknown as CanvasNodeData;
-  const cfg = d.config as Record<string, unknown>;
-  const shot = (cfg.shot && typeof cfg.shot === 'object' ? cfg.shot : {}) as Record<string, unknown>;
-  const actors = Array.isArray(cfg.actors) ? cfg.actors as Array<{id:string;name:string;color:string;position?:number[]}> : [];
-  const snapshot = String(cfg.snapshot || '');
-  const update = useCanvasStore(s => s.setNodeConfig);
-  const publish = () => useCanvasStore.getState().propagateData(p.id, 'shot', String(cfg.prompt || ''));
-  return <NodeShell {...p} icon="🎬" color="#f59e0b" inputs={[{id:'shot',label:'镜头设定',type:'text'}]} outputs={[{id:'shot',label:'镜头设定',type:'text'},{id:'preview',label:'导演台截图',type:'image'}]} resizable>
-    <div style={{fontSize:10,color:'#fbbf24',fontWeight:700,marginBottom:6}}>JA导演台 · 3D镜头快照</div>
-    {snapshot ? <img className="director-node-preview" src={snapshot} alt="JA导演台快照" /> : <div className="director-node-empty">打开 JA导演台并点击“创建到画布”同步镜头画面</div>}
-    <div style={{fontSize:9,color:'#94a3b8',marginTop:6}}>角色 {actors.length} · {String(shot.shotSize || '中景')} · {String(shot.duration || 5)} 秒</div>
-    <textarea className="nodrag" value={String(cfg.prompt || '')} onChange={e=>update(p.id,{prompt:e.target.value})} onBlur={publish} placeholder="导演台镜头提示词" style={{width:'100%',marginTop:6,minHeight:45,background:'#0b1020',border:'1px solid #3b4258',borderRadius:5,color:'#dbeafe',fontSize:10,padding:5}} />
-  </NodeShell>;
-});

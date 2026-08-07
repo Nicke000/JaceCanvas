@@ -16,6 +16,13 @@ export const ContextMenu: React.FC = () => {
   const resultUrl = node?.data.resultUrl || (node?.data.outputValues?.image as string) || (node?.data.outputValues?.video as string) || (node?.data.outputValues?.audio as string);
   const saveResult = async () => {
     if (!resultUrl) return;
+    if (resultUrl.startsWith('file://')) {
+      // 本地缓存文件：复制到素材库永久区（主动保存，避免 48 小时后被清理）
+      try {
+        await (window as any).electronAPI?.promoteCache?.({ url: resultUrl, name: String(node?.data.label || 'result') });
+        return;
+      } catch { /* 复制失败则继续尝试打开 */ }
+    }
     try {
       const response = await fetch(resultUrl); if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob(); const objectUrl = URL.createObjectURL(blob);
@@ -25,6 +32,12 @@ export const ContextMenu: React.FC = () => {
       a.click(); setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
     } catch { window.open(resultUrl,'_blank'); }
   };
+  const canvasItems: Array<{ l: string; a: (() => void) | null; danger?: boolean }> = [
+    { l: '➕ 添加节点', a: () => { hide(); window.dispatchEvent(new CustomEvent('ai-canvas-open-search', { detail: { x: ctx.x, y: ctx.y } })); } },
+    { l: '📋 粘贴（Ctrl+V）', a: () => { hide(); window.dispatchEvent(new Event('ai-canvas-paste-clipboard')); } },
+    { l: '🧹 一键整理画布', a: () => { hide(); window.dispatchEvent(new Event('ai-canvas-auto-layout')); } },
+    { l: '✕ 取消全选', a: () => { hide(); useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, selected: false })) }); useCanvasStore.getState().setSelectedNodeId(null); } },
+  ];
   const items = [
     { l: '\u25B6 \u52a0\u5165\u672c\u5730\u961f\u5217', a: () => ctx.nodeId && exec(ctx.nodeId) },
     { l: '\u26A1 \u4ECE\u6B64\u5F00\u59CB\u6267\u884C', a: () => ctx.nodeId && execFrom(ctx.nodeId) },
@@ -32,6 +45,8 @@ export const ContextMenu: React.FC = () => {
     ...(resultUrl ? [{ l: '↓ 保存生成结果', a: saveResult }] : []),
     { l: '---', a: null },
     { l: '\uD83D\uDCCB \u590D\u5236', a: () => { useCanvasStore.getState().setSelectedNodeId(ctx.nodeId); dup(); } },
+    { l: node?.data.locked ? '🔓 解锁' : '🔒 锁定', a: () => ctx.nodeId && useCanvasStore.getState().toggleNodeLocked(ctx.nodeId) },
+    { l: node?.data.hidden ? '👁 显示' : '🙈 隐藏', a: () => ctx.nodeId && useCanvasStore.getState().toggleNodeHidden(ctx.nodeId) },
     { l: node?.data.disabled ? '\u2705 \u542F\u7528' : '\uD83D\uDEAB \u7981\u7528', a: () => ctx.nodeId && tog(ctx.nodeId) },
     { l: '---', a: null },
     { l: '\uD83D\uDDD1 \u5220\u9664', a: () => { useCanvasStore.getState().setSelectedNodeId(ctx.nodeId); del(); }, danger: true },
@@ -39,7 +54,7 @@ export const ContextMenu: React.FC = () => {
   return <>
     <div style={{position:'fixed',inset:0,zIndex:999}} onClick={hide}/>
     <div className="app-context-menu" style={{left:ctx.x,top:ctx.y}}>
-      {items.map((it,i) => it.l==='---' ?
+      {(ctx.nodeId ? items : canvasItems).map((it,i) => it.l==='---' ?
         <div key={i} className="app-context-menu__sep"/> :
         <div key={i} className={'app-context-menu__item' + (it.danger?' is-danger':'')} onClick={()=>{it.a?.();hide();}}>{it.l}</div>
       )}</div></>;

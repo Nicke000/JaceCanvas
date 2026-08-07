@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import type { BailianRegion } from '@/services/bailianTextToImage.service';
 import { PAID_PROVIDER_IDS, type PaidProviderId } from '@/config/paidApiAdapters';
 
+export interface ServerProfile { id: string; name: string; baseUrl: string; apiKey: string; type?: 'comfyui' | 'control' | 'custom'; /** 性能检测专用地址（主控服务器：节点用 baseUrl、性能检测用 perfUrl，两链接可不同） */ perfUrl?: string; }
+
 export type ProviderType = 'openai' | 'gemini' | 'anthropic' | 'ollama';
 
 export interface PaidApiProfile {
@@ -55,6 +57,9 @@ export const PAID_API_NODE_KINDS: PaidApiNodeKind[] = ['paidTextToImage', 'paidI
 export interface ApiSettings {
   baseUrl: string;
   apiKey: string;
+  /** 多服务器连接管理：按 activeServerId 切换，servers 为空时回退 baseUrl。 */
+  servers: ServerProfile[];
+  activeServerId: string;
   timeout: number;
   concurrency: number;
   optimizerProvider: ProviderType;
@@ -74,6 +79,17 @@ export interface ApiSettings {
   chatModels: string[];
   chatSystemPrompt: string;
   chatThinkingMode: 'auto' | 'fast' | 'deep';
+  // DevAgent（画布 AI 代码助手）独立 AI 配置——与聊天 AI 分开设置
+  dramaAiProvider: ProviderType;
+  dramaAiBaseUrl: string;
+  dramaAiApiKey: string;
+  dramaAiModel: string;
+  dramaAiModels: string[];
+  devAgentProvider: ProviderType;
+  devAgentBaseUrl: string;
+  devAgentApiKey: string;
+  devAgentModel: string;
+  devAgentModels: string[];
   /** 付费 API 配置（统一在设置中管理，节点只引用） */
   paidApiProvider: string;
   paidApiKey: string;
@@ -95,8 +111,10 @@ const DEFAULT_PAID_PROVIDERS = Object.fromEntries(PAID_PROVIDER_IDS.map(provider
 const DEFAULT: ApiSettings = {
   baseUrl: '',
   apiKey: '',
+  servers: [],
+  activeServerId: '',
   timeout: 600000,
-  concurrency: 1,
+  concurrency: 3,
   optimizerProvider: 'openai',
   optimizerBaseUrl: 'https://api.openai.com/v1',
   optimizerApiKey: '',
@@ -108,6 +126,8 @@ const DEFAULT: ApiSettings = {
   sshCommand: '', sshHost: '', sshPort: 22, sshUsername: '', sshPassword: '',
   gpuAcceleration: true,
   chatProvider: 'openai', chatBaseUrl: 'https://api.openai.com/v1', chatApiKey: '', chatModel: 'gpt-4o-mini', chatModels: [], chatSystemPrompt: '你是一个专业、可靠的创作助手。', chatThinkingMode: 'auto',
+  devAgentProvider: 'openai', devAgentBaseUrl: '', devAgentApiKey: '', devAgentModel: '', devAgentModels: [],
+  dramaAiProvider: 'openai', dramaAiBaseUrl: '', dramaAiApiKey: '', dramaAiModel: '', dramaAiModels: [],
   paidApiProvider: '', paidApiKey: '', paidApiBaseUrl: '', paidApiModels: [], paidApiSelectedModel: '', paidApiAspectRatio: '1:1', paidApiWidth: 1024, paidApiHeight: 1024, paidApiProfiles: [], paidApiProviders: DEFAULT_PAID_PROVIDERS,
   paidApiNodes: {
     paidTextToImage: EMPTY_PAID_NODE(), paidImageToImage: EMPTY_PAID_NODE(),
@@ -155,8 +175,7 @@ function load(): ApiSettings {
     const injected = (window as any).electronAPI?.promptSettings || {};
     // prompt-settings.json 只作为首次启动默认值；用户在设置页保存的值必须优先。
     const loaded = { ...DEFAULT, ...injected, ...(raw ? JSON.parse(raw) : {}) };
-    // 4.5.2 的默认并发数是 3，升级到 4.6.0 时将未主动调整过的旧默认值迁移为 1。
-    if (localStorage.getItem(SETTINGS_VERSION_KEY) !== SETTINGS_VERSION && loaded.concurrency === 3) loaded.concurrency = 1;
+    // 多节点并行执行：不同端口/节点各自独立提交任务（ComfyUI/主控按各自能力处理，付费 API 官方接口并发）
     localStorage.setItem(SETTINGS_VERSION_KEY, SETTINGS_VERSION);
     if (loaded.baseUrl.endsWith('/api/workflow/generate')) loaded.baseUrl = DEFAULT.baseUrl;
     if (!Array.isArray(loaded.chatModels)) loaded.chatModels = [];
@@ -188,6 +207,13 @@ function load(): ApiSettings {
     if (!loaded.paidApiAspectRatio) loaded.paidApiAspectRatio = '1:1';
     if (!loaded.paidApiWidth) loaded.paidApiWidth = 1024;
     if (!loaded.paidApiHeight) loaded.paidApiHeight = 1024;
+    // 多服务器迁移：旧版只有单一 baseUrl，首次升级时把它登记为默认服务器。
+    if (!Array.isArray(loaded.servers)) loaded.servers = [];
+    if (!loaded.servers.length && loaded.baseUrl) {
+      loaded.servers = [{ id: 'default', name: '主服务器', baseUrl: String(loaded.baseUrl), apiKey: String(loaded.apiKey || '') }];
+      loaded.activeServerId = 'default';
+    }
+    if (!loaded.activeServerId && loaded.servers.length) loaded.activeServerId = loaded.servers[0].id;
     return loaded;
   } catch { return DEFAULT; }
 }
@@ -199,6 +225,10 @@ function save(s: ApiSettings) {
 interface SettingsStore extends ApiSettings {
   setBaseUrl: (url: string) => void;
   setApiKey: (key: string) => void;
+  setServers: (servers: ServerProfile[]) => void;
+  upsertServer: (server: ServerProfile) => void;
+  removeServer: (id: string) => void;
+  setActiveServer: (id: string) => void;
   setTimeout: (t: number) => void;
   setConcurrency: (n: number) => void;
   setOptimizerProvider: (provider: ApiSettings['optimizerProvider']) => void;
@@ -211,6 +241,8 @@ interface SettingsStore extends ApiSettings {
   setComfyUrl: (url: string) => void;
   setSsh: (value: Pick<ApiSettings,'sshCommand'|'sshHost'|'sshPort'|'sshUsername'|'sshPassword'>) => void;
   setChat: (value: Partial<Pick<ApiSettings,'chatProvider'|'chatBaseUrl'|'chatApiKey'|'chatModel'|'chatModels'|'chatSystemPrompt'|'chatThinkingMode'>>) => void;
+  setDevAgent: (value: Partial<Pick<ApiSettings,'devAgentProvider'|'devAgentBaseUrl'|'devAgentApiKey'|'devAgentModel'|'devAgentModels'>>) => void;
+  setDramaAi: (value: Partial<Pick<ApiSettings,'dramaAiProvider'|'dramaAiBaseUrl'|'dramaAiApiKey'|'dramaAiModel'|'dramaAiModels'>>) => void;
   setPaidApi: (value: Partial<Pick<ApiSettings,'paidApiProvider'|'paidApiKey'|'paidApiBaseUrl'|'paidApiModels'|'paidApiSelectedModel'>>) => void;
   setPaidApiNode: (kind: PaidApiNodeKind, value: Partial<PaidApiNodeSettings>) => void;
   setPaidApiProvider: (provider: PaidProviderId, value: Partial<PaidApiProviderSettings>) => void;
@@ -223,6 +255,20 @@ interface SettingsStore extends ApiSettings {
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   ...load(),
   setBaseUrl: (url) => { const baseUrl = normalizeUrl(url); set({ baseUrl }); save({ ...get(), baseUrl }); },
+  setServers: (servers) => { set({ servers }); save({ ...get(), servers }); },
+  upsertServer: (server) => {
+    const servers = [...get().servers];
+    const index = servers.findIndex(item => item.id === server.id);
+    if (index >= 0) servers[index] = server; else servers.push(server);
+    const activeServerId = get().activeServerId || server.id;
+    set({ servers, activeServerId }); save({ ...get(), servers, activeServerId });
+  },
+  removeServer: (id) => {
+    const servers = get().servers.filter(item => item.id !== id);
+    const activeServerId = get().activeServerId === id ? (servers[0]?.id || '') : get().activeServerId;
+    set({ servers, activeServerId }); save({ ...get(), servers, activeServerId });
+  },
+  setActiveServer: (activeServerId) => { set({ activeServerId }); save({ ...get(), activeServerId }); },
   setApiKey: (key) => { set({ apiKey: key }); save({ ...get(), apiKey: key }); },
   setTimeout: (t) => { set({ timeout: t }); save({ ...get(), timeout: t }); },
   setConcurrency: (n) => { set({ concurrency: n }); save({ ...get(), concurrency: n }); },
@@ -236,6 +282,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setComfyUrl: (comfyUrl) => { set({ comfyUrl }); save({ ...get(), comfyUrl }); },
   setSsh: (value) => { set(value); save({ ...get(), ...value }); },
   setChat: (value) => { set(value as any); save({ ...get(), ...value }); },
+  setDevAgent: (value) => { set(value as any); save({ ...get(), ...value }); },
+  setDramaAi: (value) => { set(value as any); save({ ...get(), ...value }); },
   setPaidApi: (value) => { set(value as any); save({ ...get(), ...value }); },
   setPaidApiNode: (kind, value) => { const paidApiNodes = { ...get().paidApiNodes, [kind]: { ...get().paidApiNodes[kind], ...value } }; set({ paidApiNodes }); save({ ...get(), paidApiNodes }); },
   setPaidApiProvider: (provider, value) => { const paidApiProviders = { ...get().paidApiProviders, [provider]: { ...get().paidApiProviders[provider], ...value, provider } }; set({ paidApiProviders }); save({ ...get(), paidApiProviders }); },

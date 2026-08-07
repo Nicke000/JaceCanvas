@@ -39,7 +39,9 @@ class ComfyWS {
   get connected() { return this._connected; }
 
   connect() {
-    const base = useSettingsStore.getState().baseUrl.replace(/\/+$/, '');
+    const st = useSettingsStore.getState();
+    const active = st.servers.find(s => s.id === st.activeServerId) || st.servers[0];
+    const base = (active?.baseUrl || st.baseUrl || '').replace(/\/+$/, '');
     const wsUrl = base.replace('https://', 'wss://').replace('http://', 'ws://') + '/comfyui-ws?clientId=' + encodeURIComponent(getClientId());
     if (this.url === wsUrl && this._connected) return;
     this.url = wsUrl;

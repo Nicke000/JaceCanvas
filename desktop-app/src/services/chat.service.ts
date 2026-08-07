@@ -28,7 +28,7 @@ export async function fetchModelsFromApi(provider: string, baseUrl: string, apiK
     } else {
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     }
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return [];
     const data: any = await res.json();
     if (provider === 'ollama') {
@@ -44,7 +44,7 @@ export async function fetchModelsFromApi(provider: string, baseUrl: string, apiK
 
 function endpoint(provider: string, base: string, model: string) {
   const b = base.replace(/\/+$/, '');
-  if (provider === 'gemini') return b.includes('/models/') ? b : `${b}/models/${encodeURIComponent(model)}:generateContent`;
+  if (provider === 'gemini') return b.includes('/models/') ? b : `${b}${b.includes('/v1beta') || b.includes('/v1/') ? '' : '/v1beta'}/models/${encodeURIComponent(model)}:generateContent`;
   if (provider === 'ollama') return b.endsWith('/api/chat') ? b : `${b}/api/chat`;
   if (provider === 'anthropic') return b.endsWith('/messages') ? b : `${b}/messages`;
   return b.endsWith('/chat/completions') ? b : `${b}/chat/completions`;
@@ -53,15 +53,15 @@ function endpoint(provider: string, base: string, model: string) {
 function textFromDataUrl(dataUrl: string): string {
   try {
     const encoded = dataUrl.split(',')[1] || '';
-    return decodeURIComponent(escape(atob(encoded))).slice(0, 12000);
+    return decodeURIComponent(escape(atob(encoded))).slice(0, 30000);
   } catch { return ''; }
 }
 
-function attachmentParts(attachments: ChatAttachment[]) {
+export function attachmentParts(attachments: ChatAttachment[]) {
   return attachments.filter(a => a.dataUrl || a.url).map(a => {
     const url = a.dataUrl || a.url || '';
     if (a.mimeType.startsWith('image/')) return { type: 'image_url', image_url: { url } };
-    const text = a.mimeType.startsWith('text/') && a.dataUrl ? textFromDataUrl(a.dataUrl) : '';
+    const text = (/^(text\/|application\/(json|javascript|x-yaml|yaml|xml|sql|toml|pdf))/.test(a.mimeType) || /\.(md|txt|json|js|ts|py|yaml|yml|xml|toml|env|ini)$/i.test(a.name)) && a.dataUrl ? textFromDataUrl(a.dataUrl) : '';
     return { type: 'text', text: `附件：${a.name}（${a.mimeType}）${text ? `\n${text}` : `\n内容引用：${url}`}` };
   });
 }
@@ -103,32 +103,54 @@ export async function sendChat(
   attachments: ChatAttachment[],
   history: ChatTurn[],
   signal?: AbortSignal,
-  overrides?: { model?: string; thinkingMode?: 'auto' | 'fast' | 'deep'; onChunk?: (text: string) => void },
+  overrides?: { model?: string; thinkingMode?: 'auto' | 'fast' | 'deep'; onChunk?: (text: string) => void; systemPrompt?: string; provider?: string; baseUrl?: string; apiKey?: string },
 ) {
   const s = useSettingsStore.getState();
+  // 支持配置覆盖（DevAgent 独立 API 等）：overrides.provider/baseUrl/apiKey 优先于全局 chat 配置
+  const provider = overrides?.provider || s.chatProvider;
+  const baseUrl = overrides?.baseUrl || s.chatBaseUrl;
+  const apiKey = overrides?.apiKey || s.chatApiKey;
   const model = overrides?.model || s.chatModel;
   const thinkingMode = overrides?.thinkingMode || s.chatThinkingMode;
-  if (!s.chatApiKey && s.chatProvider !== 'ollama') throw new Error('请先在设置中配置聊天 AI API 密钥');
+  if (!apiKey && provider !== 'ollama') throw new Error('请先配置 AI API 密钥');
   const parts = [{ type: 'text', text: message }, ...attachmentParts(attachments)];
-  const turns: ChatTurn[] = [...history, { role: 'user', content: parts }];
+  const turns: ChatTurn[] = [...history];
+  // 空消息（Agent 等由调用方全权构造 history 的场景）不追加空 user turn，避免部分 API 拒绝空 content
+  if (message.trim() || attachments.length) turns.push({ role: 'user', content: parts });
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (s.chatProvider === 'anthropic') { headers['x-api-key'] = s.chatApiKey; headers['anthropic-version'] = '2023-06-01'; }
-  else if (s.chatProvider === 'gemini') { if (s.chatApiKey) headers['x-goog-api-key'] = s.chatApiKey; }
-  else if (s.chatProvider !== 'ollama') headers.Authorization = `Bearer ${s.chatApiKey}`;
-  const body = s.chatProvider === 'gemini'
-    ? { contents: turns.map(t => ({ role: t.role === 'assistant' ? 'model' : 'user', parts: typeof t.content === 'string' ? [{ text: t.content }] : t.content.map((part: any) => part.type === 'image_url' ? { inline_data: { mime_type: String(part.image_url?.url || '').match(/^data:([^;]+);/)?.[1] || 'image/png', data: String(part.image_url?.url || '').split(',')[1] } } : { text: String(part.text || '') }) })), systemInstruction: { parts: [{ text: s.chatSystemPrompt }] } }
-    : s.chatProvider === 'anthropic' ? { model, max_tokens: 4096, system: s.chatSystemPrompt, messages: turns }
-    : s.chatProvider === 'ollama' ? { model, stream: false, system: s.chatSystemPrompt, messages: turns }
-    : { model, messages: [{ role: 'system', content: s.chatSystemPrompt }, ...turns], temperature: 0.7, ...(thinkingMode === 'deep' ? { reasoning_effort: 'high' } : thinkingMode === 'fast' ? { reasoning_effort: 'low' } : {}) };
+  if (provider === 'anthropic') { headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+  else if (provider === 'gemini') { if (apiKey) headers['x-goog-api-key'] = apiKey; }
+  else if (provider !== 'ollama') headers.Authorization = `Bearer ${apiKey}`;
+  const body = provider === 'gemini'
+    ? { contents: turns.map(t => ({ role: t.role === 'assistant' ? 'model' : 'user', parts: typeof t.content === 'string' ? [{ text: t.content }] : t.content.map((part: any) => part.type === 'image_url' ? { inline_data: { mime_type: String(part.image_url?.url || '').match(/^data:([^;]+);/)?.[1] || 'image/png', data: String(part.image_url?.url || '').split(',')[1] } } : { text: String(part.text || '') }) })), systemInstruction: { parts: [{ text: overrides?.systemPrompt ?? s.chatSystemPrompt }] } }
+    : provider === 'anthropic' ? { model, max_tokens: 4096, system: overrides?.systemPrompt ?? s.chatSystemPrompt, messages: turns }
+    : provider === 'ollama' ? { model, stream: false, system: overrides?.systemPrompt ?? s.chatSystemPrompt, messages: turns }
+    : (() => {
+        // OpenAI 兼容端点：content 一律数组化（OpenAI 标准与 dashscope 均接受）；
+        // dashscope compatible-mode 要求首条消息 role='user' 且不支持 system —— 把 system 合并进第一条 user 消息。
+        const sys = overrides?.systemPrompt ?? s.chatSystemPrompt;
+        const sysPart = { type: 'text' as const, text: sys };
+        const norm = (c: any) => (typeof c === 'string' ? [{ type: 'text' as const, text: c }] : (c as Array<any>));
+        const dash = /dashscope|maas\.aliyuncs/i.test(baseUrl || '');
+        const messages = dash
+          ? (turns[0]
+              ? [{ role: 'user' as const, content: [sysPart, ...(Array.isArray(turns[0].content) ? turns[0].content : norm(turns[0].content))] }, ...turns.slice(1)]
+              : [{ role: 'user' as const, content: [sysPart] }])
+          : [{ role: 'system' as const, content: [sysPart] }, ...turns];
+        return { model, messages, temperature: 0.7, ...(thinkingMode === 'deep' ? { reasoning_effort: 'high' } : thinkingMode === 'fast' ? { reasoning_effort: 'low' } : {}) };
+      })();
   // SSE 不是所有 OpenAI 兼容网关都实现；默认走 JSON，避免全页面聊天在等待流结束时看似卡死。
   // 需要增量输出时可由调用方显式传入 onChunk，此时仍请求流式响应。
-  const wantsStream = Boolean(overrides?.onChunk) && s.chatProvider !== 'anthropic' && s.chatProvider !== 'gemini';
-  const requestBody = { ...body, ...(s.chatProvider !== 'anthropic' && s.chatProvider !== 'gemini' ? { stream: wantsStream } : {}) };
-  const requestUrl = endpoint(s.chatProvider, s.chatBaseUrl, model);
-  let response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
+  const wantsStream = Boolean(overrides?.onChunk) && provider !== 'anthropic' && provider !== 'gemini';
+  const requestBody = { ...body, ...(provider !== 'anthropic' && provider !== 'gemini' ? { stream: wantsStream } : {}) };
+  const requestUrl = endpoint(provider, baseUrl, model);
+  // 默认 60s 超时（外部 signal 如暂停节点 abort 与之合并；TimeoutError 走 error 分支）
+  const timeoutSignal = AbortSignal.timeout(60000);
+  const effSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  let response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: effSignal });
   // 兼容声明 SSE 但实际返回 JSON、或返回空 SSE 的代理网关。普通 JSON 重试只发生一次。
   if (wantsStream && response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
-    response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify({ ...requestBody, stream: false }), signal });
+    response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify({ ...requestBody, stream: false }), signal: effSignal });
   }
   if (!response.ok) {
     const data: any = await response.json().catch(() => ({}));

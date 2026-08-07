@@ -1,10 +1,21 @@
 import Dexie, { type Table } from 'dexie';
 import type { ChatSession, Project } from '@/types';
 
+/** 项目版本快照（自动保存时记录，用于恢复历史） */
+export interface ProjectSnapshot {
+  id: string;
+  projectId: string;
+  version: number;
+  savedAt: number;
+  canvasData: { nodes: unknown[]; edges: unknown[] };
+}
+
 /** IndexedDB 数据库 */
 class CanvasDatabase extends Dexie {
   projects!: Table<Project, string>;
   chatSessions!: Table<ChatSession, string>;
+  projectSnapshots!: Table<ProjectSnapshot, string>;
+  assets!: Table<{ id: string; list: string }, string>;
 
   constructor() {
     super('AICanvasDB');
@@ -14,6 +25,17 @@ class CanvasDatabase extends Dexie {
     this.version(2).stores({
       projects: 'id, name, createdAt, updatedAt',
       chatSessions: 'id, nodeId, updatedAt',
+    });
+    this.version(3).stores({
+      projects: 'id, name, createdAt, updatedAt',
+      chatSessions: 'id, nodeId, updatedAt',
+      projectSnapshots: 'id, projectId, savedAt, version',
+    });
+    this.version(4).stores({
+      projects: 'id, name, createdAt, updatedAt',
+      chatSessions: 'id, nodeId, updatedAt',
+      projectSnapshots: 'id, projectId, savedAt, version',
+      assets: 'id',
     });
   }
 }
@@ -53,6 +75,19 @@ export async function deleteChatSession(id: string): Promise<void> {
 }
 
 /** 生成唯一ID */
+/**
+ * 批处理占位符：把提示词里的 `{a|b|c}` 随机替换为其中一项。
+ * 示例："一只{a|橘色|白色}的猫" → 每次执行随机得到三种之一。
+ */
+export function expandPromptVariants(prompt: string): string {
+  if (!prompt || !prompt.includes('{')) return prompt;
+  return prompt.replace(/\{([^{}]*\|[^{}]*)\}/g, (_match, inner: string) => {
+    const options = String(inner).split('|').map(s => s.trim()).filter(Boolean);
+    if (options.length === 0) return '';
+    return options[Math.floor(Math.random() * options.length)];
+  });
+}
+
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }

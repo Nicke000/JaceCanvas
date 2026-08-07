@@ -7,6 +7,9 @@ import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.servi
  * 文档只有动态入口、没有可审计接口的厂商，不会因为名称相似而自动获得扩展能力。
  */
 export const VERIFIED_PAID_CAPABILITIES: Record<PaidCapability, string[]> = {
+  'text-to-speech': ['custom', 'gateway', 'minimax', 'elevenlabs'],
+  'text-to-3d': ['custom', 'gateway', 'meshy'],
+  'image-to-3d': ['custom', 'gateway', 'meshy'],
   'text-to-image': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
   'image-to-image': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
   'text-to-video': ['custom', 'gateway', 'openai', 'google', 'minimax', 'runway', 'kling', 'tongyi', 'zhipu', 'jimeng'],

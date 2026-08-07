@@ -1,0 +1,18 @@
+﻿before-port-pids=
+root-pid=8140
+6s-process-count=5; 6s-port-count=1
+6s-http-root=ERROR:远程服务器返回错误: (404) 未找到。; 6s-http-api=ERROR:远程服务器返回错误: (404) 未找到。
+16s-process-count=5; 16s-port-count=2
+16s-http-root=ERROR:远程服务器返回错误: (404) 未找到。; 16s-http-api=ERROR:远程服务器返回错误: (404) 未找到。
+
+
+Id          : 8140
+ProcessName : JaceCanvas
+Responding  : True
+CPU         : 0.84375
+StartTime   : 2026/8/1 3:02:07
+
+
+
+
+remaining-after-cleanup=0

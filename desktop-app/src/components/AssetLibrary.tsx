@@ -5,8 +5,9 @@ import { PictureOutlined, VideoCameraOutlined, FileTextOutlined, AudioOutlined, 
   InboxOutlined, DeleteOutlined, UploadOutlined, EditOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { downloadMedia } from '@/utils/downloadMedia';
+import { loadAssetsAsync, saveAssets, type AssetEntry } from '@/utils/generationHistory';
 
-interface AssetItem { id:string; name:string; type:'image'|'video'|'audio'|'text'; url:string; localPath?:string; folder?:string; createdAt:number; category:string; tags:string[]; }
+interface AssetItem { id:string; name:string; type:'image'|'video'|'audio'|'text'|'3d'; url:string; localPath?:string; folder?:string; createdAt:number; category:string; tags:string[]; }
 
 const CATS = [
   { key: 'character', label: '\u4eba\u7269', icon: <UserOutlined/> },
@@ -31,17 +32,21 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
   const [nameInput, setNameInput] = useState('');
   const addNode = useCanvasStore(s => s.addNode);
 
-  useEffect(() => { try { const r=localStorage.getItem('ai-canvas-assets-v2'); if(r) setAssets(JSON.parse(r)); } catch {} }, []);
-  const save = (a:AssetItem[]) => { setAssets(a); localStorage.setItem('ai-canvas-assets-v2', JSON.stringify(a)); };
+  useEffect(() => { void loadAssetsAsync().then(list => setAssets(list as unknown as AssetItem[])); }, []);
+  const save = (a:AssetItem[]) => { setAssets(a); saveAssets(a as unknown as AssetEntry[]); };
 
   const filtered = assets.filter(a => a.category===cat && a.type===mtype &&
     (!search || a.name.includes(search) || a.tags.some(t=>t.includes(search))));
 
-  const handleFileDrop = useCallback((e:React.DragEvent) => {
+  const handleFileDrop = useCallback(async (e:React.DragEvent) => {
     e.preventDefault();e.stopPropagation();
     const raw=e.dataTransfer.getData('application/ai-asset');
     if(raw){try{const item=JSON.parse(raw) as Partial<AssetItem>;if(item.url&&item.type){
-      const asset:AssetItem={id:Date.now().toString(36)+Math.random().toString(36).slice(2),name:item.name||'历史素材',type:item.type,url:item.url,createdAt:Date.now(),category:cat,tags:[]};
+      let url=item.url; let localPath='';
+      if(String(item.url).startsWith('file://')){
+        try { const saved=await (window as any).electronAPI?.promoteCache?.({ url:item.url, folder:cat, name:item.name }); url=saved?.url||url; localPath=saved?.path||''; } catch { /* 提升失败则原样保存 */ }
+      }
+      const asset:AssetItem={id:Date.now().toString(36)+Math.random().toString(36).slice(2),name:item.name||'历史素材',type:item.type,url,localPath,createdAt:Date.now(),category:cat,tags:[]};
       save([asset,...assets]);setMtype(item.type);return;
     }}catch{}}
     const files=e.dataTransfer.files; if(!files.length) return;
@@ -119,6 +124,8 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
           {a.type==='image'&&a.url ? <img src={a.url} style={{width:'100%',height:90,borderRadius:6,objectFit:'cover',marginBottom:4}} alt=""/> :
            a.type==='video' && a.url ? <video src={a.url} muted playsInline style={{width:'100%',height:90,borderRadius:6,objectFit:'contain',background:'var(--theme-input)',marginBottom:4}}/> : a.type==='video' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-input)',
              display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><VideoCameraOutlined style={{fontSize:24,color:'var(--theme-muted)'}}/></div> :
+           a.type==='3d' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-surface-2)',
+             display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4,color:'var(--theme-text-3)',fontSize:11}}>3D</div> :
            <div style={{width:'100%',height:50,borderRadius:6,background:'var(--theme-input)',
              display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><FileTextOutlined style={{fontSize:20,color:'var(--theme-muted)'}}/></div>}
           {editNameId===a.id?<Input size="small" value={nameInput} autoFocus onChange={e=>setNameInput(e.target.value)} onPressEnter={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}} onBlur={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}}/>:<div title="双击重命名" onDoubleClick={()=>{setEditNameId(a.id);setNameInput(a.name)}} style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>{a.name.length>20?a.name.slice(0,20)+'...':a.name}</div>}

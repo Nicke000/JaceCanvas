@@ -162,31 +162,24 @@ const App: React.FC = () => {
     initAutosave();
     setAutosaveContext(activeProjectId || '', useCanvasStore.getState().projectName);
     void (async () => {
-      let crashCount = 0;
+      // 启动时始终尝试恢复最近编辑的项目（画布为空才加载，避免覆盖新建内容）。
+      // 修复：之前仅在 crashCount===0 时自动恢复；强杀进程后 crashCount 持久化 >0，
+      // 导致之后每次启动都只弹"崩溃恢复"提示、不加载画布，用户点"忽略"后生成内容看似全部丢失。
       try {
-        crashCount = (await (window as any).electronAPI?.getCrashCount?.()) || 0;
-        if (crashCount > 0) {
-          // 优先针对最近编辑的项目恢复（用户崩溃前的工作现场）
-          let projects: Array<{ id: string; name?: string }> = [];
-          try { projects = await db.projects.orderBy('updatedAt').reverse().toArray(); } catch { /* 忽略 */ }
-          const last = projects[0];
-          const pid = last?.id || activeProjectId || 'default';
-          const pname = last?.name || useCanvasStore.getState().projectName || '未命名项目';
-          if (last) setAutosaveContext(pid, pname);
-          const data = await restoreAutosave();
-          if (data?.nodes?.length) { setRecoverData({ data: data as { nodes: unknown[]; edges: unknown[] }, projectId: pid, projectName: pname }); setRecoverModalOpen(true); }
-        }
-      } catch { /* 忽略 */ }
-      // 无崩溃记录时也恢复上次打开的项目（画布为空才加载，避免覆盖新建内容）
-      try {
-        if (crashCount === 0) {
-          const projects = await db.projects.orderBy('updatedAt').reverse().toArray();
-          const last = projects.find(p => p.id && p.canvasData?.nodes?.length);
-          if (last && !useCanvasStore.getState().nodes.length) {
-            setAutosaveContext(last.id, last.name || '未命名项目');
-            useCanvasStore.getState().setProjectName(last.name || '未命名项目');
-            useCanvasStore.getState().loadCanvas(last.canvasData.nodes as any, (last.canvasData.edges || []) as any);
-          }
+        const projects = await db.projects.orderBy('updatedAt').reverse().toArray();
+        const last = projects.find(p => p.id && p.canvasData?.nodes?.length);
+        if (last && !useCanvasStore.getState().nodes.length) {
+          setAutosaveContext(last.id, last.name || '未命名项目');
+          useCanvasStore.getState().setProjectName(last.name || '未命名项目');
+          useCanvasStore.getState().loadCanvas(last.canvasData.nodes as any, (last.canvasData.edges || []) as any);
+          // 崩溃提示降级为"已自动恢复"提醒（数据已恢复，弹窗用于提示手动保存/查看版本历史）
+          try {
+            const crashCount = (await (window as any).electronAPI?.getCrashCount?.()) || 0;
+            if (crashCount > 0) {
+              setRecoverData({ data: last.canvasData, projectId: last.id, projectName: last.name || '未命名项目' });
+              setRecoverModalOpen(true);
+            }
+          } catch { /* 忽略 */ }
         }
       } catch { /* 忽略 */ }
     })();

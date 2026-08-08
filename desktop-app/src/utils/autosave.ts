@@ -1,7 +1,7 @@
 import { db, type ProjectSnapshot } from '@/utils';
 import { useCanvasStore } from '@/stores/canvasStore';
 
-const AUTOSAVE_DELAY_MS = 4000;
+const AUTOSAVE_DELAY_MS = 1500;
 const MAX_SNAPSHOTS = 10;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let initialized = false;

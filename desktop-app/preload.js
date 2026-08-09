@@ -50,6 +50,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
   logRenderError: (entry) => ipcRenderer.invoke('log-render-error', entry),
   saveGpuSetting: (enabled) => ipcRenderer.invoke('save-gpu-setting', enabled),
+  updateRuntimeSettings: (patch) => ipcRenderer.invoke('update-runtime-settings', patch),
+  saveLocalFile: (payload) => ipcRenderer.invoke('save-local-file', payload),
   saveLocalAsset: (payload) => ipcRenderer.invoke('save-local-asset', payload),
   cacheMedia: (payload) => ipcRenderer.invoke('cache-media', payload),
   cleanupCache: () => ipcRenderer.invoke('cleanup-cache'),

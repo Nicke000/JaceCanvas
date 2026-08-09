@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Sparkles, Video } from 'lucide-react';
+import { Sparkles, Video, AudioLines } from 'lucide-react';
 import { Button, Input, InputNumber, message, Segmented, Modal, Form, Select } from 'antd';
 import { fetchModelsFromApi } from '@/services/chat.service';
 import { LeftOutlined, RightOutlined, CloseOutlined, ThunderboltOutlined, ReloadOutlined, CheckOutlined, UploadOutlined, PlusOutlined, UserOutlined, EnvironmentOutlined } from '@ant-design/icons';
@@ -45,55 +45,100 @@ const TTS_VOICES = [
   { value: 'Chinese (Mandarin)_Radio_Host', label: '电台男主播' },
 ];
 
-type ShotState = { index: number; imageUrl: string; remoteUrl: string; status: 'pending' | 'generating' | 'done' | 'error'; error?: string; confirmed: boolean };
+type ShotState = { index: number; imageUrl: string; remoteUrl: string; status: 'pending' | 'generating' | 'done' | 'error'; error?: string; confirmed: boolean; variants?: string[] };
 type VideoShotState = { index: number; videoUrl: string; status: 'pending' | 'generating' | 'done' | 'error'; error?: string; confirmed: boolean; prompt?: string; hasAudio?: boolean };
-type AudioShotState = { index: number; audioUrl: string; status: 'pending' | 'generating' | 'done' | 'error'; error?: string; confirmed: boolean };
+type AudioShotState = { index: number; audioUrl: string; sfxUrl?: string; status: 'pending' | 'generating' | 'done' | 'error'; error?: string; confirmed: boolean };
+
+const STUDIO_KEY = 'jacecanvas-drama-studio-v1';
+function loadStudio<T>(key: string, fallback: T): T {
+  try { const raw = localStorage.getItem(STUDIO_KEY); const d = raw ? JSON.parse(raw) : {}; return (key in d) ? d[key] as T : fallback; } catch { return fallback; }
+}
+function saveStudio(patch: Record<string, unknown>) {
+  try {
+    const raw = localStorage.getItem(STUDIO_KEY);
+    const d = raw ? JSON.parse(raw) : {};
+    Object.assign(d, patch);
+    localStorage.setItem(STUDIO_KEY, JSON.stringify(d));
+  } catch { /* ignore */ }
+}
 
 /** 短剧工作室：从剧本到成片的分步向导 */
 export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const settings = useSettingsStore();
   const [step, setStep] = useState(0);
   // 步骤1 剧本
-  const [script, setScript] = useState('');
+  const [script, setScript] = useState(() => loadStudio('script', ''));
   const EXAMPLE_SCRIPT = '一个雨夜，女孩林晓在便利店门口遇到一只受伤的小猫。她把小猫带回家照顾，给它取名叫「团子」。一周后小猫康复，林晓发现团子其实会发光——原来它是来自星星的守护精灵。从此一人一猫开始了一段治愈的都市奇幻日常。';
-  const [segmentCount, setSegmentCount] = useState(3);
-  const [totalDuration, setTotalDuration] = useState(15);
-  const [segmentRule, setSegmentRule] = useState('每段 5 秒');
+  // 爆款套路模板库：点击一键填充剧本（可继续编辑）
+  const DRAMA_TEMPLATES = [
+    { name: '治愈奇幻', desc: '暖心治愈向', script: EXAMPLE_SCRIPT },
+    { name: '霸总逆袭', desc: '高冲突爽文', script: '被公司扫地出门的林晚，在雨夜接到一个神秘电话：有人愿出一百万买她爷爷留下的破旧别墅。别墅里藏着一幅画，画中人竟与她一模一样。搬进别墅的第一夜，一个西装男人从画中走出——他是被封印百年的商业帝王陆霆。两人立下契约：她帮他重掌帝国，他助她复仇逆袭。' },
+    { name: '穿越重生', desc: '前世今生', script: '设计师苏念一觉醒来回到三年前——那个毁掉她人生的项目提案还没有提交。这一世她提前布局：提前结交贵人、避开渣男、抢在对手之前发布爆款设计。但一个她上辈子没见过的男人突然出现，自称是她的"系统守护者"，而他的真实身份让整个计划都变得不确定。' },
+    { name: '带货种草', desc: '电商转化向', script: '美妆博主林可可今天要直播推一款新品精华，但样品突然被闺蜜换成劣质货。她将计就计，当着十万观众拆穿假货、当场演示真品效果，还顺势揭露了行业黑幕。这场"翻车直播"意外爆红，一夜涨粉百万——而那个换货的"闺蜜"背后，竟然另有其人。' },
+    { name: '悬疑反转', desc: '强钩子烧脑', script: '深夜便利店，店员小陈发现常客老王每晚 11 点 58 分都来买同一瓶矿泉水，从不找零。今晚老王来晚了 3 分钟，神色慌张。小陈调出监控，发现老王每天买的瓶子里都有一张字条。字条上写着同一句话："明天就是最后一天。" 而小陈突然想起——自己就是老王失忆前最好的朋友。' },
+    { name: '都市情感', desc: '细腻生活流', script: '合租室友沈清和陆谦因为一只猫产生交集。沈清是咖啡师，陆谦是夜班医生，两人作息完全错开，全靠便利贴交流。直到某天沈清发现陆谦的便利贴从"记得买牛奶"变成了"我辞职了"。她第一次在白天敲响了他的门。' },
+    { name: '古风虐恋', desc: '古装权谋', script: '将军府庶女云袖被送入宫中为质。她以一曲琵琶技惊四座，被冷面帝王萧景琰看中。但她不知道，萧景琰正是十年前灭她满门的仇人。复仇与爱意纠缠，她在帝王枕边步步为营，直到发现当年灭门真凶另有其人。' },
+  ];
+  const [segmentCount, setSegmentCount] = useState(() => loadStudio('segmentCount', 3));
+  const [totalDuration, setTotalDuration] = useState(() => loadStudio('totalDuration', 15));
+  const [segmentRule, setSegmentRule] = useState(() => loadStudio('segmentRule', '每段 5 秒'));
   // 步骤2 分镜
-  const [personCount, setPersonCount] = useState(2);
+  const [personCount, setPersonCount] = useState(() => loadStudio('personCount', 2));
   const [personNotes, setPersonNotes] = useState<Record<string, string>>({});
-  const [sceneNotes, setSceneNotes] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState('');
+  const [sceneNotes, setSceneNotes] = useState(() => loadStudio('sceneNotes', ''));
+  const [systemPrompt, setSystemPrompt] = useState(() => loadStudio('systemPrompt', ''));
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [segments, setSegments] = useState<StoryboardSegment[]>([]);
+  const [segments, setSegments] = useState<StoryboardSegment[]>(() => loadStudio('segments', []));
   const [generating, setGenerating] = useState(false);
   const [translating, setTranslating] = useState<Record<string, boolean>>({});
   // 步骤3 图片
-  const [imgEngine, setImgEngine] = useState<'paid' | 'comfyui'>('paid');
-  const [imgProvider, setImgProvider] = useState('');
-  const [imgModel, setImgModel] = useState('');
+  const [imgEngine, setImgEngine] = useState<'paid' | 'comfyui'>(() => loadStudio('imgEngine', 'paid'));
+  const [imgProvider, setImgProvider] = useState(() => loadStudio('imgProvider', ''));
+  const [imgModel, setImgModel] = useState(() => loadStudio('imgModel', ''));
   const [charModel, setCharModel] = useState(''); // 角色参考图端口模型
   const [sceneModel, setSceneModel] = useState(''); // 场景概念图端口模型
   const [comfyWorkflows, setComfyWorkflows] = useState<Array<{ id: string; name: string }>>([]);
-  const [comfyWorkflow, setComfyWorkflow] = useState('');
-  const [shots, setShots] = useState<ShotState[]>([]);
+  const [comfyWorkflow, setComfyWorkflow] = useState(() => loadStudio('comfyWorkflow', ''));
+  const [shots, setShots] = useState<ShotState[]>(() => loadStudio('shots', []));
   const [generatingImages, setGeneratingImages] = useState(false);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [charNotes, setCharNotes] = useState('');
   // 步骤4 视频
-  const [vidEngine, setVidEngine] = useState<'paid' | 'comfyui'>('paid');
-  const [vidProvider, setVidProvider] = useState('');
+  const [vidEngine, setVidEngine] = useState<'paid' | 'comfyui'>(() => loadStudio('vidEngine', 'paid'));
+  const [vidMode, setVidMode] = useState<'first' | 'first-last'>(() => loadStudio('vidMode', 'first'));
+  const [studioServerId, setStudioServerId] = useState(() => loadStudio('studioServerId', ''));
+  const [vidProvider, setVidProvider] = useState(() => loadStudio('vidProvider', ''));
   const [vidModel, setVidModel] = useState('');
-  const [vidComfyWorkflow, setVidComfyWorkflow] = useState('');
-  const [videoShots, setVideoShots] = useState<VideoShotState[]>([]);
+  const [vidComfyWorkflow, setVidComfyWorkflow] = useState(() => loadStudio('vidComfyWorkflow', ''));
+  const [videoShots, setVideoShots] = useState<VideoShotState[]>(() => loadStudio('videoShots', []));
   const [generatingVideos, setGeneratingVideos] = useState(false);
   const [regeneratingVideoIndex, setRegeneratingVideoIndex] = useState<number | null>(null);
   // 步骤5 配音
   const [audioEngine, setAudioEngine] = useState<'minimax' | 'comfyui'>('minimax');
   const [audioComfyWorkflow, setAudioComfyWorkflow] = useState('');
+  // 全局 BGM + 每镜音效（三轨混音：对白 + 音效 + BGM）
+  const [bgmUrl, setBgmUrl] = useState(() => loadStudio('bgmUrl', ''));
+  const audioFileRef = React.useRef<HTMLInputElement>(null);
+  const sfxFileRef = React.useRef<HTMLInputElement>(null);
+  const sfxTargetRef = React.useRef<number | null>(null);
+  const uploadAudioLocal = async (e: React.ChangeEvent<HTMLInputElement>, target: 'bgm' | 'sfx', index?: number) => {
+    const files = Array.from(e.target.files || []); e.target.value = '';
+    if (!files.length) return;
+    const f = files[0];
+    const b64 = await new Promise<string>(res => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
+    let url = '';
+    try {
+      const saved = await (window as any).electronAPI?.saveLocalFile?.({ b64, filename: f.name, dir: useSettingsStore.getState().assetSavePath || undefined });
+      if (saved?.url) url = saved.url;
+    } catch { /* ignore */ }
+    if (!url) { message.warning('音频保存失败：请检查素材保存路径是否可写'); return; }
+    if (target === 'bgm') { setBgmUrl(url); message.success('BGM 已设置'); }
+    else if (index != null) { setAudioShots(prev => { const list = prev.length > index ? prev : [...prev, ...segments.slice(prev.length).map((_, k) => ({ index: prev.length + k, audioUrl: '', status: 'pending' as const, confirmed: false }))]; return list.map((s, j) => j === index ? { ...s, sfxUrl: url } : s); }); message.success(`镜头 ${index + 1} 音效已设置`); }
+  };
   const [voiceId, setVoiceId] = useState('female-tianmei');
   const [customVoiceId, setCustomVoiceId] = useState('');
-  const [audioShots, setAudioShots] = useState<AudioShotState[]>([]);
+  const [audioShots, setAudioShots] = useState<AudioShotState[]>(() => loadStudio('audioShots', []));
+
   const [generatingAudios, setGeneratingAudios] = useState(false);
   const [regeneratingAudioIndex, setRegeneratingAudioIndex] = useState<number | null>(null);
   // 步骤6 合成
@@ -138,10 +183,51 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
   React.useEffect(() => {
     if (autoStage !== 'compose') return;
     if (composing) return;
+    if (!composeResultRef.current) { setAutoStage('idle'); return; }
     setAutoStage('done');
     message.success('一键生成完成！成片已就绪，可在合成区查看/导出');
   }, [autoStage, composing]);
   // ===== 导出拍摄表 / 剪辑清单 =====
+  const runLipsync = async () => {
+    if (!finalVideo) { message.warning('请先合成成片，再做数字人口播'); return; }
+    if (!lipsyncWorkflow) { message.warning('请先选择对口型工作流（ComfyUI 中安装 lipsync 类节点后，在下方下拉中选取）'); return; }
+    setLipsyncing(true);
+    try {
+      const inputValues: Record<string, unknown> = {};
+      const wf = await fetchWorkflowConfig(lipsyncWorkflow).catch(() => null);
+      if (wf?.api_config?.enabledParams) {
+        const keys = Object.keys(wf.api_config.enabledParams).filter(k => wf.api_config?.enabledParams[k]);
+        // 视频/图片输入填成片；音频输入填第一镜对白（或成片音轨）
+        const videoKey = keys.find(k => /video|movie|input_video/i.test(k));
+        const audioKey = keys.find(k => /audio|voice|sound/i.test(k));
+        const dialogueUrl = audioShots.find(a => a.audioUrl)?.audioUrl || '';
+        const fallbackMedia = keys.find(k => /image|video|media|input/i.test(k) && !/audio/i.test(k));
+        if (videoKey) inputValues[videoKey] = finalVideo;
+        else if (fallbackMedia) inputValues[fallbackMedia] = finalVideo;
+        if (audioKey && dialogueUrl) inputValues[audioKey] = dialogueUrl;
+        // 其余字符串参数保持工作流默认（从模板读取）
+        for (const k of keys) {
+          if (inputValues[k] !== undefined) continue;
+          const [nodeId, field] = k.split(':');
+          const v = wf.workflow_template?.[nodeId]?.inputs?.[field];
+          if (v !== undefined && v !== null && typeof v !== 'object') inputValues[k] = v;
+        }
+      }
+      const resp = await generate({ workflow_id: lipsyncWorkflow, input_values: inputValues }, studioServerId || undefined);
+      const result = await pollResult(resp.prompt_id, () => undefined, 3000, undefined, undefined, studioServerId || undefined);
+      const raw = result as any;
+      if (!raw?.outputs) throw new Error('对口型工作流未返回结果');
+      const outVideo = (Array.isArray(raw.outputs) ? raw.outputs[0] : Object.values(raw.outputs as Record<string, unknown>)[0]) as any;
+      const url = typeof outVideo === 'string' ? outVideo : (outVideo?.video || outVideo?.url || outVideo?.images?.[0] || '');
+      if (!url) throw new Error('对口型结果中没有视频地址');
+      const cached = await cachePaidMedia(String(url), 'video');
+      setLipsyncedVideo(cached);
+      setComposeHint('对口型完成 · 可在下方预览/下载');
+      message.success('数字人口播完成');
+    } catch (error: any) {
+      message.error(String(error?.message || error));
+    } finally { setLipsyncing(false); }
+  };
   const exportShotList = () => {
     if (!segments.length) { message.warning('没有分镜可导出'); return; }
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' ')}"`;
@@ -177,6 +263,10 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     message.success('已导出剪辑工程（EDL，可用 Premiere/剪映等导入）');
   };
   const [finalVideo, setFinalVideo] = useState('');
+  // 数字人口播（对口型）：对成片做唇形同步（需 ComfyUI lipsync 工作流）
+  const [lipsyncWorkflow, setLipsyncWorkflow] = useState(() => loadStudio('lipsyncWorkflow', ''));
+  const [lipsyncing, setLipsyncing] = useState(false);
+  const [lipsyncedVideo, setLipsyncedVideo] = useState('');
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [composeHint, setComposeHint] = useState('');
   const [dramaAiModalOpen, setDramaAiModalOpen] = useState(false);
@@ -261,20 +351,22 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
 
   const [imgMode, setImgMode] = useState<'direct' | 'setup'>('direct');
   const [imgStyle, setImgStyle] = useState('none');
+  const [imgVariants, setImgVariants] = useState(() => loadStudio('imgVariants', 1));
   const [generatingRefs, setGeneratingRefs] = useState(false);
   const [generatingScene, setGeneratingScene] = useState(false);
   const generateCharRefs = async () => {
-    const descs = Object.entries(personNotes).map(([, v]) => v).filter(Boolean);
-    if (!descs.length) { message.warning('请先在剧本页填写角色描述'); return; }
+    const cards = characterCards.length ? characterCards : Object.entries(personNotes).filter(([, v]) => String(v).trim()).map(([k, v]) => ({ id: 'card-' + k, name: k.replace(/^person_/, '角色 '), description: String(v), refImage: '' }));
+    if (!cards.length) { message.warning('请先在剧本页填写角色描述'); return; }
     setGeneratingRefs(true);
     try {
-      const urls: string[] = [];
-      for (const d of descs.slice(0, 3)) {
-        const { url } = await generateOneImage(`角色定妆图，全身像，干净纯色背景：${d}`, charModel || undefined, '角色参考图');
-        urls.push(url);
+      for (const card of cards) {
+        if (!String(card.description || '').trim()) continue;
+        const { url } = await generateOneImage(`角色定妆图「${card.name}」，全身像，干净纯色背景：${card.description}`, charModel || undefined, '角色参考图');
+        // 临时卡（characterCards 为空时由 personNotes 生成）直接插入带 refImage 的卡，避免 refImage 丢失
+        setCharacterCards(prev => prev.some(c => c.id === card.id) ? prev.map(c => c.id === card.id ? { ...c, refImage: url } : c) : [...prev, { ...card, refImage: url }]);
+        setCharRefs(prev => prev.includes(url) ? prev : [...prev, url]);
       }
-      setCharRefs(urls);
-      message.success(`已生成 ${urls.length} 张角色定妆图`);
+      message.success(`已生成 ${cards.filter(c => String(c.description || '').trim()).length} 张角色定妆图`);
     } catch (e: any) { message.error(String(e?.message || e)); }
     finally { setGeneratingRefs(false); }
   };
@@ -288,7 +380,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     } catch (e: any) { message.error(String(e?.message || e)); }
     finally { setGeneratingScene(false); }
   };
-  const generateOneImage = async (prompt: string, modelOverride?: string, tag = '逐镜图片'): Promise<{ url: string; remoteUrl: string }> => {
+  const generateOneImage = async (prompt: string, modelOverride?: string, tag = '逐镜图片', refImageOverride?: string): Promise<{ url: string; remoteUrl: string }> => {
     const usedModel = (modelOverride || imgModel || '').trim();
     if (imgEngine === 'paid') {
       const provider = imgProvider || imgProviders[0] || '';
@@ -296,7 +388,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
       if (!profile?.apiKey) throw new Error('请先配置该付费厂商的 API Key');
       const model = usedModel || imgProviderOptions[0]?.id || profile.selectedModel || '';
       if (!model) throw new Error('请选择图片模型');
-      const refImage = charRefs[0] || undefined;
+      const refImage = refImageOverride || charRefs[0] || undefined;
       const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, refImage ? { type: 'image-to-image', imageUrl: refImage, prompt } : { type: 'text-to-image', prompt });
       if (!result.url) throw new Error('图片接口未返回地址');
       const url = await cachePaidMedia(result.url, 'image');
@@ -305,8 +397,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     }
     if (!comfyWorkflow) throw new Error('请选择 ComfyUI 工作流');
     const inputValues = await buildComfyInput(comfyWorkflow, prompt);
-    const resp = await generate({ workflow_id: comfyWorkflow, input_values: inputValues });
-    const result = await pollResult(resp.prompt_id, () => undefined, 2000, undefined, undefined);
+    const resp = await generate({ workflow_id: comfyWorkflow, input_values: inputValues }, studioServerId || undefined);
+    const result = await pollResult(resp.prompt_id, () => undefined, 2000, undefined, undefined, studioServerId || undefined);
     const url = result.data?.[0]?.url;
     if (!url) throw new Error('工作流未返回图片');
     const cached = await cachePaidMedia(url, 'image');
@@ -325,11 +417,25 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
       if (!mountedRef.current) return;
       setShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'generating' } : s));
       const seg = segments[i] as any;
+      const prevSeg = i > 0 ? (segments[i - 1] as any) : null;
+      const prevPrompt = prevSeg?.lastFrame?.promptEn || prevSeg?.lastFrame?.prompt || '';
       const styleSuffix = getAllStyles().find(x => x.id === imgStyle)?.suffix || '';
-      const prompt = (seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '') + (charNotes ? `。角色设定：${charNotes}` : '') + (styleSuffix ? `, ${styleSuffix}` : '');
+      const shotChars = Array.isArray(seg?.characters) ? seg.characters.map((c: unknown) => String(c)) : [];
+      const cardDesc = characterCards.filter(c => shotChars.some((n: string) => String(c.name).includes(n) || n.includes(String(c.name)))).map(c => `角色「${c.name}」：${c.description}`).join('；');
+      const cardRef = (() => { const c = characterCards.find(x => shotChars.some((n: string) => String(x.name).includes(n) || n.includes(String(x.name))) && x.refImage); return c?.refImage || undefined; })();
+      const prompt = (seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '') + (prevPrompt ? `。衔接上一镜尾帧：${prevPrompt}` : '') + (cardDesc ? `。${cardDesc}` : (charNotes ? `。角色设定：${charNotes}` : '')) + (styleSuffix ? `, ${styleSuffix}` : '');
       try {
-        const { url, remoteUrl } = await generateOneImage(prompt);
-        setShots(prev => prev.map((s, j) => j === i ? { ...s, imageUrl: url, remoteUrl, status: 'done' } : s));
+        // 变体矩阵：每镜生成 N 个变体（N=imgVariants），确认时可切换挑选
+        const n = Math.max(1, Math.min(4, Number(imgVariants) || 1));
+        const urls: string[] = [];
+        let firstRemote = '';
+        for (let v = 0; v < n; v++) {
+          const res = await generateOneImage(prompt, undefined, '逐镜图片', i > 0 ? (list[i - 1]?.imageUrl || cardRef || undefined) : (cardRef || undefined));
+          urls.push(res.url); if (!firstRemote) firstRemote = res.remoteUrl;
+        }
+        const url = urls[0];
+        list[i] = { ...list[i], imageUrl: url, remoteUrl: firstRemote, status: 'done', variants: n > 1 ? urls : undefined };
+        setShots(prev => prev.map((s, j) => j === i ? { ...s, imageUrl: url, remoteUrl: firstRemote, status: 'done', variants: n > 1 ? urls : undefined } : s));
       } catch (error: any) {
         setShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'error', error: String(error?.message || error) } : s));
       }
@@ -339,11 +445,14 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
 
   const regenerateOne = async (i: number) => {
     const seg = segments[i] as any;
-    const prompt = (seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '') + (charNotes ? `。角色设定：${charNotes}` : '');
+    const prevSeg = i > 0 ? (segments[i - 1] as any) : null;
+    const prevPrompt = prevSeg?.lastFrame?.promptEn || prevSeg?.lastFrame?.prompt || '';
+    const prompt = (seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '') + (prevPrompt ? `。衔接上一镜尾帧：${prevPrompt}` : '') + (charNotes ? `。角色设定：${charNotes}` : '');
     setRegeneratingIndex(i);
     setShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'generating', confirmed: false } : s));
     try {
-      const { url, remoteUrl } = await generateOneImage(prompt);
+      const cardRefL6 = characterCards.find(x => Array.isArray(seg?.characters) && seg.characters.some((n: unknown) => String(x.name).includes(String(n)) || String(n).includes(String(x.name))) && x.refImage)?.refImage;
+      const { url, remoteUrl } = await generateOneImage(prompt, undefined, '逐镜图片', i > 0 ? (shots[i - 1]?.imageUrl || cardRefL6 || undefined) : (cardRefL6 || undefined));
       setShots(prev => prev.map((s, j) => j === i ? { ...s, imageUrl: url, remoteUrl, status: 'done' } : s));
     } catch (error: any) {
       setShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'error', error: String(error?.message || error) } : s));
@@ -352,24 +461,36 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
   };
 
   // ===== 步骤4：逐镜图生视频 =====
-  const generateOneVideo = async (shot: ShotState | undefined, prompt: string, duration: number): Promise<string> => {
+  const generateOneVideo = async (shot: ShotState | undefined, prompt: string, duration: number, endShot?: ShotState | undefined): Promise<string> => {
     if (vidEngine === 'comfyui') {
       if (!vidComfyWorkflow) throw new Error('请选择图生视频工作流');
       const inputValues = await buildComfyInput(vidComfyWorkflow, prompt);
       const wf = await fetchWorkflowConfig(vidComfyWorkflow).catch(() => null);
       if (wf?.api_config?.enabledParams) {
         const keys = Object.keys(wf.api_config.enabledParams).filter(k => wf.api_config?.enabledParams[k]);
-        const imgKey = keys.find(k => {
+        const imgKeys = keys.filter(k => {
           const [nodeId, field] = k.split(':');
           const node = wf.workflow_template?.[nodeId];
           const cls = String(node?.class_type || '').toLowerCase();
           return cls.includes('loadimage') || /image|reference|file|path/i.test(field);
         });
-        if (imgKey) inputValues[imgKey] = shot?.remoteUrl || shot?.imageUrl || '';
-        else throw new Error('未在该工作流中找到图片输入字段，请检查工作流或改用付费引擎');
+        if (imgKeys.length) {
+          inputValues[imgKeys[0]] = shot?.remoteUrl || shot?.imageUrl || '';
+          if (vidMode === 'first-last' && imgKeys.length > 1) {
+            const endUrl = endShot?.remoteUrl || endShot?.imageUrl || '';
+            if (endUrl) inputValues[imgKeys[1]] = endUrl;
+          }
+        } else {
+          const fallbackKey = keys.find(k => {
+            const [nodeId, field] = k.split(':');
+            return /image|img|reference|input_image|first/i.test(field) || String(nodeId).includes('Image');
+          });
+          if (fallbackKey) inputValues[fallbackKey] = shot?.remoteUrl || shot?.imageUrl || '';
+          else throw new Error('未在该工作流中找到图片输入字段，请检查工作流或改用付费引擎');
+        }
       }
-      const resp = await generate({ workflow_id: vidComfyWorkflow, input_values: inputValues });
-      const result = await pollResult(resp.prompt_id, () => undefined, 3000, undefined, undefined);
+      const resp = await generate({ workflow_id: vidComfyWorkflow, input_values: inputValues }, studioServerId || undefined);
+      const result = await pollResult(resp.prompt_id, () => undefined, 3000, undefined, undefined, studioServerId || undefined);
       const url = result.data?.[0]?.url;
       if (!url) throw new Error('工作流未返回视频');
       const cachedV = await cachePaidMedia(url, 'video');
@@ -382,7 +503,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     const model = vidModel || vidProviderOptions[0]?.id || profile.selectedModel || '';
     if (!model) throw new Error('请选择视频模型');
     const imageUrl = shot?.remoteUrl || shot?.imageUrl || '';
-    const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, imageUrl ? { type: 'image-to-video', imageUrl, prompt, duration } : { type: 'text-to-video', prompt, duration });
+    const endImageUrl = vidMode === 'first-last' ? (endShot?.remoteUrl || endShot?.imageUrl || '') : '';
+    const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, imageUrl ? (endImageUrl ? { type: 'image-to-video', imageUrl, endImageUrl, prompt, duration } as any : { type: 'image-to-video', imageUrl, prompt, duration }) : { type: 'text-to-video', prompt, duration });
     if (!result.url) throw new Error('视频接口未返回地址');
     const cachedV2 = await cachePaidMedia(result.url, 'video');
     addGenerationHistory({ id: 'studio-vid-' + Date.now(), nodeId: 'story-drama-studio', nodeName: '短剧工作室·逐镜视频', nodeType: 'studioVideo', params: { prompt: prompt.slice(0, 120), model }, resultUrl: cachedV2, results: [{ type: 'video', url: cachedV2 }], status: 'success', timestamp: Date.now() });
@@ -402,7 +524,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
       const seg = segments[i] as any;
       const prompt = list[i].prompt || '';
       try {
-        const url = await generateOneVideo(shots[i], prompt, Number(seg?.duration) || 5);
+        const url = await generateOneVideo(shots[i], prompt, Number(seg?.duration) || 5, shots[i + 1]);
         setVideoShots(prev => prev.map((s, j) => j === i ? { ...s, videoUrl: url, status: 'done' } : s));
       } catch (error: any) {
         setVideoShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'error', error: String(error?.message || error) } : s));
@@ -417,7 +539,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     setRegeneratingVideoIndex(i);
     setVideoShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'generating', confirmed: false } : s));
     try {
-      const url = await generateOneVideo(shots[i], prompt, Number(seg?.duration) || 5);
+      const url = await generateOneVideo(shots[i], prompt, Number(seg?.duration) || 5, shots[i + 1]);
       setVideoShots(prev => prev.map((s, j) => j === i ? { ...s, videoUrl: url, status: 'done' } : s));
     } catch (error: any) {
       setVideoShots(prev => prev.map((s, j) => j === i ? { ...s, status: 'error', error: String(error?.message || error) } : s));
@@ -430,8 +552,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     if (audioEngine === 'comfyui') {
       if (!audioComfyWorkflow) throw new Error('请选择语音/配音工作流');
       const inputValues = await buildComfyInput(audioComfyWorkflow, dialogue);
-      const resp = await generate({ workflow_id: audioComfyWorkflow, input_values: inputValues });
-      const result = await pollResult(resp.prompt_id, () => undefined, 3000, undefined, undefined);
+      const resp = await generate({ workflow_id: audioComfyWorkflow, input_values: inputValues }, studioServerId || undefined);
+      const result = await pollResult(resp.prompt_id, () => undefined, 3000, undefined, undefined, studioServerId || undefined);
       const url = result.data?.[0]?.url;
       if (!url) throw new Error('工作流未返回音频');
       const cachedA = await cachePaidMedia(url, 'audio');
@@ -451,7 +573,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
   const generateAllAudios = async () => {
     if (!segments.length) { message.warning('请先生成分镜'); return; }
     setGeneratingAudios(true);
-    const list: AudioShotState[] = segments.map((_, i) => ({ index: i, audioUrl: '', status: 'pending', confirmed: false }));
+    const list: AudioShotState[] = segments.map((_, i) => ({ index: i, audioUrl: '', sfxUrl: audioShots[i]?.sfxUrl || '', status: 'pending', confirmed: false }));
     setAudioShots(list);
     for (let i = 0; i < list.length; i++) {
       const dialogue = String((segments[i] as any).dialogue || '').trim();
@@ -523,8 +645,29 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
   ];
 
   const [imgTargetKind, setImgTargetKind] = useState<'shot' | 'char' | 'scene'>('shot');
-  const [charRefs, setCharRefs] = useState<string[]>([]);
-  const [sceneRefs, setSceneRefs] = useState<string[]>([]);
+  const [charRefs, setCharRefs] = useState<string[]>(() => loadStudio('charRefs', []));
+  const [sceneRefs, setSceneRefs] = useState<string[]>(() => loadStudio('sceneRefs', []));
+  type CharacterCard = { id: string; name: string; description: string; refImage: string };
+  const [characterCards, setCharacterCards] = useState<CharacterCard[]>(() => loadStudio('characterCards', []));
+  const userClearedCardsRef = React.useRef(false);
+  React.useEffect(() => {
+    const entries = Object.entries(personNotes).filter(([, v]) => String(v).trim());
+    // 用户手动删光卡片后不再自动重建（userClearedCardsRef 置位）
+    if (entries.length && characterCards.length === 0 && !userClearedCardsRef.current) {
+      setCharacterCards(entries.map(([k, v]) => ({ id: 'card-' + k, name: k.replace(/^person_/, '角色 '), description: String(v), refImage: '' })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personNotes]);
+  const studioStateRef = React.useRef<Record<string, unknown>>({});
+  studioStateRef.current = { script, segmentCount, totalDuration, segmentRule, personCount, sceneNotes, systemPrompt, segments, shots, videoShots, audioShots, bgmUrl, charRefs, sceneRefs, characterCards, personNotes, charNotes, voiceId, customVoiceId, audioEngine, audioComfyWorkflow, imgMode, imgStyle, timeline, finalVideo, imgEngine, imgProvider, imgModel, comfyWorkflow, vidEngine, vidMode, vidProvider, vidModel, vidComfyWorkflow, studioServerId };
+  // 自动保存工作区（剧本/分镜/镜头图/视频/配音）——退出再进入不丢失
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      saveStudio(studioStateRef.current);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [script, segmentCount, totalDuration, segmentRule, personCount, sceneNotes, systemPrompt, segments, shots, videoShots, audioShots, bgmUrl, charRefs, sceneRefs, characterCards, imgEngine, imgProvider, imgModel, comfyWorkflow, vidEngine, vidMode, vidProvider, vidModel, vidComfyWorkflow, studioServerId]);
+  React.useEffect(() => () => { saveStudio(studioStateRef.current); }, []);
   const imgFileRef = React.useRef<HTMLInputElement>(null);
   const refreshImgSources = (tab: typeof imgSourceTab) => {
     const items: Array<{ id: string; name: string; url?: string; type: string }> = [];
@@ -555,8 +698,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     }
     setImgSourceOpen(false);
   };
-  const applyShotImage = (i: number, url: string, kind: 'shot' | 'char' | 'scene' = 'shot') => { if (kind === 'char') { setCharRefs(prev => prev.includes(url) ? prev : [...prev, url]); message.success('已添加角色参考图'); } else if (kind === 'scene') { setSceneRefs(prev => prev.includes(url) ? prev : [...prev, url]); message.success('已添加场景参考图'); } else { setShots(prev => { const list = [...prev]; while (list.length <= i) list.push({ index: list.length, imageUrl: '', remoteUrl: '', status: 'pending', confirmed: false }); list[i] = { ...list[i], imageUrl: url, status: 'done', confirmed: false, error: undefined }; return list; }); message.success(`已为镜头 ${i + 1} 设置图片，请确认`); } };
-  const applySelectedImgSources = () => { const picked = imgSourceItems.filter(x => imgSelectedIds.has(x.id)); picked.forEach(p => { if (p.url) applyShotImage(imgTargetIndex, p.url, imgTargetKind); }); setImgSourceOpen(false); };
+  const applyShotImage = (i: number, url: string, kind: 'shot' | 'char' | 'scene' = 'shot') => { if (kind === 'char') { setCharRefs(prev => prev.includes(url) ? prev : [...prev, url]); setCharacterCards(prev => prev.map((c, idx) => idx === i ? { ...c, refImage: url } : c)); message.success('已添加角色参考图'); } else if (kind === 'scene') { setSceneRefs(prev => prev.includes(url) ? prev : [...prev, url]); message.success('已添加场景参考图'); } else { setShots(prev => { const list = [...prev]; while (list.length <= i) list.push({ index: list.length, imageUrl: '', remoteUrl: '', status: 'pending', confirmed: false }); list[i] = { ...list[i], imageUrl: url, status: 'done', confirmed: false, error: undefined }; return list; }); message.success(`已为镜头 ${i + 1} 设置图片，请确认`); } };
+  const applySelectedImgSources = () => { const picked = imgSourceItems.filter(x => imgSelectedIds.has(x.id)); if (imgTargetKind !== 'shot') { picked.forEach(p => { if (p.url) applyShotImage(imgTargetIndex, p.url, imgTargetKind); }); } else { let idx = imgTargetIndex; picked.forEach(p => { if (p.url) { applyShotImage(idx, p.url, 'shot'); idx += 1; } }); } setImgSourceOpen(false); };
 
   const [cols, setCols] = React.useState([0.34, 0.33, 0.33]);
   const [fracs, setFracs] = React.useState<Record<string, number>>({ left: 0.5, mid: 0.5, right: 0.5 });
@@ -595,18 +738,23 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
 
   const activeTimeline = timeline;
 
+  const composeResultRef = React.useRef(true);
   const composeFinal = async () => {
-    const items = activeTimeline.map(t => ({ video: t.videoUrl, audio: t.audioUrl || '', hasAudio: !!t.hasAudio, trim: { start: t.start || 0, end: t.end || 0 } }));
+    const items = activeTimeline.map(t => ({ video: t.videoUrl, audio: t.audioUrl || '', hasAudio: !!t.hasAudio, trim: { start: t.start || 0, end: t.end || 0 }, sfx: audioShots[t.shotIndex]?.sfxUrl || '' }));
     if (!items.length || items.some(i => !i.video)) { message.warning('时间线为空，请先完成视频生成'); return; }
     setComposing(true); setComposeHint('');
     try {
-      const result = await (window as any).electronAPI?.ffmpegCompose?.({ items });
+      const result = await (window as any).electronAPI?.ffmpegCompose?.({ items, bgm: bgmUrl || '' });
       if (!result?.url) throw new Error('合成失败，请确认 FFmpeg 可用');
       setFinalVideo(result.url);
       setComposeHint(`合成完成 · ${items.length} 段 · ${Math.round((result.size || 0) / 1024 / 1024)}MB`);
       message.success('成片合成完成');
+      composeResultRef.current = true;
+      return true;
     } catch (error: any) {
       message.error(String(error?.message || error));
+      composeResultRef.current = false;
+      return false;
     } finally { setComposing(false); }
   };
 
@@ -707,7 +855,10 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
         {step === 0 && <><section style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', border: '1px solid var(--theme-border)', borderRadius: 10, background: 'var(--theme-panel)', overflow: 'hidden' }}><div style={{ fontSize: 10, color: 'var(--theme-muted)', padding: '5px 10px', borderBottom: '1px solid var(--theme-border)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}><b style={{ color: 'var(--theme-primary)', background: 'rgba(99,102,241,.2)', borderRadius: 4, padding: '0 5px' }}>STEP 1</b><span style={{ fontWeight: 600, color: 'var(--theme-text)' }}>剧本</span><span style={{ color: 'var(--theme-muted)' }}>→ 写剧情 → 生成分镜</span></div><div style={{ flex: 1, overflow: 'auto', padding: 10 }}>
         <h3 style={{ margin: '0 0 8px', fontSize: 14 }}>① 写剧本</h3>
         <p style={{ fontSize: 11, color: 'var(--theme-muted)', margin: '0 0 12px' }}>写一段剧情描述，AI 会拆分成连续镜头。也可以一句话开场（如：一个女孩在雨天捡到一只受伤的小猫，带回家照顾）。</p>
-        {!script.trim() && <div style={{ marginBottom: 6 }}><Button size="small" icon={<Sparkles size={14} />} onClick={() => setScript(EXAMPLE_SCRIPT)}>填入示例剧本（3 秒上手）</Button></div>}
+        {!script.trim() && <div style={{ marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}><Button size="small" icon={<Sparkles size={14} />} onClick={() => setScript(EXAMPLE_SCRIPT)}>填入示例剧本（3 秒上手）</Button>
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>套路模板:</span>
+          <select onChange={e => { const t = DRAMA_TEMPLATES.find(x => x.name === e.target.value); if (t) { setScript(t.script); message.success(`已填充「${t.name}」模板剧本，可继续修改`); } }} style={{ maxWidth: 150, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: '3px 4px', fontSize: 11 }}><option value="">选择模板…</option>{DRAMA_TEMPLATES.map(t => <option key={t.name} value={t.name}>{t.name}（{t.desc}）</option>)}</select>
+        </div>}
         <textarea value={script} onChange={e => setScript(e.target.value)} placeholder="剧情 / 剧本…" style={{ width: '100%', minHeight: 180, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 8, padding: 10, fontSize: 13, resize: 'vertical', lineHeight: 1.7 }} />
         <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <label style={{ fontSize: 11, color: 'var(--theme-text)' }}>分镜数 <InputNumber size="small" min={1} max={30} value={segmentCount} onChange={v => setSegmentCount(Number(v) || 3)} /></label>
@@ -770,13 +921,26 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
           </div>
         )}
         <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 220, padding: 8, borderRadius: 8, background: 'var(--theme-border)' }}>
-            <div style={{ fontSize: 10, color: 'var(--theme-muted)', marginBottom: 6 }}>角色参考图（选填）</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              {charRefs.map((u, j) => <img key={j} src={u} alt="" style={{ width: 44, height: 44, borderRadius: 6, objectFit: 'cover', border: '1px solid rgba(255,255,255,.15)' }} />)}
-              <Button size="small" icon={<PlusOutlined />} onClick={() => openImgSources(0, 'asset', 'char')}>添加</Button>
-              {charRefs.length > 0 && <Button size="small" type="text" onClick={() => setCharRefs([])} style={{ fontSize: 10 }}>清空</Button>}
-            </div>
+          <div style={{ flex: 1.2, minWidth: 280, padding: 8, borderRadius: 8, background: 'var(--theme-border)' }}>
+            <div style={{ fontSize: 10, color: 'var(--theme-muted)', marginBottom: 6 }}>角色卡（名字 + 外貌描述 + 参考图，分镜生成时自动注入对应角色）</div>
+            {characterCards.length === 0 && <div style={{ fontSize: 9, color: 'var(--theme-muted)', padding: '4px 0 8px' }}>先在剧本页填写角色描述会自动建卡；也可手动添加。</div>}
+            {characterCards.map((card, ci) => (
+              <div key={card.id} style={{ padding: '6px 0', borderBottom: '1px dashed var(--theme-border)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+                    <input value={card.name} onChange={e => setCharacterCards(prev => prev.map((c, idx) => idx === ci ? { ...c, name: e.target.value } : c))} placeholder="角色名" style={{ width: 110, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: '3px 5px', fontSize: 10 }} />
+                    <textarea value={card.description} onChange={e => setCharacterCards(prev => prev.map((c, idx) => idx === ci ? { ...c, description: e.target.value } : c))} placeholder="外貌 / 服装 / 特征描述" style={{ flex: 1, minHeight: 34, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 3, fontSize: 10, resize: 'vertical', lineHeight: 1.4 }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {card.refImage && <img src={card.refImage} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: 'cover', border: '1px solid rgba(255,255,255,.15)' }} />}
+                    <Button size="small" icon={<PlusOutlined />} onClick={() => openImgSources(ci, 'asset', 'char')} style={{ fontSize: 9 }}>参考图</Button>
+                    <Button size="small" loading={generatingRefs} onClick={() => { if (!card.description.trim()) { message.warning('先填写该角色描述'); return; } void (async () => { setGeneratingRefs(true); try { const { url } = await generateOneImage(`角色定妆图「${card.name}」，全身像，干净纯色背景：${card.description}`, charModel || undefined, '角色参考图'); setCharacterCards(prev => prev.map((c, idx) => idx === ci ? { ...c, refImage: url } : c)); setCharRefs(prev => prev.includes(url) ? prev : [...prev, url]); } catch (e: any) { message.error(String(e?.message || e)); } finally { setGeneratingRefs(false); } })(); }} style={{ fontSize: 9 }}>生成定妆图</Button>
+                    <Button size="small" type="text" danger onClick={() => { setCharacterCards(prev => { const next = prev.filter((_, idx) => idx !== ci); if (!next.length) userClearedCardsRef.current = true; return next; }); }} style={{ fontSize: 9 }}>删除</Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => setCharacterCards(prev => [...prev, { id: 'card-' + Date.now(), name: '角色 ' + (prev.length + 1), description: '', refImage: '' }])} style={{ fontSize: 9, marginTop: 6 }}>添加角色卡</Button>
           </div>
           <div style={{ flex: 1, minWidth: 220, padding: 8, borderRadius: 8, background: 'var(--theme-border)' }}>
             <div style={{ fontSize: 10, color: 'var(--theme-muted)', marginBottom: 6 }}>场景参考图（选填）</div>
@@ -789,6 +953,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 12, padding: 10, borderRadius: 8, background: 'var(--theme-border)', flexWrap: 'wrap', alignItems: 'center' }}>
           <Segmented value={imgEngine} onChange={v => setImgEngine(v as 'paid' | 'comfyui')} options={[{ label: '付费 API', value: 'paid' }, { label: 'ComfyUI 工作流', value: 'comfyui' }]} size="small" />
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>变体:</span><select value={imgVariants} onChange={e => setImgVariants(Number(e.target.value))} title="每镜生成多个变体，确认时对比挑选" style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 3, fontSize: 11 }}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option><option value={4}>4</option></select>
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>服务器:</span><select value={studioServerId} onChange={e => setStudioServerId(e.target.value)} title="生成服务器（主控/非主控可分开）" style={{ maxWidth: 180, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}><option value="">（当前默认服务器）</option>{settings.servers.map(sv => <option key={sv.id} value={sv.id}>{sv.name}{sv.type === 'control' ? '·主控' : sv.type === 'comfyui' ? '·ComfyUI' : ''}</option>)}</select>
           {imgEngine === 'paid' ? <>
             <select value={imgProvider || imgProviders[0] || ''} onChange={e => { setImgProvider(e.target.value); setImgModel(''); }} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>{imgProviders.map(id => <option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select>
             <select value={imgModel || imgProviderOptions[0]?.id || ''} onChange={e => setImgModel(e.target.value)} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>{imgProviderOptions.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -823,6 +989,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
                 {shot.imageUrl ? <img src={shot.imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: 'var(--theme-border)' }}>{shot.status === 'error' ? shot.error : '暂无图片'}</span>}
               </div>
               <div style={{ padding: 6, fontSize: 9, color: 'var(--theme-muted)', minHeight: 30 }}>{(seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '').slice(0, 50)}</div>
+              {(shot.variants && shot.variants.length > 1 && !shot.confirmed) && <div style={{ display: 'flex', gap: 4, padding: '0 6px 6px', flexWrap: 'wrap' }}>{shot.variants.map((vu, vi) => <img key={vi} src={vu} onClick={() => setShots(prev => prev.map((s, j) => j === i ? { ...s, imageUrl: vu } : s))} alt={`变体${vi + 1}`} title={`选择变体 ${vi + 1}`} style={{ width: 42, height: 42, objectFit: 'cover', borderRadius: 6, cursor: 'pointer', border: vu === shot.imageUrl ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)' }} />)}</div>}
               <div style={{ display: 'flex', gap: 6, padding: 6 }}>
                 <Button size="small" type={shot.confirmed ? 'default' : 'primary'} icon={<CheckOutlined />} disabled={shot.status !== 'done' || shot.confirmed} onClick={() => setShots(prev => prev.map((s, j) => j === i ? { ...s, confirmed: true } : s))} style={{ flex: 1, fontSize: 10 }}>满意</Button>
                 <Button size="small" icon={<ReloadOutlined />} loading={regeneratingIndex === i} disabled={generatingImages || shot.status === 'generating'} onClick={() => void regenerateOne(i)} style={{ flex: 1, fontSize: 10 }}>重生成</Button>
@@ -842,6 +1009,8 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
         <p style={{ fontSize: 11, color: 'var(--theme-muted)', margin: '0 0 12px' }}>每镜可直接填写视频提示词生成视频（有确认图片则自动图生视频，无图则文生视频）。视频较慢（每镜 1-5 分钟），可单镜重生成；勾选「已含音频」的镜头跳过配音。</p>
         <div style={{ display: 'flex', gap: 10, marginBottom: 12, padding: 10, borderRadius: 8, background: 'var(--theme-border)', flexWrap: 'wrap', alignItems: 'center' }}>
           <Segmented value={vidEngine} onChange={v => setVidEngine(v as 'paid' | 'comfyui')} options={[{ label: '付费 API', value: 'paid' }, { label: 'ComfyUI 工作流', value: 'comfyui' }]} size="small" />
+          <Segmented value={vidMode} onChange={v => setVidMode(v as 'first' | 'first-last')} options={[{ label: '首图生视频', value: 'first' }, { label: '首尾图生视频', value: 'first-last' }]} size="small" title="首尾图：把下一镜首帧作为尾帧传入，镜头衔接更自然" />
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>服务器:</span><select value={studioServerId} onChange={e => setStudioServerId(e.target.value)} title="生成服务器（主控/非主控可分开）" style={{ maxWidth: 180, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}><option value="">（当前默认服务器）</option>{settings.servers.map(sv => <option key={sv.id} value={sv.id}>{sv.name}{sv.type === 'control' ? '·主控' : sv.type === 'comfyui' ? '·ComfyUI' : ''}</option>)}</select>
           {vidEngine === 'paid' ? <>
             <select value={vidProvider || vidProviders[0] || ''} onChange={e => { setVidProvider(e.target.value); setVidModel(''); }} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>{vidProviders.map(id => <option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select>
             <select value={vidModel || vidProviderOptions[0]?.id || ''} onChange={e => setVidModel(e.target.value)} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>{vidProviderOptions.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
@@ -883,6 +1052,13 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
         <p style={{ fontSize: 11, color: 'var(--theme-muted)', margin: '0 0 12px' }}>用每镜台词生成配音（MiniMax 云端 TTS）。可试听、单镜重生成；没台词的镜头自动跳过。全部确认后进入合成。</p>
         <div style={{ display: 'flex', gap: 10, marginBottom: 12, padding: 10, borderRadius: 8, background: 'var(--theme-border)', flexWrap: 'wrap', alignItems: 'center' }}>
           <Segmented value={audioEngine} onChange={v => setAudioEngine(v as 'minimax' | 'comfyui')} options={[{ label: 'MiniMax TTS', value: 'minimax' }, { label: 'ComfyUI 工作流', value: 'comfyui' }]} size="small" />
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>全局 BGM:</span>
+          {bgmUrl ? <audio src={bgmUrl} controls style={{ height: 26, maxWidth: 160 }} /> : <span style={{ fontSize: 9, color: 'var(--theme-border)' }}>未设置</span>}
+          <Button size="small" icon={<UploadOutlined />} onClick={() => audioFileRef.current?.click()} style={{ fontSize: 10 }}>上传 BGM</Button>
+          {bgmUrl && <Button size="small" type="text" onClick={() => setBgmUrl('')} style={{ fontSize: 10 }}>清除</Button>}
+          <input ref={audioFileRef} type="file" accept="audio/*" hidden onChange={e => void uploadAudioLocal(e, 'bgm')} />
+          <input ref={sfxFileRef} type="file" accept="audio/*" hidden onChange={e => void uploadAudioLocal(e, 'sfx', sfxTargetRef.current ?? undefined)} />
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>服务器:</span><select value={studioServerId} onChange={e => setStudioServerId(e.target.value)} title="生成服务器（主控/非主控可分开）" style={{ maxWidth: 180, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}><option value="">（当前默认服务器）</option>{settings.servers.map(sv => <option key={sv.id} value={sv.id}>{sv.name}{sv.type === 'control' ? '·主控' : sv.type === 'comfyui' ? '·ComfyUI' : ''}</option>)}</select>
           {audioEngine === 'comfyui' ? <select value={audioComfyWorkflow} onChange={e => setAudioComfyWorkflow(e.target.value)} onFocus={() => void ensureComfyWorkflows()} style={{ minWidth: 280, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>{workflowsForCap(comfyWorkflows, 'text-to-speech').map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select> : <>
           <span style={{ fontSize: 11, color: 'var(--theme-text)' }}>音色</span>
           <select value={customVoiceId.trim() ? '__custom' : voiceId} onChange={e => { if (e.target.value === '__custom') setCustomVoiceId(voiceId); else { setCustomVoiceId(''); setVoiceId(e.target.value); } }} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}>
@@ -906,6 +1082,12 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
               {videoShots[i]?.hasAudio && <div style={{ fontSize: 10, color: '#60a5fa', marginBottom: 6 }}>✓ 该镜视频已含音频，自动跳过配音</div>}
               <div style={{ fontSize: 9, color: 'var(--theme-muted)', marginBottom: 6, minHeight: 14 }}>「{String((segments[i] as any).dialogue || '')}」</div>
               {shot.audioUrl ? <audio src={shot.audioUrl} controls style={{ width: '100%', height: 30 }} /> : <div style={{ fontSize: 9, color: 'var(--theme-border)', height: 30, display: 'flex', alignItems: 'center' }}>{shot.status === 'error' ? shot.error : '无音频'}</div>}
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 9, color: 'var(--theme-muted)' }}>音效:</span>
+                {shot.sfxUrl ? <audio src={shot.sfxUrl} controls style={{ height: 24, maxWidth: 150 }} /> : <span style={{ fontSize: 9, color: 'var(--theme-border)' }}>无（可选）</span>}
+                <Button size="small" icon={<UploadOutlined />} onClick={() => { sfxTargetRef.current = i; sfxFileRef.current?.click(); }} style={{ fontSize: 9 }}>上传音效</Button>
+                {shot.sfxUrl && <Button size="small" type="text" onClick={() => setAudioShots(prev => prev.map((s, j) => j === i ? { ...s, sfxUrl: '' } : s))} style={{ fontSize: 9 }}>清除</Button>}
+              </div>
               {shot.audioUrl && <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                 <Button size="small" type={shot.confirmed ? 'default' : 'primary'} icon={<CheckOutlined />} disabled={shot.confirmed} onClick={() => setAudioShots(prev => prev.map((s, j) => j === i ? { ...s, confirmed: true } : s))} style={{ flex: 1, fontSize: 10 }}>满意</Button>
                 <Button size="small" icon={<ReloadOutlined />} loading={regeneratingAudioIndex === i} disabled={generatingAudios || shot.status === 'generating'} onClick={() => void regenerateAudioOne(i)} style={{ flex: 1, fontSize: 10 }}>重生成</Button>
@@ -948,6 +1130,21 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <Button type="primary" icon={<RightOutlined />} onClick={() => void downloadMedia(finalVideo, '短剧成片.mp4', 'video').then(() => message.success('已开始下载')).catch(() => message.error('下载失败'))}>下载成片</Button>
               <Button onClick={() => { navigator.clipboard.writeText(finalVideo).then(() => message.success('路径已复制')).catch(() => message.warning('复制失败')); }}>复制路径</Button>
+            </div>
+            <div style={{ marginTop: 12, padding: 10, border: '1px dashed var(--theme-border)', borderRadius: 8, background: 'var(--theme-input)' }}>
+              <div style={{ fontSize: 10, color: 'var(--theme-muted)', marginBottom: 6 }}>数字人口播（对口型）：让成片中的人物嘴型跟随配音。需 ComfyUI 安装 lipsync 类节点，并在下方选择对应工作流。</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select value={lipsyncWorkflow} onChange={e => setLipsyncWorkflow(e.target.value)} onFocus={() => void ensureComfyWorkflows()} style={{ maxWidth: 220, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 5, padding: 4, fontSize: 11 }}><option value="">选择对口型工作流…</option>{comfyWorkflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select>
+                <Button size="small" type="primary" icon={<AudioLines size={14} />} loading={lipsyncing} disabled={!finalVideo} onClick={() => void runLipsync()} style={{ fontSize: 10 }}>对口型合成</Button>
+                {lipsyncedVideo && <span style={{ fontSize: 10, color: 'var(--theme-success)' }}>✓ 已生成</span>}
+              </div>
+              {lipsyncedVideo && <div style={{ marginTop: 8 }}>
+                <video src={lipsyncedVideo} controls style={{ width: '100%', maxHeight: 240, background: '#000', borderRadius: 8 }} />
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  <Button size="small" type="primary" icon={<RightOutlined />} onClick={() => void downloadMedia(lipsyncedVideo, '短剧对口型.mp4', 'video').then(() => message.success('已开始下载')).catch(() => message.error('下载失败'))} style={{ fontSize: 10 }}>下载对口型版</Button>
+                  <Button size="small" onClick={() => { setFinalVideo(lipsyncedVideo); message.success('已用对口型版替换成片'); }} style={{ fontSize: 10 }}>替换为成片</Button>
+                </div>
+              </div>}
             </div>
           </div>}
         </>}</div></section></>}

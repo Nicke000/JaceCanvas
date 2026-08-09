@@ -102,7 +102,8 @@ function providerPath(provider: string, kind: 'models' | 'image' | 'video' | 'ta
   if (provider === 'google') return '/models';
   if (provider === 'kling') return kind === 'image' ? `${prefix}/images/generations` : kind === 'video' ? `${prefix}/videos/text2video` : `${prefix}/videos/image2video`;
   if (provider === 'tongyi') return kind === 'image' ? '/services/aigc/text-to-image/image-synthesis' : '/services/aigc/video-generation/video-synthesis';
-  if (provider === 'stability') return kind === 'image' ? '/v2beta/stable-image/generate/core' : '/v2beta/image-to-video';
+  if (provider === 'stability') return kind === 'image' ? (baseUrl.endsWith('/v2beta') ? '/stable-image/generate/core' : '/v2beta/stable-image/generate/core') : (baseUrl.endsWith('/v2beta') ? '/image-to-video' : '/v2beta/image-to-video');
+  if (provider === 'runway') return kind === 'task' ? '/v1/tasks' : `${prefix}/${kind}/generate`;
   if (provider === 'zhipu') return kind === 'image' ? `${prefix}/images/generations` : `${prefix}/videos/generations`;
   if (provider === 'minimax') return kind === 'image' ? `${prefix}/image_generation` : `${prefix}/video_generation`;
   return `${prefix}/${kind}/generate`;
@@ -125,9 +126,9 @@ export const PAID_PROVIDERS: Record<string, { label: string; description: string
   jimeng: { label:'字节·即梦', description:'深度打通剪映生态，生成速度快且最懂中文互联网流行趋势', defaultBaseUrl:'https://ark.cn-beijing.volces.com/api/v3', models:['jimeng-2.0','jimeng-2.0-pro'], supports:['text-to-image','text-to-video','image-to-video','image-to-image'] },
   tongyi: { label:'阿里·通义万相', description:'图像、视频和 Wan2.2 Animate 动作迁移能力', defaultBaseUrl:'https://dashscope.aliyuncs.com/api/v1', models:['wan2.1-t2i-turbo','wan2.2-t2v-turbo','wanx-v1','wan2.2-animate'], supports:['text-to-image','text-to-video','image-to-video','image-to-image','motion-video'] },
   zhipu: { label:'智谱·清影', description:'指令跟随精准，长视频连贯性与逻辑推理能力优于纯视觉模型', defaultBaseUrl:'https://open.bigmodel.cn/api/paas/v4', models:['cogview-3-plus','cogvideox-flash','cogvideox-2b'], supports:['text-to-image','text-to-video','image-to-video'] },
-  minimax: { label:'MiniMax·海螺AI', description:'人物微表情细腻自然，语音唇形同步能力业内领先', defaultBaseUrl:'https://api.minimax.chat/v1', models:['image-01','video-01','hailuo-02'], supports:['text-to-image','text-to-video'] },
+  minimax: { label:'MiniMax·海螺AI', description:'人物微表情细腻自然，语音唇形同步能力业内领先', defaultBaseUrl:'https://api.minimaxi.com', models:['image-01','video-01','hailuo-02'], supports:['text-to-image','text-to-video'] },
   baidu: { label:'百度·文心/度加', description:'整合搜索与文库生态，擅长知识资讯类视频自动生成', defaultBaseUrl:'https://aip.baidubce.com', models:['ernie-vilg-v2','ernie-video-v1'], supports:['text-to-image','text-to-video','image-to-image'] },
-  runway: { label:'Runway Gen-3', description:'业界最精细控制面板与电影级质感的专业创作者首选', defaultBaseUrl:'https://api.rev.ai', models:['gen3-alpha-turbo','gen3-alpha'], supports:['text-to-video','image-to-video'] },
+  runway: { label:'Runway Gen-3', description:'业界最精细控制面板与电影级质感的专业创作者首选', defaultBaseUrl:'https://api.dev.runwayml.com', models:['gen4.5','gen4','gen3-alpha-turbo'], supports:['text-to-video','image-to-video'] },
   openai: { label:'OpenAI (Sora/DALL-E)', description:'长镜头叙事与场景变换逻辑性顶尖，行业风向标', defaultBaseUrl:'https://api.openai.com/v1', models:['dall-e-3','sora-turbo','gpt-image-1'], supports:['text-to-image','text-to-video','image-to-image'] },
   google: { label:'Google (Veo 3/Imagen)', description:'原生音视频同步生成，4K输出稳定且光影物理准确性极高', defaultBaseUrl:'https://generativelanguage.googleapis.com/v1beta', models:['imagen-3','veo-3.0-generate-preview'], supports:['text-to-image','text-to-video','image-to-video','image-to-image'] },
   pika: { label:'Pika Labs', description:'专注创意特效与局部修改，适合快速原型验证和社交媒体趣味内容', defaultBaseUrl:'https://api.pika.art/v1', models:['pika-2.0','pika-2.1'], supports:['text-to-video','image-to-video'] },
@@ -266,7 +267,9 @@ export async function testPaidConnection(
 async function pollTask(baseUrl: string, endpoint: string, config: PaidApiConfig, taskId?: string): Promise<PaidGenerationResult> {
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 3000));
-    const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+    // Runway 等任务端点形如 /v1/tasks/{id}：endpoint 以 /tasks 结尾时自动追加 taskId
+    const finalEndpoint = /\/tasks$/i.test(endpoint) && taskId ? `${endpoint}/${taskId}` : endpoint;
+    const url = finalEndpoint.startsWith('http') ? finalEndpoint : `${baseUrl}${finalEndpoint.startsWith('/') ? finalEndpoint : `/${finalEndpoint}`}`;
     const useGatewayQuery = /task\/query/i.test(endpoint);
     const res = await fetch(url, {
       method: useGatewayQuery ? 'POST' : 'GET',
@@ -287,6 +290,12 @@ async function pollTask(baseUrl: string, endpoint: string, config: PaidApiConfig
 }
 
 function extractMediaUrl(data: any): string {
+  // OpenAI gpt-image-1 等只返回 b64_json（url 已弃用）→ 转 dataURL
+  const b64 = data?.data?.[0]?.b64_json || data?.b64_json || data?.output?.b64_json;
+  if (typeof b64 === 'string' && b64) {
+    const mime = data?.data?.[0]?.mime_type || data?.mime_type || 'image/png';
+    return `data:${String(mime)};base64,${b64}`;
+  }
   const candidates = [
     data?.content?.video_url, data?.content?.last_frame_url, data?.content?.url,
     data?.images?.[0]?.url, data?.result?.sample,
@@ -442,6 +451,17 @@ async function callBailianNative(config: PaidApiConfig, params: PaidCallParams):
 }
 
 async function callMiniMaxNative(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
+  // 文生图 / 图生图：同步 image_generation
+  if (params.type === 'text-to-image' || params.type === 'image-to-image' || params.type === 'first-frame-to-image') {
+    const response = await fetch(joinUrl(config.baseUrl || 'https://api.minimaxi.com', '/v1/image_generation'), {
+      method: 'POST', headers: authHeaders(config),
+      body: JSON.stringify({ model: config.model || 'image-01', prompt: params.prompt, ...(params.imageUrl ? { prompt_img: params.imageUrl } : {}) }),
+    });
+    const data = await readJsonResponse(response, 'MiniMax');
+    const url = data.image_url || data.data?.image_url || extractMediaUrl(data);
+    if (!url) throw new Error('MiniMax 图像接口未返回地址');
+    return { url: String(url), type: 'image', raw: data };
+  }
   // 文字转语音：同步 t2a_v2，output_format=url 返回 24 小时有效下载链接（自动下载到本地缓存后不依赖有效期）
   if (params.type === 'text-to-speech') {
     const response = await fetch(joinUrl(config.baseUrl || 'https://api.minimaxi.com', '/v1/t2a_v2'), {
@@ -479,7 +499,7 @@ async function callGeminiNative(config: PaidApiConfig, params: PaidCallParams): 
   const endpoint = isVideo ? `/v1beta/models/${encodeURIComponent(config.model)}:predict` : `/v1beta/interactions`;
   const parts: any[] = [{ text:params.prompt }];
   if (params.imageUrl) parts.push({ inline_data:{ mime_type:'image/png', data:params.imageUrl.split(',')[1] || params.imageUrl } });
-  const body = isVideo ? { instances:[{ prompt:params.prompt, ...(params.imageUrl ? { image:{bytesBase64Encoded:params.imageUrl.split(',')[1] || params.imageUrl} } : {}) }], parameters:{ aspectRatio:params.aspectRatio } } : { model:config.model, input:{parts} };
+  const body = isVideo ? { instances:[{ prompt:params.prompt, ...(params.imageUrl ? { image:{bytesBase64Encoded:params.imageUrl.split(',')[1] || params.imageUrl} } : {}) }], parameters:{ aspectRatio:params.aspectRatio } } : { model:config.model, input:parts };
   let url=joinUrl(config.baseUrl || 'https://generativelanguage.googleapis.com', endpoint); if(!url.includes('?')) url += `?key=${encodeURIComponent(config.apiKey)}`;
   const data=await readJsonResponse(await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'Gemini');
   const media=firstMedia(data); if(!media) throw new Error('Gemini 响应中没有媒体地址'); return {url:media,type:isVideo?'video':'image',raw:data};
@@ -489,7 +509,7 @@ async function callOpenAINative(config: PaidApiConfig, params: PaidCallParams): 
   const isVideo=PAID_CAPABILITIES[params.type]?.output==='video';
   const hasV1=/\/v1\/?$/i.test(config.baseUrl);
   const endpoint=isVideo?(hasV1?'/videos':'/v1/videos'):(hasV1?'/images/generations':'/v1/images/generations');
-  const body:any={model:config.model,prompt:params.prompt,n:1}; if(params.imageUrl) body.image=params.imageUrl; if(params.width&&params.height) body.size=`${params.width}x${params.height}`;
+  const body:any={model:config.model,prompt:params.prompt,n:1,response_format:'b64_json'}; if(params.imageUrl) body.image=params.imageUrl; if(params.width&&params.height) body.size=`${params.width}x${params.height}`;
   const data=await readJsonResponse(await fetch(joinUrl(config.baseUrl||'https://api.openai.com',endpoint),{method:'POST',headers:authHeaders(config),body:JSON.stringify(body)}),'OpenAI');
   const media=firstMedia(data); if(media) return {url:media,type:isVideo?'video':'image',raw:data}; const taskId=data.id; if(!taskId) throw new Error('OpenAI 响应中没有结果或任务 ID'); return pollTask(config.baseUrl||'https://api.openai.com',`/v1/videos/${taskId}`,config,taskId);
 }

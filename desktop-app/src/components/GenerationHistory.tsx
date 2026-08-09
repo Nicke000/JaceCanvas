@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Checkbox } from 'antd';
 import { Button, Tag, Tooltip } from 'antd';
 import { HistoryOutlined, ReloadOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined, InfoOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { downloadMedia } from '@/utils/downloadMedia';
 import { loadChatSessions, deleteChatSession } from '@/utils';
 import type { ChatSession } from '@/types';
@@ -15,6 +17,7 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [expandedChats, setExpandedChats] = useState<Set<string>>(new Set());
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
+  const [showFailed, setShowFailed] = useState(() => useSettingsStore.getState().showFailedHistory);
   const formatTrace = (it: any) => {
     const p = it.params || {};
     const pick: Array<[string, string]> = [['prompt', '提示词'], ['negativePrompt', '负面词'], ['model', '模型'], ['provider', '厂商'], ['width', '宽'], ['height', '高'], ['ratio', '比例'], ['variants', '变体数'], ['duration', '时长'], ['workflow_id', '工作流'], ['seed', '种子']];
@@ -22,6 +25,7 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
     return ['类型：' + (it.nodeType || '—') + ' · ' + new Date(it.timestamp).toLocaleString(), ...lines].join('\n');
   };
   const [tab, setTab] = useState<'generation'|'chat'>('generation');
+  const displayItems = tab === 'generation' ? (showFailed ? items : items.filter(i => i.status !== 'error')) : items;
   const [height, setHeight] = useState(()=>Math.max(140,Number(localStorage.getItem('ai-canvas-history-height'))||200));
   const exec = useCanvasStore(s => s.enqueueNode);
   const sel = useCanvasStore(s => s.setSelectedNodeId);
@@ -97,23 +101,26 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
       <div style={{padding:'8px 14px',borderBottom:'1px solid var(--theme-border)',display:'flex',alignItems:'center',gap:8}}>
         <HistoryOutlined style={{color:'var(--theme-muted)'}}/>
         <div className="history-tabs"><button className={tab === 'generation' ? 'is-active' : ''} onClick={() => setTab('generation')}>生成历史</button><button className={tab === 'chat' ? 'is-active' : ''} onClick={() => { setTab('chat'); void loadChatSessions().then(setChatSessions).catch(() => undefined); }}>聊天记录</button></div>
+        {tab === 'generation' && <label style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 10, color: 'var(--theme-muted)', cursor: 'pointer' }}><Checkbox checked={showFailed} onChange={e => { setShowFailed(e.target.checked); try { useSettingsStore.getState().setAssets({ showFailedHistory: e.target.checked }); } catch { /* ignore */ } }} />显示失败记录</label>}
         <Button type="text" size="small" onClick={()=>changeOpen(false)} style={{color:'var(--theme-muted)'}}><CloseOutlined/></Button>
       </div>
       <div style={{flex:1,overflow:'auto',padding:8,display:'flex',gap:8,flexWrap:'wrap'}}>
-        {tab === 'generation' && items.length === 0 && <div style={{color:'var(--theme-muted)',fontSize:12,padding:16}}>暂无生成记录</div>}
-        {tab === 'generation' && items.map(it => (
+        {tab === 'generation' && displayItems.length === 0 && <div style={{color:'var(--theme-muted)',fontSize:12,padding:16}}>暂无生成记录</div>}
+        {tab === 'generation' && displayItems.map(it => (
           <div key={it.id} draggable={Boolean(it.resultUrl||it.results?.length)} onDragStart={e=>dragHistory(e,it)} style={{width:120,background:'var(--theme-surface)',borderRadius:8,padding:8,fontSize:11,color:'var(--theme-text)',cursor:it.resultUrl||it.results?.length?'grab':'pointer',border:'1px solid var(--theme-border)'}}
             onClick={()=>sel(it.nodeId)}>
-            {(it.results?.[0]?.url||it.resultUrl) ? (it.results?.[0]?.type==='video'?<video src={it.results[0].url} muted style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>:<img src={it.results?.[0]?.url||it.resultUrl} style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>) :
+            {(it.results?.[0]?.url||it.resultUrl) ? (it.results?.[0]?.type==='video'?<video src={it.results[0].url} muted preload="none" style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>:<img src={it.results?.[0]?.url||it.resultUrl} loading="lazy" decoding="async" style={{width:'100%',borderRadius:4,aspectRatio:'1',objectFit:'cover',marginBottom:4}}/>) :
              <div style={{width:'100%',aspectRatio:'1',background:'var(--theme-input)',borderRadius:4,marginBottom:4,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--theme-text-3)',fontSize:10}}>无预览</div>}
             <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{it.nodeName}</div>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4}}>
-              <Tag color={it.status==='success'?'green':it.status==='error'?'red':'default'} style={{fontSize:10,lineHeight:'16px'}}>{it.status==='success'?'完成':'失败'}</Tag>
-              <span style={{display:'flex',gap:8}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4,width:'100%'}}>
+              <Tag color={it.status==='success'?'green':it.status==='error'?'red':'default'} style={{fontSize:10,lineHeight:'16px',marginRight:0}}>{it.status==='success'?'完成':'失败'}</Tag>
+              <span style={{display:'flex',gap:6,alignItems:'center'}}>
                 {it.status==='error'&&<ReloadOutlined style={{color:'var(--theme-muted)',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();exec(it.nodeId);}}/>}
                 <InfoOutlined style={{color:expandedTraceId===it.id?'#60a5fa':'var(--theme-muted)',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setExpandedTraceId(cur=>cur===it.id?null:it.id);}}/>
                 {(it.resultUrl||it.results?.length)&&<DownloadOutlined style={{color:'#60a5fa',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveItem(it);}}/>}
               </span>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:2,width:'100%'}}>
               <span style={{fontSize:9,color:'var(--theme-muted)'}}>{new Date(it.timestamp).toLocaleTimeString()}</span>
               <DeleteOutlined style={{color:'#ef4444',fontSize:10,cursor:'pointer'}} onClick={e=>{e.stopPropagation();removeItem(it.id);}}/>
             </div>

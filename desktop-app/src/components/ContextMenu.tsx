@@ -1,5 +1,7 @@
 import React from 'react';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { downloadMedia } from '@/utils/downloadMedia';
+import { message } from 'antd';
 
 export const ContextMenu: React.FC = () => {
   const ctx = useCanvasStore(s => s.contextMenu);
@@ -16,21 +18,14 @@ export const ContextMenu: React.FC = () => {
   const resultUrl = node?.data.resultUrl || (node?.data.outputValues?.image as string) || (node?.data.outputValues?.video as string) || (node?.data.outputValues?.audio as string);
   const saveResult = async () => {
     if (!resultUrl) return;
-    if (resultUrl.startsWith('file://')) {
-      // 本地缓存文件：复制到素材库永久区（主动保存，避免 48 小时后被清理）
-      try {
-        await (window as any).electronAPI?.promoteCache?.({ url: resultUrl, name: String(node?.data.label || 'result') });
-        return;
-      } catch { /* 复制失败则继续尝试打开 */ }
-    }
+    const type = /(\.mp4|\.mov|\.webm|\.mkv|\.avi)(?:[?#]|$)/i.test(resultUrl) || node?.data.outputValues?.video ? 'video' : /(\.mp3|\.wav|\.m4a|\.aac|\.flac|\.ogg)(?:[?#]|$)/i.test(resultUrl) ? 'audio' : /(\.glb|\.gltf)(?:[?#]|$)/i.test(resultUrl) ? '3d' : 'image';
+    const name = String(node?.data.outputValues?.filename || node?.data.label || 'result').replace(/[\\/:*?"<>|]/g, '_');
     try {
-      const response = await fetch(resultUrl); if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const blob = await response.blob(); const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = objectUrl;
-      const rawName=String(node?.data.outputValues?.filename || node?.data.label || 'result').replace(/[\\/:*?"<>|]/g,'_');
-      a.download = /\.[a-z0-9]{2,5}$/i.test(rawName)?rawName:rawName+(blob.type.includes('video')?'.mp4':blob.type.includes('audio')?'.mp3':'.png');
-      a.click(); setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
-    } catch { window.open(resultUrl,'_blank'); }
+      await downloadMedia(resultUrl, name, type);
+    } catch (err: any) {
+      message.warning('下载失败：' + String(err?.message || err).slice(0, 60));
+      window.open(resultUrl, '_blank');
+    }
   };
   const canvasItems: Array<{ l: string; a: (() => void) | null; danger?: boolean }> = [
     { l: '➕ 添加节点', a: () => { hide(); window.dispatchEvent(new CustomEvent('ai-canvas-open-search', { detail: { x: ctx.x, y: ctx.y } })); } },

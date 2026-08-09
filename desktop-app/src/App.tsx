@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ConfigProvider, App as AntApp, theme, Button, Tooltip, Space, Input, Modal, message, Dropdown } from 'antd';
 import type { MenuProps } from 'antd';
-import { SaveOutlined, FolderOpenOutlined, ExportOutlined, ImportOutlined, AppstoreOutlined, CopyOutlined, PlusOutlined, CloseOutlined, CloudServerOutlined, UnorderedListOutlined, BgColorsOutlined, ApartmentOutlined, CameraOutlined, MoreOutlined, VideoCameraOutlined, PlaySquareOutlined, DesktopOutlined, ClusterOutlined, MessageOutlined, FieldTimeOutlined, HistoryOutlined, CompressOutlined, ExpandOutlined, RobotOutlined, FullscreenOutlined } from '@ant-design/icons';
+import { SaveOutlined, FolderOpenOutlined, ExportOutlined, ImportOutlined, AppstoreOutlined, CopyOutlined, PlusOutlined, CloseOutlined, CloudServerOutlined, UnorderedListOutlined, BgColorsOutlined, ApartmentOutlined, CameraOutlined, MoreOutlined, VideoCameraOutlined, PlaySquareOutlined, DesktopOutlined, ClusterOutlined, MessageOutlined, FieldTimeOutlined, HistoryOutlined, CompressOutlined, ExpandOutlined, RobotOutlined, FullscreenOutlined, StarOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { Canvas } from '@/components/Canvas';
 import { ConfigPanel } from '@/components/ConfigPanel';
@@ -20,10 +20,11 @@ import { StoryDramaStudio } from '@/components/StoryDramaStudio';
 import { ThemeSelector } from '@/components/ThemeSelector';
 import { TaskQueue } from '@/components/TaskQueue';
 import { ChatWindow } from '@/components/ChatWindow';
+import { PromptLibrary } from '@/components/PromptLibrary';
 import type { ChatSession } from '@/types';
 import { useThemeStore, resolveAntdTokens } from '@/stores/themeStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { initAutosave, setAutosaveContext, flushAutosave, restoreAutosave, listSnapshots, restoreSnapshot } from '@/utils/autosave';
+import { initAutosave, setAutosaveContext, flushAutosave, listSnapshots, restoreSnapshot } from '@/utils/autosave';
 import { refreshApiNodeFields } from '@/utils/workflowNode';
 import { testConnection } from '@/services/comfyui.service';
 import { comfyWS } from '@/services/comfyui-ws.service';
@@ -34,6 +35,7 @@ const App: React.FC = () => {
   const projectName = useCanvasStore(s => s.projectName);
   const nodeCount = useCanvasStore(s => s.nodes.length);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
   const [projectNameInput, setProjectNameInput] = useState('');
   const [projects, setProjects] = useState<{id:string;name:string;updatedAt:number}[]>([]);
@@ -55,18 +57,25 @@ const App: React.FC = () => {
   const [agentOpen, setAgentOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyHeight, setHistoryHeight] = useState(0);
-  const [taskQueueOpen, setTaskQueueOpen] = useState(false);
+  const [taskQueueOpen, setTaskQueueOpen] = useState(true);
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  const [favOpen, setFavOpen] = useState(false);
   const [chatSession, setChatSession] = useState<ChatSession | null>(null);
   // 覆盖层标志：画布全局快捷键（Canvas keydown）据此禁用，避免在短剧工作室/聊天/DevAgent 里误删底层节点
-  useEffect(() => { (window as any).__aiCanvasOverlayOpen = dramaStudioOpen || chatWindowOpen || agentOpen; }, [dramaStudioOpen, chatWindowOpen, agentOpen]);
+  useEffect(() => { (window as any).__aiCanvasOverlayOpen = dramaStudioOpen || chatWindowOpen || agentOpen || favOpen || taskQueueOpen || historyOpen || historyModalOpen || recoverModalOpen || saveModalOpen || loadModalOpen || templateModalOpen; }, [dramaStudioOpen, chatWindowOpen, agentOpen, favOpen, taskQueueOpen, historyOpen, historyModalOpen, recoverModalOpen, saveModalOpen, loadModalOpen, templateModalOpen]);
+  // 点击画布空白处自动收起执行列表
+  useEffect(() => {
+    const close = () => setTaskQueueOpen(false);
+    window.addEventListener('ai-canvas-close-taskqueue', close);
+    return () => window.removeEventListener('ai-canvas-close-taskqueue', close);
+  }, []);
   const [textEditor, setTextEditor] = useState<{nodeId:string;field:string;value:string;label:string;kind:'text'|'script'|'scene'}|null>(null);
   const [textEditorOpen, setTextEditorOpen] = useState(false);
   const [textEditorAutoClose, setTextEditorAutoClose] = useState(() => localStorage.getItem('ai-canvas-text-editor-auto-close') !== 'false');
   const [textEditorFullscreen, setTextEditorFullscreen] = useState(false);
   const [textEditorHeight, setTextEditorHeight] = useState(48);
   const [templateName, setTemplateName] = useState('');
-  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+
   const [uptime, setUptime] = useState(0);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [loadTemplateModalOpen, setLoadTemplateModalOpen] = useState(false);
@@ -170,6 +179,7 @@ const App: React.FC = () => {
         const last = projects.find(p => p.id && p.canvasData?.nodes?.length);
         if (last && !useCanvasStore.getState().nodes.length) {
           setAutosaveContext(last.id, last.name || '未命名项目');
+          setActiveProjectId(last.id);
           useCanvasStore.getState().setProjectName(last.name || '未命名项目');
           useCanvasStore.getState().loadCanvas(last.canvasData.nodes as any, (last.canvasData.edges || []) as any);
           // 崩溃提示降级为"已自动恢复"提醒（数据已恢复，弹窗用于提示手动保存/查看版本历史）
@@ -203,8 +213,11 @@ const App: React.FC = () => {
   const handleLoad = async () => { await refreshProjects(); setLoadModalOpen(true); };
   const handleOpenFile = async () => { const result = await (window as any).electronAPI?.openProjectFile?.(); if (result?.data?.nodes) { useCanvasStore.getState().loadCanvas(result.data.nodes, result.data.edges || []); const openName = result.data.name || '未命名项目'; useCanvasStore.getState().setProjectName(openName); setProjectFilePath(result.path || ''); if (result.path) { const folder = result.path.replace(/[\\/][^\\/]+$/, ''); setProjectFolder(folder); localStorage.setItem('jacecanvas-project-file', result.path); localStorage.setItem('jacecanvas-project-folder', folder); } const openId = generateId(); setActiveProjectId(openId); setAutosaveContext(openId, openName); message.success('已打开项目文件'); } };
   const doLoad = async (id:string, notify = true) => {
-    const p=await db.projects.get(id); if(p){
-      setClosedProjectIds(ids => { const next=ids.filter(item => item !== id); const open=projects.filter(item=>!next.includes(item.id)).map(item=>item.id); localStorage.setItem(OPEN_PROJECTS_KEY,JSON.stringify(Array.from(new Set([...open,id])))); return next; });
+    const p=await db.projects.get(id); if(!p){ message.warning('项目不存在或已损坏'); return; }
+    if(!p.canvasData || !Array.isArray(p.canvasData.nodes)){ message.warning('该项目没有可用的画布数据'); return; }
+    if(p){
+      setClosedProjectIds(ids => { const next = ids.filter(item => item !== id); return next; });
+      try { const open = projects.filter(item => item.id !== id).map(item => item.id); localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(Array.from(new Set([...open, id])))); } catch { /* ignore */ }
       useCanvasStore.getState().loadCanvas(p.canvasData.nodes,p.canvasData.edges); useCanvasStore.getState().setProjectName(p.name); setActiveProjectId(id); setAutosaveContext(id, p.name);
       if (p.servers?.length) { const settings = useSettingsStore.getState(); const localIds = new Set(settings.servers.map(s => s.id)); const missing = p.servers.filter(s => !localIds.has(s.id)); if (missing.length) { useSettingsStore.setState({ servers: [...settings.servers, ...missing] as any }); message.info(`已从项目补入 ${missing.length} 个服务器配置`); } }
       void refreshApiNodeFields(p.canvasData.nodes);
@@ -226,7 +239,7 @@ const App: React.FC = () => {
     await db.projects.put({ id, name: '新项目', createdAt: now, updatedAt: now, canvasData: { nodes: [], edges: [] } });
     useCanvasStore.getState().loadCanvas([], []); useCanvasStore.getState().setProjectName('新项目');
     setActiveProjectId(id); setAutosaveContext(id, '新项目'); await refreshProjects(); message.success('已创建新项目');
-    localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(Array.from(new Set([...(JSON.parse(localStorage.getItem(OPEN_PROJECTS_KEY)||'[]') as string[]), id]))));
+    try { const existing = JSON.parse(localStorage.getItem(OPEN_PROJECTS_KEY) || '[]') as string[]; if (!Array.isArray(existing)) throw new Error('bad'); localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(Array.from(new Set([...existing, id])))); } catch { localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify([id])); }
   };
   const closeProject = async (id: string) => {
     setCloseProjectId(id);
@@ -234,6 +247,7 @@ const App: React.FC = () => {
   const finishCloseProject = async (save: boolean) => {
     const id = closeProjectId; if (!id) return;
     if (save && id === activeProjectId) await saveCurrentSilently();
+    else if (id === activeProjectId) { useCanvasStore.getState().loadCanvas([], []); useCanvasStore.getState().setProjectName('未命名项目'); }
     if (!save) { await db.projects.delete(id); try { await db.projectSnapshots.where('projectId').equals(id).delete(); } catch { /* 忽略 */ } if (id === activeProjectId) setAutosaveContext('', '未命名项目'); }
     const next = projects.find(p => p.id !== id && !closedProjectIds.includes(p.id));
     const nextOpen = projects.filter(p => p.id !== id && !closedProjectIds.includes(p.id)).map(p=>p.id);
@@ -308,7 +322,7 @@ const App: React.FC = () => {
               <Button type="text" size="small" icon={<PlaySquareOutlined />} onClick={() => { setDramaStudioOpen(true); setAgentOpen(false); }} className="app-topbar__tool">短剧工作室</Button>
               <Button type="text" size="small" icon={<RobotOutlined />} onClick={() => { setDramaStudioOpen(false); setAgentOpen(v => !v); }} className="app-topbar__tool">DevAgent</Button>
               <Tooltip title="AI 聊天"><Button type="text" size="small" icon={<MessageOutlined />} onClick={() => void openChat()} className="app-topbar__tool">聊天</Button></Tooltip>
-              <Tooltip title="执行列表"><Button type="text" size="small" icon={<FieldTimeOutlined />} onClick={() => setTaskQueueOpen(v => !v)} className="app-topbar__tool">执行列表</Button></Tooltip>
+              <Tooltip title="提示词库（收藏/置顶/发送到画布）"><Button type="text" size="small" icon={<StarOutlined />} onClick={() => setFavOpen(v => !v)} className="app-topbar__tool">提示词</Button></Tooltip>
               <Tooltip title="生成历史"><Button type="text" size="small" icon={<HistoryOutlined />} onClick={() => setHistoryOpen(v => !v)} className="app-topbar__tool" /></Tooltip>
               {servers.length > 0 && <Dropdown trigger={['click']} menu={{
                 items: [
@@ -397,11 +411,12 @@ const App: React.FC = () => {
           {!chatWindowOpen && !dramaStudioOpen && <div className="app-uptime" role="status" aria-label="本次启动时长"><FieldTimeOutlined /> 本次已开启 {formatUptime(uptime)}</div>}
           {!chatWindowOpen && !dramaStudioOpen && <div className={'canvas-text-editor ' + (textEditorOpen ? 'is-open' : 'is-collapsed') + (textEditorFullscreen ? ' is-fullscreen' : '')} style={{ bottom: historyOpen ? historyHeight + 16 : 64 }}>
             <Button type="text" className="canvas-text-editor__toggle" onClick={() => setTextEditorOpen(value => !value)} aria-label={textEditorOpen ? '收起文本编辑器' : '展开文本编辑器'}>{textEditorOpen ? '‹' : 'T'}</Button>
-            {textEditorOpen && textEditor && <div className="canvas-text-editor__body"><div className="canvas-text-editor__title"><span className="canvas-text-editor__label">{textEditor.label}</span><span className="canvas-text-editor__actions"><Button type="text" size="small" icon={<FullscreenOutlined />} onClick={() => setTextEditorFullscreen(v => !v)} title={textEditorFullscreen ? '退出全屏' : '全屏编辑'} /><Button type="text" size="small" onClick={() => { const value = !textEditorAutoClose; setTextEditorAutoClose(value); localStorage.setItem('ai-canvas-text-editor-auto-close', String(value)); }}>{textEditorAutoClose ? '自动收起' : '手动收起'}</Button></span></div><textarea className="canvas-text-editor__input" autoFocus value={textEditor.value} style={{ height: textEditorHeight }} onChange={e => { updateTextEditor(e.target.value); setTextEditorHeight(Math.max(48, e.target.scrollHeight)); }} /><div className="canvas-text-editor__meta"><span>{textEditor.value.length} 字</span><span className="canvas-text-editor__hint">点击输入区外自动收起</span></div></div>}
+            {textEditorOpen && textEditor && <div className="canvas-text-editor__body"><div className="canvas-text-editor__title"><span className="canvas-text-editor__label">{textEditor.label}</span><span className="canvas-text-editor__actions"><Button type="text" size="small" icon={<FullscreenOutlined />} onClick={() => setTextEditorFullscreen(v => !v)} title={textEditorFullscreen ? '退出全屏' : '全屏编辑'} /><Button type="text" size="small" onClick={() => { const value = !textEditorAutoClose; setTextEditorAutoClose(value); localStorage.setItem('ai-canvas-text-editor-auto-close', String(value)); }}>{textEditorAutoClose ? '自动收起' : '手动收起'}</Button></span></div><textarea className="canvas-text-editor__input" autoFocus value={textEditor.value} style={{ height: textEditorHeight }} onChange={e => { updateTextEditor(e.target.value); e.target.style.height = '48px'; setTextEditorHeight(Math.max(48, e.target.scrollHeight)); }} /><div className="canvas-text-editor__meta"><span>{textEditor.value.length} 字</span><span className="canvas-text-editor__hint">点击输入区外自动收起</span></div></div>}
           </div>}
-          {taskQueueOpen && <TaskQueue onClose={() => setTaskQueueOpen(false)} />}
+          <TaskQueue open={taskQueueOpen} onClose={() => setTaskQueueOpen(false)} onToggle={() => setTaskQueueOpen(v => !v)} />
           <ServerControlPanel open={serverControlOpen} onClose={()=>setServerControlOpen(false)}/>
                     {dramaStudioOpen && <StoryDramaStudio onClose={()=>setDramaStudioOpen(false)}/>}
+          <PromptLibrary open={favOpen} onClose={() => setFavOpen(false)} />
           <AgentPanel open={agentOpen} onClose={()=>setAgentOpen(false)} />
           {chatWindowOpen && <ChatWindow initialSession={chatSession} onClose={() => { setChatWindowOpen(false); setChatSession(null); }} />}
         </div>

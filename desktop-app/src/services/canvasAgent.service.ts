@@ -103,19 +103,25 @@ async function executeAgentAction(action: string, args: Record<string, any>, onE
       if (!source || !target) return { ok: false, message: `找不到节点: ${!source ? args?.source : args?.target}` };
       if (source === target) return { ok: false, message: '不能连接节点自身' };
       st.onConnect({ source, target, sourceHandle: args?.sourceHandle || null, targetHandle: args?.targetHandle || null } as any);
-      return { ok: true, message: `已连接 ${args?.source} → ${args?.target}` };
+      // 返回两端可用端口，帮助后续 connect 使用正确端口名
+      const sNode = st.nodes.find(n => n.id === source);
+      const tNode = st.nodes.find(n => n.id === target);
+      const outPorts = sNode ? Object.keys(sNode.data?.outputValues || {}).filter(k => typeof sNode.data?.outputValues?.[k] === 'string').slice(0, 8) : [];
+      const inPorts = tNode ? Object.keys(tNode.data?.inputValues || {}).slice(0, 8) : [];
+      return { ok: true, message: `已连接 ${args?.source} → ${args?.target}。${sNode?.data.label}输出端口: ${outPorts.join(', ') || 'image/video/audio/text'}；${tNode?.data.label}输入端口: ${inPorts.join(', ') || 'text/image/media'}（带 handle 的端口用 get_node 查看具体端口名）` };
     }
     case 'set_config': {
       const id = resolveNodeId(String(args?.node || ''));
       if (!id) return { ok: false, message: `找不到节点: ${args?.node}` };
       if (args?.config && typeof args.config === 'object') st.setNodeConfig(id, args.config);
+      else if (!args?.key) return { ok: false, message: 'set_config 需要 key 或 config 参数' };
       else st.setNodeConfig(id, { [String(args?.key)]: args?.value });
       return { ok: true, message: `已更新节点 ${args?.node} 的配置` };
     }
     case 'run': {
       const id = resolveNodeId(String(args?.node || ''));
       if (!id) return { ok: false, message: `找不到节点: ${args?.node}` };
-      void st.executeFromNode(id);
+      void Promise.resolve(st.executeFromNode(id)).catch((e: any) => { console.warn('[agent] executeFromNode 失败', e); });
       return { ok: true, message: `已从节点 ${args?.node} 开始执行（含下游链路）` };
     }
     case 'read_errors': {
@@ -146,8 +152,13 @@ async function executeAgentAction(action: string, args: Record<string, any>, onE
       if (!api) return { ok: false, message: '源码沙盒不可用（非 Electron 环境）' };
       // 先弹窗让用户确认（AgentPanel 监听 confirm-source 事件后 resolveSourceConfirm）
       onEvent({ kind: 'confirm-source', summary: `用户要求修改源码：${args?.reason || ''}。确认后将复制一份最新源码作为沙盒版本（原版不动）。` });
-      const ok = await new Promise<boolean>(res => { confirmResolver = res; });
-      if (!ok) return { ok: false, message: '用户取消了源码修改，已停止。如需只读分析可以继续。' };
+      if (confirmResolver) return { ok: false, message: '已有一个确认等待处理，请先处理弹窗' };
+      const ok = await new Promise<boolean>(res => {
+        confirmResolver = res;
+        // 60s 未确认视为取消，防弹窗挂起导致 agent 永久 busy
+        setTimeout(() => { if (confirmResolver) { confirmResolver(false); confirmResolver = null; } }, 60000);
+      });
+      if (!ok) return { ok: false, message: '用户取消了源码修改（或超时未确认），已停止。如需只读分析可以继续。' };
       const branch = await api.createBranch({});
       return { ok: true, message: `已创建沙盒版本 ${branch.id}（路径 ${branch.path}），只改这个副本，主版本未动。` };
     }
@@ -271,6 +282,8 @@ export async function runCanvasAgent(userInput: string, onEvent: (e: AgentEvent)
 规则：
 - 先想清楚再动手：需要看画布就 list_nodes/read_errors，需要知道可加什么就 node_types。
 - 动手前用 get_node 确认目标节点（尤其修改/删除前）。
+- 连线时端口名要准确：connect 返回会列出两端可用端口，若连错先 list_nodes/get_node 查端口再重连，不要反复乱试。
+- 有记忆要求：每次操作后记住你改了什么；下一轮基于画布最新状态继续，不要重复已做的事。
 - 出错时分析原因（模型名不对/没连上游/缺 API Key/服务器不可达等）并用 set_config / connect / run 修复；无法自动修复时给出明确的中文指导。
 - 所有输出用 JSON，一次一个动作；全部完成后用 {"reply":"..."} 给出最终中文回答（简明、小白能懂）。
 - 不要编造不存在的节点 id 或配置项。
@@ -302,7 +315,9 @@ ${TOOL_DOCS}`;
       return finalReply;
     }
     if (parsed?.action) {
-      const result = await executeAgentAction(parsed.action, parsed.args || {}, onEvent);
+      let result;
+      try { result = await executeAgentAction(parsed.action, parsed.args || {}, onEvent); }
+      catch (error: any) { result = { ok: false, message: `工具执行异常：${String(error?.message || error).slice(0, 120)}` }; }
       onEvent({ kind: 'tool', action: parsed.action, summary: result.message, ok: result.ok });
       history.push({ role: 'assistant', content: text });
       history.push({ role: 'user', content: `工具 ${parsed.action} 结果：${result.ok ? '成功' : '失败'} — ${result.message}` });

@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, MarkerType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useCanvasStore } from '@/stores/canvasStore';
+
+// 稳定 props（避免每次 render 新建对象引用导致 ReactFlow 重渲染）
+const DEFAULT_EDGE_OPTIONS = { type: 'deletable' as const, animated: true, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'var(--theme-edge)' }, style: { stroke: 'var(--theme-edge)', strokeWidth: 2.2 } };
+
 import { nodeTypes } from '@/components/nodes/nodeTypes';
 import { DeletableEdge } from '@/components/edges/DeletableEdge';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -127,12 +131,14 @@ export const Canvas: React.FC = () => {
 
   useEffect(() => {
     const check = async () => {
-      const result = await testConnection();
+      try { await testConnection(); } catch { /* 服务器离线时静默，性能条会显示 */ }
     };
     const fetchGpu = async () => {
       try {
         const models = await getModels();
-        setGpuInfo(models[0] ? {name:models[0],mem:'',usage:''} : null);
+        const next = models[0] ? { name: models[0], mem: '', usage: '' } : null;
+        // 值不变不 setState（避免每 10s 强制整画布重渲染）
+        setGpuInfo(prev => (prev?.name === next?.name && prev?.mem === next?.mem) ? prev : next);
       } catch { setGpuInfo(null); }
     };
     check(); fetchGpu();
@@ -144,9 +150,14 @@ export const Canvas: React.FC = () => {
     comfyWS.connect();
     const store=useCanvasStore;
     const nodeFor=(promptId?:string)=>promptId?store.getState().nodes.find(n=>n.data.promptId===promptId):undefined;
+    let lastPct = -1; let lastProgressAt = 0;
     const unProgress=comfyWS.onProgress(({value,max,node:comfyNodeId,promptId})=>{
       const node=nodeFor(promptId); if(!node||!max)return;
       const pct=Math.max(0,Math.min(100,Math.round((value/max)*100)));
+      const now=Date.now();
+      // 节流：300ms 内或进度差 <5 不更新（高频进度回调是整画布重渲染主因）
+      if (pct === lastPct || (now - lastProgressAt < 300 && Math.abs(pct - lastPct) < 5)) return;
+      lastPct = pct; lastProgressAt = now;
       store.getState().updateNodeData(node.id,{currentNodeProgress:pct,currentNodeId:String(comfyNodeId || ''),content:`生成中 · ComfyUI 节点 ${comfyNodeId || '当前'} · ${value}/${max}`});
     });
     const unExec=comfyWS.onExecuting(({node,prompt_id})=>{
@@ -187,6 +198,7 @@ export const Canvas: React.FC = () => {
   const onPaneClick = useCallback((e?: React.MouseEvent) => {
     setSelectedNodeId(null);
     setSearchAnchor(null);
+    window.dispatchEvent(new Event('ai-canvas-close-taskqueue')); // 点画布空白收起执行列表
     if (e) {
       const flow = rfRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       if (flow) lastClickPos.current = flow;
@@ -202,16 +214,36 @@ export const Canvas: React.FC = () => {
   const onConnectEnd=useCallback((event:MouseEvent|TouchEvent,state:any)=>{
     if(state?.toNode||!state?.fromNode||state?.fromHandle?.type==='target')return;
     const sourceId=state.fromNode.id as string;const source=useCanvasStore.getState().nodes.find(node=>node.id===sourceId);
-    if(!source?.data.resultUrl&&!source?.data.results?.length)return;
-    if(!window.confirm('该节点已有生成结果，是否在这里创建并连接新的预览节点？'))return;
+    const results=(source?.data.results||[]) as Array<{type:'text'|'image'|'video'|'audio'|'3d';url:string}>;
+    if(!source?.data.resultUrl&&!results.length)return;
     const point='changedTouches' in event?event.changedTouches[0]:event;
     if(!point||!rfRef.current)return;
+    // 智能判断：工作流节点（apiNode/localWorkflow，输入图经多节点处理）→ 预览节点；
+    // 媒体处理型节点（图生图/视频生视频/图生视频等 输入媒体→输出媒体）→ 前后对比节点；其余（文生等）→ 预览节点
+    const firstType=results[0]?.type||(source?.data.outputValues?.video?'video':source?.data.outputValues?.audio?'audio':source?.data.outputValues?.['3d']?'3d':'image');
+    const nt=String(source?.data?.nodeType||'');
+    const paidType=String((source?.data?.config as any)?.type||'');
+    const isWorkflow=nt==='apiNode'||nt==='localWorkflow';
+    const isMediaToMedia=nt==='imageToImage'||nt==='videoToVideo'||paidType.includes('image-to-image')||paidType.includes('image-to-video')||paidType.includes('video-to-video')||paidType.includes('image-editing')||paidType.includes('inpainting');
+    const useCompare=!isWorkflow&&isMediaToMedia&&(firstType==='image'||firstType==='video');
     const position=rfRef.current.screenToFlowPosition({x:point.clientX,y:point.clientY});
-    const previewId=addNode('preview',{x:position.x-120,y:position.y-90},{label:'结果预览'});
-    onConnect({source:sourceId,sourceHandle:state.fromHandle?.id||'output',target:previewId,targetHandle:'media'});
-    const results=source.data.results||[];const current=results[0];
-    useCanvasStore.getState().updateNodeData(previewId,{inputValues:{media:current?.url||source.data.resultUrl,results},results});
+    const nodeType=useCompare?'compare':'preview';
+    const newId=addNode(nodeType,{x:position.x-120,y:position.y-90},{label:nodeType==='compare'?'前后对比':'结果预览'});
+    onConnect({source:sourceId,sourceHandle:state.fromHandle?.id||'output',target:newId,targetHandle:useCompare?'original':'media'});
+    const current=results[0];
+    useCanvasStore.getState().updateNodeData(newId,{inputValues:useCompare?{original:current?.url||source?.data.resultUrl}:{media:current?.url||source?.data.resultUrl},results});
   },[addNode,onConnect]);
+  // 提示词库「发送到画布」：创建文本节点
+  useEffect(() => {
+    const addText = (event: Event) => {
+      const text = String((event as CustomEvent).detail?.text || '');
+      if (!text) return;
+      const pos = rfRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+      addNode('textInput', { x: (pos?.x || 0) - 110, y: (pos?.y || 0) - 30 }, { label: '提示词', config: { text } });
+    };
+    window.addEventListener('ai-canvas-add-text-node', addText);
+    return () => window.removeEventListener('ai-canvas-add-text-node', addText);
+  }, [addNode]);
   const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; }, []);
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -458,8 +490,8 @@ export const Canvas: React.FC = () => {
       <ReactFlow nodes={visibleNodes} edges={visibleEdges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} edgeTypes={edgeTypes}
         onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes}
         fitView fitViewOptions={{ maxZoom: 1 }} minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} selectionKeyCode="Control" multiSelectionKeyCode="Shift" selectionMode={SelectionMode.Partial}
-        connectionLineType={ConnectionLineType.Bezier} onlyRenderVisibleElements
-        defaultEdgeOptions={{type:'deletable',animated:true,markerEnd:{type:MarkerType.ArrowClosed,width:14,height:14,color:'var(--theme-edge)'},style:{stroke:'var(--theme-edge)',strokeWidth:2.2}}}>
+        connectionLineType={ConnectionLineType.Bezier} connectionRadius={48} onlyRenderVisibleElements
+        defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}>
         {showGrid && <Background variant={gridVariant} gap={20} size={1} color="var(--theme-grid)" />}
         <Controls position="top-right" showFitView showZoom showInteractive={false} />
         {showMiniMap && <MiniMap position="bottom-right" nodeColor={n=>(n.data?.color as string)??'#6366f1'} maskColor="rgba(0,0,0,0.5)" />}

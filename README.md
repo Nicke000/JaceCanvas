@@ -48,9 +48,9 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 | 版本 | 内容 | 适合 |
 |------|------|------|
-| **纯安装版** `JaceCanvas Setup 4.6.8-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
-| **安装+内置开源** `JaceCanvas Setup 4.6.8.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
-| **纯开源** `JaceCanvas-4.6.8-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
+| **纯安装版** `JaceCanvas Setup 4.6.9-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
+| **安装+内置开源** `JaceCanvas Setup 4.6.9.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
+| **纯开源** `JaceCanvas-4.6.9-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
@@ -196,7 +196,7 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📝 更新日志
 
-最新版本：**v4.6.8**。更新内容见 GitHub Releases。
+最新版本：**v4.6.9**。更新内容见 GitHub Releases。
 
 ---
 

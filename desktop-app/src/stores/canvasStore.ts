@@ -253,7 +253,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
     return nodeId;
   },
 
-  updateNodeData: (id, d) => set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, ...d, updatedAt: Date.now() } } : n) }),
+  updateNodeData: (id, d) => set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, ...d, inputValues: d.inputValues ? { ...(n.data.inputValues || {}), ...d.inputValues } : n.data.inputValues, updatedAt: Date.now() } } : n) }),
   updateNodeStyle: (id, style) => set({ nodes: get().nodes.map(n => n.id === id ? { ...n, style: { ...n.style, ...style } } : n) }),
 
   deleteSelectedNode: () => {
@@ -874,6 +874,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
         }
         // 上游文本 → 覆盖工作流的文本/prompt 参数（CLIPTextEncode 的 text / NunchakuSana 的 prompt 等）
         const upstreamText = String(node.data.inputValues?.text || node.data.inputValues?.prompt || '').trim();
+        const upstreamNeg = String(node.data.inputValues?.negative || '').trim();
         if (upstreamText) {
           let textCovered = false; // 只覆盖第一个 text 字段（正向 CLIPTextEncode），避免负向/其它 text 被误覆盖
           Object.entries(prompt).forEach(([nid, n]) => {
@@ -882,6 +883,16 @@ export const useCanvasStore = create<Store>((set, get) => ({
               if (typeof v !== 'string') return;
               if (/^text$/i.test(f)) { if (!textCovered) { ins[f] = upstreamText; textCovered = true; } }
               else if (/^prompt$/i.test(f)) ins[f] = upstreamText; // 生成节点（NunchakuSana 等）的提示词字段
+              else if (/negative/i.test(f)) { if (upstreamNeg) ins[f] = upstreamNeg; } // 负面提示词端口 → 负向字段
+            });
+          });
+        } else if (upstreamNeg) {
+          // 只有负面提示词时也单独映射
+          Object.entries(prompt).forEach(([nid, n]) => {
+            const ins = (n as any).inputs || {};
+            Object.entries(ins).forEach(([f, v]) => {
+              if (typeof v !== 'string') return;
+              if (/negative/i.test(f)) ins[f] = upstreamNeg;
             });
           });
         }
@@ -943,7 +954,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
           const direct=source.data.outputValues?.text ?? source.data.config?.text;
           return direct==null?[]:[String(direct)];
         });
-        textFields.forEach((field,index)=>{const value=upstream[field.key]??texts[index];if(value!=null)input_values[field.key]=`${settingText ? settingText+'\n\n' : ''}${String(value)}`});
+        textFields.forEach((field,index)=>{const isNeg=/negative/i.test(field.key);const value=upstream[field.key]??(isNeg?upstream['negative']:upstream['text'])??texts[index];if(value!=null)input_values[field.key]=`${settingText ? settingText+'\n\n' : ''}${String(value)}`});
       } else if (nt === 'imageToImage') {
         workflow_id = 'img2img-workflow';
         if(node.data.inputValues?.image!=null)input_values['image']=await bridgeMediaToInput(node.data.inputValues.image,'image');

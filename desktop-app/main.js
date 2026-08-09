@@ -411,9 +411,9 @@ app.whenReady().then(async () => {
   createWindow();
 
   // 生成结果缓存：启动清理一次，之后每 6 小时清理超过 48 小时未保存的文件
-  try { cleanupGeneratedCache(); } catch { /* 忽略 */ }
+  try { const rs = loadRuntimeSettings(); cleanupGeneratedCache(Number(rs.assetRetentionDays || 7) * 86400000, Number(rs.assetMaxSizeGB || 0) * 1073741824); } catch { /* 忽略 */ }
   logCrash({ source: "main", type: "app-start", version: app.getVersion() });
-  setInterval(() => { try { cleanupGeneratedCache(); } catch { /* 忽略 */ } }, 6 * 60 * 60 * 1000);
+  setInterval(() => { try { const rs = loadRuntimeSettings(); cleanupGeneratedCache(Number(rs.assetRetentionDays || 7) * 86400000, Number(rs.assetMaxSizeGB || 0) * 1073741824); } catch { /* 忽略 */ } }, 6 * 60 * 60 * 1000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -507,6 +507,20 @@ ipcMain.handle("save-gpu-setting", (_event, enabled) => {
   return true;
 });
 
+// 渲染端把任意运行时设置（如素材保留天数/大小上限）合并写入 runtime-settings.json，供主进程清理逻辑读取
+ipcMain.handle("update-runtime-settings", (_event, patch) => {
+  if (!patch || typeof patch !== "object") return false;
+  // 白名单 + 类型/范围校验，防任意字段污染主进程配置
+  const clean = {};
+  if (patch.assetRetentionDays !== undefined) { const d = Number(patch.assetRetentionDays); if (Number.isFinite(d)) clean.assetRetentionDays = Math.max(1, Math.min(365, Math.round(d))); }
+  if (patch.assetMaxSizeGB !== undefined) { const g = Number(patch.assetMaxSizeGB); if (Number.isFinite(g)) clean.assetMaxSizeGB = Math.max(0, Math.min(500, g)); }
+  if (Object.keys(clean).length === 0) return false;
+  const file = path.join(app.getPath("userData"), "runtime-settings.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ ...loadRuntimeSettings(), ...clean }));
+  return true;
+});
+
 // 素材二进制由 Electron 写入本机 userData，渲染进程只保留路径元数据，避免把大文件塞进 localStorage。
 ipcMain.handle("save-local-asset", async (_event, payload) => {
   if (!payload || typeof payload.name !== "string" || !payload.data) throw new Error("素材数据不完整");
@@ -535,16 +549,22 @@ function getGeneratedCacheDir() {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
-function cleanupGeneratedCache() {
+function cleanupGeneratedCache(ttlMs = GENERATED_CACHE_TTL_MS, maxBytes = 0) {
   const dir = getGeneratedCacheDir();
   const now = Date.now();
   let removed = 0;
-  for (const file of fs.readdirSync(dir)) {
-    const full = path.join(dir, file);
-    try {
-      const st = fs.statSync(full);
-      if (st.isFile() && now - st.mtimeMs > GENERATED_CACHE_TTL_MS) { fs.unlinkSync(full); removed += 1; }
-    } catch { /* 忽略单文件错误 */ }
+  let files = [];
+  try { files = fs.readdirSync(dir).map(f => { const full = path.join(dir, f); try { const st = fs.statSync(full); return { full, size: st.size, mtime: st.mtimeMs }; } catch { return null; } }).filter(Boolean); } catch { return 0; }
+  // 1) 过期文件（按保留天数）
+  for (const f of files) { if (now - f.mtime > ttlMs) { try { fs.unlinkSync(f.full); removed += 1; } catch { /* ignore */ } } }
+  if (maxBytes > 0) {
+    // 2) 超总大小上限：从最旧开始删
+    let total = 0; const live = [];
+    for (const f of files) { try { if (fs.existsSync(f.full)) { const st = fs.statSync(f.full); total += st.size; live.push({ full: f.full, mtime: f.mtime, size: st.size }); } } catch { /* ignore */ } }
+    if (total > maxBytes) {
+      live.sort((a, b) => a.mtime - b.mtime);
+      for (const f of live) { if (total <= maxBytes) break; try { fs.unlinkSync(f.full); total -= f.size; removed += 1; } catch { /* ignore */ } }
+    }
   }
   return removed;
 }
@@ -572,7 +592,28 @@ ipcMain.handle("cache-media", async (_event, { url }) => {
   }
 });
 // 立即清理过期的生成缓存（主进程定时 + 渲染端手动均可调用）
-ipcMain.handle("cleanup-cache", async () => ({ removed: cleanupGeneratedCache() }));
+ipcMain.handle("cleanup-cache", async (_event, opts) => {
+  const days = Number(opts?.days) > 0 ? Number(opts.days) : 7;
+  const maxSizeGB = Number(opts?.maxSizeGB) > 0 ? Number(opts.maxSizeGB) : 0;
+  return { removed: cleanupGeneratedCache(days * 24 * 60 * 60 * 1000, maxSizeGB > 0 ? maxSizeGB * 1024 * 1024 * 1024 : 0) };
+});
+// 本地文件落盘（上传节点/素材自动保存）：渲染端传 base64 + 建议文件名 → 主进程写入素材目录返回 file://
+ipcMain.handle("save-local-file", async (_event, { b64, filename, dir }) => {
+  if (typeof b64 !== "string" || !b64) throw new Error("缺少文件数据");
+  let base = (typeof dir === "string" && dir.trim()) ? path.resolve(dir.trim()) : getGeneratedCacheDir();
+  // 白名单：只允许应用数据目录（素材/缓存）内，防止渲染端被攻破时任意路径写入
+  const userDataRoot = path.resolve(app.getPath("userData"));
+  if (!(base === userDataRoot || base.startsWith(userDataRoot + path.sep))) base = getGeneratedCacheDir();
+  try { fs.mkdirSync(base, { recursive: true }); } catch { /* ignore */ }
+  const safe = String(filename || "asset").replace(/[\/:*?"<>|]/g, "_").slice(0, 160);
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`;
+  const target = path.join(base, name);
+  const comma = b64.indexOf(",");
+  const body = comma >= 0 ? b64.slice(comma + 1) : b64;
+  const buf = Buffer.from(body, "base64");
+  fs.writeFileSync(target, buf);
+  return { path: target, url: pathToFileURL(target).toString(), size: buf.length };
+});
 
 // 通用代理请求：渲染进程受 CORS 限制的 API（如 ElevenLabs TTS）由主进程转发
 ipcMain.handle("proxy-fetch", async (_event, { url, method, headers, body }) => {
@@ -762,11 +803,38 @@ ipcMain.handle("ffmpeg-compose", async (_event, payload) => {
     if (tEnd > tStart) trimArgs.push("-t", String(tEnd - tStart));
     // -ss/-t 必须在对应 -i 之前（输入 seek），视频与音频同步裁剪
     const args = ["-y", ...trimArgs, "-i", videoPath];
-    if (audioPath) args.push(...trimArgs, "-i", audioPath);
-    else if (item.hasAudio) { /* 视频自带音轨：不额外加音频输入 */ }
-    else args.push("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo");
-    const mapArgs = (item.hasAudio && !audioPath) ? ["-map", "0:v:0", "-map", "0:a:0?"] : ["-map", "0:v:0", "-map", "1:a:0"];
-    args.push(...mapArgs, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", merged);
+    let audioIdx = 0; // 对白/原声输入索引
+    if (audioPath) { args.push(...trimArgs, "-i", audioPath); audioIdx = 1; }
+    else if (item.hasAudio) { audioIdx = 0; /* 视频自带音轨 */ }
+    else { args.push("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"); audioIdx = 1; }
+    // 音效 + 全局 BGM（可选）→ 与对白三轨混音
+    const sfxPath = item.sfx ? await localMediaPath(item.sfx) : null;
+    const bgm = String(payload?.bgm || "").trim();
+    const bgmPath = bgm ? await localMediaPath(bgm) : null;
+    const mixLabels = [];
+    const filterParts = [`[${audioIdx}:a]volume=1.0[a0]`];
+    mixLabels.push("a0");
+    let nextInput = args.filter(a => a === "-i").length;
+    if (sfxPath && fs.existsSync(sfxPath)) {
+      args.push("-i", sfxPath);
+      filterParts.push(`[${nextInput}:a]volume=0.85[a1]`);
+      mixLabels.push("a1"); nextInput += 1;
+    }
+    if (bgmPath && fs.existsSync(bgmPath)) {
+      args.push("-i", bgmPath);
+      filterParts.push(`[${nextInput}:a]volume=0.32[a2]`);
+      mixLabels.push("a2"); nextInput += 1;
+    }
+    const mapArgs = [];
+    if (mixLabels.length === 1) {
+      // 只有一路音频（无音效无 BGM）：保持原逻辑，避免 amix 开销
+      if (item.hasAudio && !audioPath) mapArgs.push("-map", "0:v:0", "-map", "0:a:0?");
+      else mapArgs.push("-map", "0:v:0", "-map", "1:a:0");
+    } else {
+      filterParts.push(`${mixLabels.map(l => `[${l}]`).join("")}amix=inputs=${mixLabels.length}:duration=first:dropout_transition=2:normalize=0[aout]`);
+      args.push("-filter_complex", filterParts.join(";"), "-map", "0:v:0", "-map", "[aout]");
+    }
+    args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-movflags", "+faststart", merged);
     await runFfmpeg(binary, args);
     segments.push(merged);
   }

@@ -85,9 +85,12 @@ export function workflowPorts(workflowJson: Record<string, any> | undefined): { 
     else if (/^SaveImage/i.test(ct) || /^PreviewImage/i.test(ct) || /^ImageSave/i.test(ct) || /^SaveAnimatedWEBP/i.test(ct) || /^SaveAnimatedPNG/i.test(ct)) outputs.push({ id: nodeId, label: `${title}`, type: 'image' });
     else if (/^SaveVideo/i.test(ct) || /^VHS_VideoCombine/i.test(ct) || /^VHS_SaveVideo/i.test(ct)) outputs.push({ id: nodeId, label: `${title}`, type: 'video' });
   });
-  // 文本输入：工作流含 text/prompt 类参数时暴露「提示词」输入端口（执行时用上游文本覆盖）
-  const hasTextParam = parseWorkflowParams(workflowJson).some(p => /^text$/i.test(p.field) || /prompt/i.test(p.field));
+  // 文本输入：工作流含 text/prompt 类参数时暴露「提示词」端口；含 negative 参数时额外暴露「负面提示词」端口（执行时分别映射）
+  const textParams = parseWorkflowParams(workflowJson);
+  const hasTextParam = textParams.some(p => /^text$/i.test(p.field) || (/prompt/i.test(p.field) && !/negative/i.test(p.field)));
+  const hasNegParam = textParams.some(p => /negative/i.test(p.field));
   if (hasTextParam && !inputs.some(x => x.id === 'text')) inputs.unshift({ id: 'text', label: '提示词', type: 'text' });
+  if (hasNegParam && !inputs.some(x => x.id === 'negative')) inputs.unshift({ id: 'negative', label: '负面提示词', type: 'text' });
   if (!outputs.length) outputs.push({ id: 'output', label: '图片', type: 'image' });
   return { inputs, outputs };
 }

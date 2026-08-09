@@ -16,7 +16,7 @@ export type NodeComponentType =
   | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage';
 
 /* ========== IO 定义 ========== */
-export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select' | '3d';
+export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select' | '3d' | 'media';
 
 export interface PortDefinition {
   name: string;
@@ -98,8 +98,8 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
     params: { startFrame: 0, endFrame: 0, fps: 30 },
   },
   preview: {
-    inputs: [{ name: 'media', label: '图片/视频/音频/文本', type: 'image' }],
-    outputs: [{ name: 'output', label: '当前预览', type: 'image' }],
+    inputs: [{ name: 'media', label: '图片/视频/音频/文本', type: 'media' }],
+    outputs: [{ name: 'output', label: '当前预览', type: 'media' }],
     params: {},
   },
   note: {

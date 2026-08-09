@@ -277,7 +277,6 @@ export const Toolbar: React.FC<{ embedded?: boolean; onClose?: () => void }> = (
     <div className="node-library__filters">
       <div className="node-library__serverbar">
         {servers.length > 0 && <Select size="small" style={{ width: 140, flex: 'none' }} value={serverId} onChange={v => { setServerId(v); useSettingsStore.getState().setActiveServer(v || servers[0]?.id || ''); }} options={[{ label: '默认服务器', value: '' }, ...servers.map(s => ({ label: s.name, value: s.id }))]} />}
-        <Segmented size="small" value={domain} onChange={v => setDomain(v as Domain)} options={['全部', '短剧', '电商', '通用']} />
         <Button size="small" icon={<span>📥</span>} onClick={() => setImportOpen(true)} style={{ marginLeft: 'auto' }}>导入 JSON</Button>
       </div>
       <Input allowClear prefix={<SearchOutlined/>} value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索工作流..."/>

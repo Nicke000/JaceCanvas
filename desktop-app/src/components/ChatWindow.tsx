@@ -63,6 +63,8 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [busy, setBusy] = useState(false);
+  const busyRef = React.useRef(false);
+  React.useEffect(() => { busyRef.current = busy; }, [busy]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('chat-selected-model') || settings.chatModel || '');
@@ -144,7 +146,7 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
   const sendRef = useRef(send); sendRef.current = send;
   const onToggleMsg = useCallback((id: string) => setSelectedMessages(cur => { const next = new Set(cur); next.has(id) ? next.delete(id) : next.add(id); return next; }), []);
   const onEditMsg = useCallback((item: ChatMessage) => { setInput(item.content); setAttachments(item.attachments || []); setMessages(cur => cur.slice(0, cur.findIndex(c => c.id === item.id))); }, []);
-  const onRetryMsg = useCallback((item: ChatMessage) => { const index = messagesRef.current.findIndex(c => c.id === item.id); if (index >= 0) void sendRef.current(item.content, item.attachments || [], index); }, []);
+  const onRetryMsg = useCallback((item: ChatMessage) => { if (busyRef.current) return; const index = messagesRef.current.findIndex(c => c.id === item.id); if (index >= 0) void sendRef.current(item.content, item.attachments || [], index); }, []);
   const onAddMediaMsg = useCallback((url: string, index: number) => { const type = mediaType(url); if (!type) return; addNode('asset', { x: 120 + (index % 3) * 280, y: 100 + Math.floor(index / 3) * 240 }, { label: `AI 返回${type === 'video' ? '视频' : '图片'}`, config: { assetType: type }, outputValues: { [type]: url, url }, resultUrl: url, results: [{ type, url }], status: 'success' }); }, [addNode]);
 
   const sendToEditor = () => { const text=messages.filter(item => selectedMessages.has(item.id)).map(item => `[${item.role === 'user' ? '你' : '助手'}]\n${item.content}`).join('\n\n---\n\n'); if (text) { setEditorText(current => current ? `${current}\n\n${text}` : text); setSelectedMessages(new Set()); } };

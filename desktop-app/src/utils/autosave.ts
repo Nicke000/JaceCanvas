@@ -47,7 +47,7 @@ export async function flushAutosave(createSnapshot = true): Promise<string> {
   if (!createSnapshot) return projectId;
   const existing = await db.projectSnapshots.where('projectId').equals(projectId).sortBy('savedAt');
   const lastVersion = existing.length ? (existing[existing.length - 1].version || 0) : 0;
-  await db.projectSnapshots.put({ id: `${projectId}-${now}`, projectId, version: lastVersion + 1, savedAt: now, canvasData: { nodes: nodes as any, edges: edges as any } });
+  await db.projectSnapshots.put({ id: `${projectId}-${now}-${Math.random().toString(36).slice(2, 6)}`, projectId, version: lastVersion + 1, savedAt: now, canvasData: { nodes: nodes as any, edges: edges as any } });
   if (existing.length >= MAX_SNAPSHOTS) {
     const overflow = existing.slice(0, existing.length - MAX_SNAPSHOTS + 1);
     await db.projectSnapshots.bulkDelete(overflow.map(s => s.id));
@@ -56,14 +56,6 @@ export async function flushAutosave(createSnapshot = true): Promise<string> {
 }
 
 /** 读取当前项目最近的自动保存点（快照优先，其次项目本体） */
-export async function restoreAutosave(): Promise<{ nodes: unknown[]; edges: unknown[] } | null> {
-  const snapshots = await db.projectSnapshots.where('projectId').equals(context.projectId).sortBy('savedAt');
-  const latest = snapshots[snapshots.length - 1];
-  if (latest) return latest.canvasData;
-  const project = await db.projects.get(context.projectId);
-  return project?.canvasData ?? null;
-}
-
 /** 当前项目的历史版本列表（时间正序） */
 export async function listSnapshots(): Promise<ProjectSnapshot[]> {
   return db.projectSnapshots.where('projectId').equals(context.projectId).sortBy('savedAt');

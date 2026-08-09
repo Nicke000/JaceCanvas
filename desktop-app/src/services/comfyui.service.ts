@@ -22,8 +22,12 @@ export interface ActiveServer { id: string; name: string; baseUrl: string; apiKe
 /** 当前生效的服务器：优先 serverId 指定的服务器，其次多服务器列表的 activeServer，最后回退旧版单地址 baseUrl。 */
 export function getActiveServer(serverId?: string): ActiveServer | null {
   const state = useSettingsStore.getState();
+  // 指定 serverId 时优先精确匹配；找不到（如换镜像后旧 id 已删）则回退当前活跃/首个服务器，
+  // 避免调用方拼出空 baseUrl 打到前端页面 origin。
   if (serverId && state.servers && state.servers.length) {
-    return state.servers.find(item => item.id === serverId) || null;
+    const hit = state.servers.find(item => item.id === serverId);
+    if (hit) return hit;
+    console.warn(`[server] 节点绑定的服务器 ${serverId} 不存在（可能已删除/换镜像），已回退到当前活跃服务器`);
   }
   if (state.servers && state.servers.length) {
     return state.servers.find(item => item.id === state.activeServerId) || state.servers[0] || null;
@@ -48,7 +52,7 @@ function getControlBases(): string[] {
 function hdrs(serverId?: string): Record<string, string> { const h: Record<string, string> = { 'Content-Type': 'application/json' }; const k = getActiveServer(serverId)?.apiKey || useSettingsStore.getState().apiKey; if (k) h['Authorization'] = 'Bearer ' + k; return h; }
 async function controlRequest(path: string, init: RequestInit = {}, ms = 15000): Promise<any> {
   let last: unknown;
-  for (const base of getControlBases().reverse()) {
+  for (const base of getControlBases()) {
     try {
       const r = await ftch(base + path, { ...init, headers: { ...hdrs(), ...(init.headers || {}) } }, ms);
       if (!r.ok) { last = new Error(`HTTP ${r.status}`); continue; }

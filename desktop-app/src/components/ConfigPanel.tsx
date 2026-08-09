@@ -49,9 +49,9 @@ export const ConfigPanel: React.FC = () => {
   const nodeContext = (() => {
     const n = nodes.find(x => x.id === sid);
     if (!n) return '';
-    const parts: string[] = [`【当前节点】${n.data.label}（${n.data.nodeType}）`, `配置：${JSON.stringify(n.data.config).slice(0, 800)}`, n.data.resultUrl ? `结果：${String(n.data.resultUrl)}` : ''];
+    const parts: string[] = [`【当前节点】${n.data.label}（${n.data.nodeType}）`, `配置：${JSON.stringify(n.data.config || {}).slice(0, 800)}`, n.data.resultUrl ? `结果：${String(n.data.resultUrl)}` : ''];
     const allEdges = useCanvasStore.getState().edges;
-    nodes.forEach(src => { if (src.id === n.id) return; const incoming = allEdges.filter(e => e.target === n.id && e.source === src.id); if (incoming.length) parts.push(`【上游节点】${src.data.label}：${JSON.stringify(src.data.config).slice(0, 400)}`); });
+    nodes.forEach(src => { if (src.id === n.id) return; const incoming = allEdges.filter(e => e.target === n.id && e.source === src.id); if (incoming.length) parts.push(`【上游节点】${src.data.label}：${JSON.stringify(src.data.config || {}).slice(0, 400)}`); });
     return parts.filter(Boolean).join('\n');
   })();
   const sendNodeChat = async (text: string) => {
@@ -66,7 +66,7 @@ export const ConfigPanel: React.FC = () => {
     finally { setChatBusy(false); }
   };
 
-  const change = (key: string, value: unknown) => { setConfig(node.id, { ...config, [key]: value }); form.setFieldValue(key, value); };
+  const change = (key: string, value: unknown) => { setConfig(node.id, { ...(useCanvasStore.getState().nodes.find(n => n.id === node.id)?.data.config || {}), [key]: value }); form.setFieldValue(key, value); };
   const isSeed = (name: string) => /(?:^|_)(?:seed|noise_seed|random_seed)$/i.test(name);
   const renderNumber = (key: string, label: string, value: unknown, fieldName = key) => <div key={key} style={{ marginBottom: 10 }}><div style={{ color: 'var(--theme-muted)', fontSize: 11, marginBottom: 3 }}>{label}</div><Space.Compact style={{ width: '100%' }}><InputNumber style={{ width: isSeed(fieldName) ? 'calc(100% - 58px)' : '100%' }} value={value === '' || value == null ? null : Number(value)} onChange={v => change(key, v)} />{isSeed(fieldName) && <Button onClick={() => change(key, randomSeedLike(value))}>随机</Button>}</Space.Compact></div>;
   const renderApi = () => {

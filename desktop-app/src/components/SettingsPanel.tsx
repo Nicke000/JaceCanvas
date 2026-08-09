@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Modal, Form, Input, InputNumber, Button, Space, Divider, message, Select, Switch, Tag } from 'antd';
-import { SettingOutlined, ApiOutlined, CheckCircleOutlined, CloseCircleOutlined, GithubOutlined, QqOutlined, RobotOutlined, CodeOutlined, KeyOutlined, LinkOutlined, ThunderboltOutlined, InfoCircleOutlined, BgColorsOutlined, PlusOutlined, WarningOutlined, ReloadOutlined, FolderOpenOutlined, CopyOutlined } from '@ant-design/icons';
+import { SettingOutlined, ApiOutlined, CheckCircleOutlined, CloseCircleOutlined, GithubOutlined, QqOutlined, RobotOutlined, CodeOutlined, KeyOutlined, LinkOutlined, ThunderboltOutlined, InfoCircleOutlined, BgColorsOutlined, PlusOutlined, WarningOutlined, ReloadOutlined, FolderOpenOutlined, CopyOutlined , DatabaseOutlined } from '@ant-design/icons';
 import { useSettingsStore, PAID_API_NODE_KINDS, parseSshCommand, type PaidApiProfile, type PaidApiNodeKind, type ServerProfile } from '@/stores/settingsStore';
 import { testConnection, getModels } from '@/services/comfyui.service';
 import { fetchModelsFromApi } from '@/services/chat.service';
@@ -46,7 +46,7 @@ const thinkingModeOptions = [
   { label: '深度思考', value: 'deep' },
 ];
 
-type SettingTab = 'connection' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'appearance' | 'log' | 'about';
+type SettingTab = 'connection' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'assets' | 'appearance' | 'log' | 'about';
 export const SettingsButton: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -378,6 +378,17 @@ export const SettingsButton: React.FC = () => {
       try { if (values.sshPassword) await (window as any).electronAPI?.saveSshPassword?.(values.sshPassword); } catch { }
       message.success('连接设置已保存');
     }
+    if (section === 'assets') {
+      store.setAssets({
+        assetAutoSave: Boolean(values.assetAutoSave),
+        assetSavePath: String(values.assetSavePath || ''),
+        assetRetentionDays: Math.max(1, Number(values.assetRetentionDays) || 7),
+        assetMaxSizeGB: Number(values.assetMaxSizeGB) || 0,
+        showFailedHistory: Boolean(values.showFailedHistory),
+      });
+      void (window as any).electronAPI?.updateRuntimeSettings?.({ assetRetentionDays: Math.max(1, Number(values.assetRetentionDays) || 7), assetMaxSizeGB: Number(values.assetMaxSizeGB) || 0 });
+      message.success('素材设置已保存');
+    }
     if (section === 'chat') {
       store.setChat({ chatProvider: values.chatProvider, chatBaseUrl: values.chatBaseUrl || '', chatApiKey: values.chatApiKey || '', chatModel: values.chatModel || '', chatModels: fetchedChatModels.length ? fetchedChatModels : store.chatModels, chatSystemPrompt: values.chatSystemPrompt || '', chatThinkingMode: values.chatThinkingMode || 'auto' });
       message.success('聊天 AI 设置已保存');
@@ -428,6 +439,9 @@ export const SettingsButton: React.FC = () => {
           </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'performance' ? 'active' : '')} onClick={() => setActiveTab('performance')}>
             <ApiOutlined /> <span>性能设置</span>
+          </div>
+          <div className={'settings-sidebar-item ' + (activeTab === 'assets' ? 'active' : '')} onClick={() => setActiveTab('assets')}>
+            <DatabaseOutlined /> <span>素材管理</span>
           </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'appearance' ? 'active' : '')} onClick={() => setActiveTab('appearance')}>
             <BgColorsOutlined /> <span>外观</span>
@@ -576,6 +590,21 @@ export const SettingsButton: React.FC = () => {
               </Space>
             </div>}
 
+            {activeTab === 'assets' && <div className="settings-tab-content">
+              <h3 className="settings-tab-title">素材管理</h3>
+              <div className="settings-form-grid">
+                <Form.Item name="assetAutoSave" label="自动保存生成素材" valuePropName="checked" extra="生成的图片/视频结果自动落盘到本地，关闭后仅保留在画布与历史中"><Switch /></Form.Item>
+                <Form.Item name="showFailedHistory" label="生成历史显示失败记录" valuePropName="checked" extra="默认隐藏执行失败的记录，勾选后可见"><Switch /></Form.Item>
+              </div>
+              <Form.Item name="assetSavePath" label="素材保存路径（留空 = 应用数据目录）" extra="上传节点与自动保存的素材会写入此目录；切换应用后仍可通过记住的路径加载"><Input placeholder="例如 D:\\JaceCanvasAssets" /></Form.Item>
+              <div className="settings-form-grid">
+                <Form.Item name="assetRetentionDays" label="自动清理天数（天）" extra="超过该天数的缓存文件自动删除"><InputNumber min={1} max={365} style={{ width: '100%' }} /></Form.Item>
+                <Form.Item name="assetMaxSizeGB" label="缓存大小上限（GB）" extra="超过该大小后从最旧文件开始清理（0 = 不限制）"><InputNumber min={0} max={500} step={1} style={{ width: '100%' }} /></Form.Item>
+              </div>
+              <Space wrap style={{ marginTop: 12 }}>
+                <Button type="primary" onClick={() => void form.validateFields().then(values => save(values, 'assets'))}>保存素材设置</Button>
+              </Space>
+            </div>}
             {activeTab === 'appearance' && <div className="settings-tab-content">
               <h3 className="settings-tab-title">外观与主题</h3>
               <AppearanceSettings />

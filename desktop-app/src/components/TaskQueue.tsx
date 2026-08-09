@@ -1,14 +1,14 @@
 import React from 'react';
 import { Button, Empty, Progress, Tooltip } from 'antd';
-import { CloseOutlined, DeleteOutlined, PauseOutlined, PlayCircleOutlined, VerticalAlignTopOutlined, VerticalAlignBottomOutlined } from '@ant-design/icons';
+import { CloseOutlined, DeleteOutlined, PauseOutlined, PlayCircleOutlined, VerticalAlignTopOutlined, VerticalAlignBottomOutlined, FieldTimeOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
 import type { NodeStatus } from '@/types';
 
-interface TaskQueueProps { onClose: () => void; }
+interface TaskQueueProps { open: boolean; onClose: () => void; onToggle: () => void; }
 
 const statusText: Record<NodeStatus, string> = { idle: '等待', queued: '排队中', running: '执行中', paused: '已暂停', success: '完成', error: '失败' };
 
-export const TaskQueue: React.FC<TaskQueueProps> = ({ onClose }) => {
+export const TaskQueue: React.FC<TaskQueueProps> = ({ open, onClose, onToggle }) => {
   const nodes = useCanvasStore(s => s.nodes);
   const pauseNode = useCanvasStore(s => s.pauseNode);
   const enqueueNode = useCanvasStore(s => s.enqueueNode);
@@ -16,6 +16,7 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ onClose }) => {
   const queued = nodes.filter(node => node.data.status === 'queued' || (node.data.status === 'idle' && node.data.queuedAt)).sort((a, b) => Number(a.data.queueOrder || 0) - Number(b.data.queueOrder || 0));
   const active = nodes.filter(node => ['running', 'paused'].includes(node.data.status || 'idle') && (node.data.status === 'running' || node.data.queuedAt));
   const tasks = [...active, ...queued];
+  const busyCount = active.filter(n => n.data.status === 'running').length + queued.length;
   const reorder = (id: string, direction: -1 | 1) => {
     const index = queued.findIndex(node => node.id === id); const next = queued[index + direction];
     if (!next) return;
@@ -28,7 +29,9 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ onClose }) => {
     setNodeStatus(id, 'idle');
     useCanvasStore.getState().updateNodeData(id, { queuedAt: undefined, queueOrder: undefined, content: '已从本地队列移除' });
   };
-  return <aside className="task-queue-panel">
+  return <>
+    <Tooltip title="执行列表（点画布空白处自动收起）"><Button className="task-queue-fab" onClick={onToggle}><FieldTimeOutlined /> 执行列表{busyCount > 0 && <em>{busyCount}</em>}</Button></Tooltip>
+    {open && <aside className="task-queue-panel">
     <header><div><b>执行列表</b><small>{active.filter(node => node.data.status === 'running').length} 执行中 · {queued.length} 排队</small></div><Button type="text" icon={<CloseOutlined />} onClick={onClose} /></header>
     <div className="task-queue-panel__hint">单 GPU 模式：排队任务不会提前提交到 ComfyUI。</div>
     <section>{tasks.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行任务" /> : tasks.map((node, index) => {
@@ -44,5 +47,6 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ onClose }) => {
         </div>
       </div>;
     })}</section>
-  </aside>;
+    </aside>}
+  </>;
 };

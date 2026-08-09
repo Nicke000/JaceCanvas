@@ -48,7 +48,7 @@ export function autoSaveToAssets(resultUrl: string | undefined, results: Array<{
     const list = JSON.parse(localStorage.getItem(ASSETS_KEY) || '[]') as AssetEntry[];
     const seen = new Set(list.map(x => x.url));
     const add = (url: string, type: string, name?: string) => { if (!url || seen.has(url)) return; if (url.startsWith('data:') && url.length > 8000000) return; // 超大 base64 不自动入资产库（手动收藏或保留在画布）
-      seen.add(url); list.push({ id: 'asset-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), name: name || nodeName, type: type === 'video' ? 'video' : 'image', url }); };
+      seen.add(url); const assetType = type === 'video' ? 'video' : type === 'audio' ? 'audio' : type === 'text' ? 'text' : type === '3d' ? '3d' : 'image'; list.push({ id: 'asset-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), name: name || nodeName, type: assetType, url }); };
     (results || []).forEach(r => add(r.url, r.type || 'image', r.filename || nodeName));
     if (resultUrl) add(resultUrl, /(mp4|webm|mov)/i.test(resultUrl) ? 'video' : 'image', nodeName);
     if (list.length > 300) list.splice(0, list.length - 300);

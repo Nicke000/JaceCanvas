@@ -29,7 +29,7 @@ export async function fetchModelsFromApi(provider: string, baseUrl: string, apiK
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     }
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return [];
+    if (!res.ok) { const body = await res.text().catch(() => ''); throw new Error(`拉取模型失败（HTTP ${res.status}）${body ? ': ' + String(body).slice(0, 80) : ''}`); }
     const data: any = await res.json();
     if (provider === 'ollama') {
       return (data.models || []).map((m: any) => String(m.name || m.model || '')).filter(Boolean);
@@ -90,7 +90,7 @@ async function readResponseText(response: Response, onChunk?: (text: string) => 
       try {
         const item = JSON.parse(value);
         raw = item;
-        const part = item.choices?.[0]?.delta?.content || item.choices?.[0]?.message?.content || item.delta?.text || item.text || item.response || '';
+        const part = item.choices?.[0]?.delta?.content || item.choices?.[0]?.message?.content || item.message?.content || item.delta?.text || item.text || item.response || '';
         if (typeof part === 'string' && part) { text += part; onChunk?.(part); }
       } catch { /* ignore keep-alive/non-json SSE lines */ }
     }
@@ -123,7 +123,7 @@ export async function sendChat(
   else if (provider !== 'ollama') headers.Authorization = `Bearer ${apiKey}`;
   const body = provider === 'gemini'
     ? { contents: turns.map(t => ({ role: t.role === 'assistant' ? 'model' : 'user', parts: typeof t.content === 'string' ? [{ text: t.content }] : t.content.map((part: any) => part.type === 'image_url' ? { inline_data: { mime_type: String(part.image_url?.url || '').match(/^data:([^;]+);/)?.[1] || 'image/png', data: String(part.image_url?.url || '').split(',')[1] } } : { text: String(part.text || '') }) })), systemInstruction: { parts: [{ text: overrides?.systemPrompt ?? s.chatSystemPrompt }] } }
-    : provider === 'anthropic' ? { model, max_tokens: 4096, system: overrides?.systemPrompt ?? s.chatSystemPrompt, messages: turns }
+    : provider === 'anthropic' ? { model, max_tokens: 4096, system: overrides?.systemPrompt ?? s.chatSystemPrompt, messages: turns.map(t => ({ ...t, content: typeof t.content === 'string' ? t.content : t.content.map((part: any) => part.type === 'image_url' ? { type: 'image', source: { type: 'base64', media_type: String(part.image_url?.url || '').match(/^data:([^;]+);/)?.[1] || 'image/png', data: String(part.image_url?.url || '').split(',')[1] || '' } } : part) })) }
     : provider === 'ollama' ? { model, stream: false, system: overrides?.systemPrompt ?? s.chatSystemPrompt, messages: turns }
     : (() => {
         // OpenAI 兼容端点：content 一律数组化（OpenAI 标准与 dashscope 均接受）；
@@ -145,7 +145,7 @@ export async function sendChat(
   const requestBody = { ...body, ...(provider !== 'anthropic' && provider !== 'gemini' ? { stream: wantsStream } : {}) };
   const requestUrl = endpoint(provider, baseUrl, model);
   // 默认 60s 超时（外部 signal 如暂停节点 abort 与之合并；TimeoutError 走 error 分支）
-  const timeoutSignal = AbortSignal.timeout(60000);
+  const timeoutSignal = AbortSignal.timeout(overrides?.thinkingMode === 'deep' ? 180000 : 60000);
   const effSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: effSignal });
   // 兼容声明 SSE 但实际返回 JSON、或返回空 SSE 的代理网关。普通 JSON 重试只发生一次。
@@ -158,7 +158,7 @@ export async function sendChat(
   }
   const streamed = await readResponseText(response, overrides?.onChunk);
   const data: any = streamed.raw;
-  const text = streamed.text || (s.chatProvider === 'gemini' ? data.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') : s.chatProvider === 'anthropic' ? data.content?.map((p: any) => p.text || '').join('') : s.chatProvider === 'ollama' ? data.message?.content || data.response : data.choices?.[0]?.message?.content);
+  const text = streamed.text || (provider === 'gemini' ? data.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') : provider === 'anthropic' ? data.content?.map((p: any) => p.text || '').join('') : provider === 'ollama' ? data.message?.content || data.response : data.choices?.[0]?.message?.content);
   if (typeof text !== 'string' || !text) throw new Error('聊天 AI 没有返回文本');
   return { text, raw: data };
 }

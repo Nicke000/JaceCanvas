@@ -82,6 +82,12 @@ export interface ApiSettings {
   // DevAgent（画布 AI 代码助手）独立 AI 配置——与聊天 AI 分开设置
   dramaAiProvider: ProviderType;
   dramaAiBaseUrl: string;
+  /** 素材持久化：自动保存生成素材、保留天数、大小上限、失败历史显示 */
+  assetAutoSave: boolean;
+  assetSavePath: string;
+  assetRetentionDays: number;
+  assetMaxSizeGB: number;
+  showFailedHistory: boolean;
   dramaAiApiKey: string;
   dramaAiModel: string;
   dramaAiModels: string[];
@@ -128,6 +134,7 @@ const DEFAULT: ApiSettings = {
   chatProvider: 'openai', chatBaseUrl: 'https://api.openai.com/v1', chatApiKey: '', chatModel: 'gpt-4o-mini', chatModels: [], chatSystemPrompt: '你是一个专业、可靠的创作助手。', chatThinkingMode: 'auto',
   devAgentProvider: 'openai', devAgentBaseUrl: '', devAgentApiKey: '', devAgentModel: '', devAgentModels: [],
   dramaAiProvider: 'openai', dramaAiBaseUrl: '', dramaAiApiKey: '', dramaAiModel: '', dramaAiModels: [],
+  assetAutoSave: true, assetSavePath: '', assetRetentionDays: 7, assetMaxSizeGB: 5, showFailedHistory: false,
   paidApiProvider: '', paidApiKey: '', paidApiBaseUrl: '', paidApiModels: [], paidApiSelectedModel: '', paidApiAspectRatio: '1:1', paidApiWidth: 1024, paidApiHeight: 1024, paidApiProfiles: [], paidApiProviders: DEFAULT_PAID_PROVIDERS,
   paidApiNodes: {
     paidTextToImage: EMPTY_PAID_NODE(), paidImageToImage: EMPTY_PAID_NODE(),
@@ -203,6 +210,11 @@ function load(): ApiSettings {
       baseUrl: String(loaded.bailianTextToImage?.baseUrl || ''),
     };
     if (!loaded.chatThinkingMode) loaded.chatThinkingMode = 'auto';
+    if (typeof loaded.assetAutoSave !== 'boolean') loaded.assetAutoSave = true;
+    if (typeof loaded.assetRetentionDays !== 'number' || !(loaded.assetRetentionDays > 0)) loaded.assetRetentionDays = 7;
+    if (typeof loaded.assetMaxSizeGB !== 'number' || Number.isNaN(loaded.assetMaxSizeGB)) loaded.assetMaxSizeGB = 5;
+    if (typeof loaded.assetSavePath !== 'string') loaded.assetSavePath = '';
+    if (typeof loaded.showFailedHistory !== 'boolean') loaded.showFailedHistory = false;
     if (!loaded.sshCommand && loaded.sshHost) loaded.sshCommand = `ssh -p ${loaded.sshPort || 22} ${loaded.sshUsername ? `${loaded.sshUsername}@` : ''}${loaded.sshHost}`;
     if (!loaded.paidApiAspectRatio) loaded.paidApiAspectRatio = '1:1';
     if (!loaded.paidApiWidth) loaded.paidApiWidth = 1024;
@@ -241,6 +253,7 @@ interface SettingsStore extends ApiSettings {
   setComfyUrl: (url: string) => void;
   setSsh: (value: Pick<ApiSettings,'sshCommand'|'sshHost'|'sshPort'|'sshUsername'|'sshPassword'>) => void;
   setChat: (value: Partial<Pick<ApiSettings,'chatProvider'|'chatBaseUrl'|'chatApiKey'|'chatModel'|'chatModels'|'chatSystemPrompt'|'chatThinkingMode'>>) => void;
+  setAssets: (value: Partial<Pick<ApiSettings,'assetAutoSave'|'assetSavePath'|'assetRetentionDays'|'assetMaxSizeGB'|'showFailedHistory'>>) => void;
   setDevAgent: (value: Partial<Pick<ApiSettings,'devAgentProvider'|'devAgentBaseUrl'|'devAgentApiKey'|'devAgentModel'|'devAgentModels'>>) => void;
   setDramaAi: (value: Partial<Pick<ApiSettings,'dramaAiProvider'|'dramaAiBaseUrl'|'dramaAiApiKey'|'dramaAiModel'|'dramaAiModels'>>) => void;
   setPaidApi: (value: Partial<Pick<ApiSettings,'paidApiProvider'|'paidApiKey'|'paidApiBaseUrl'|'paidApiModels'|'paidApiSelectedModel'>>) => void;
@@ -282,6 +295,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setComfyUrl: (comfyUrl) => { set({ comfyUrl }); save({ ...get(), comfyUrl }); },
   setSsh: (value) => { set(value); save({ ...get(), ...value }); },
   setChat: (value) => { set(value as any); save({ ...get(), ...value }); },
+  setAssets: (value) => { set(value as any); save({ ...get(), ...value }); },
   setDevAgent: (value) => { set(value as any); save({ ...get(), ...value }); },
   setDramaAi: (value) => { set(value as any); save({ ...get(), ...value }); },
   setPaidApi: (value) => { set(value as any); save({ ...get(), ...value }); },

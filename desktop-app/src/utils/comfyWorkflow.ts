@@ -7,6 +7,7 @@ export interface LocalWorkflowParam {
   key: string;
   label: string;
   nodeTitle: string;
+  nodeClass: string;
   value: unknown;
   type: 'text' | 'number' | 'boolean' | 'string';
 }
@@ -25,10 +26,37 @@ export function parseWorkflowParams(workflowJson: Record<string, any> | undefine
       if (Array.isArray(value)) return; // 节点连接引用，跳过
       if (typeof value === 'object' && value !== null) return;
       const type = typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'string';
-      params.push({ nodeId, field, key: `${nodeId}:${field}`, label: field, nodeTitle: String(title), value, type });
+      params.push({ nodeId, field, key: `${nodeId}:${field}`, label: field, nodeTitle: String(title), nodeClass: String(node?.class_type || ''), value, type });
     });
   });
   return params;
+}
+
+/** 负向提示词字段判定：字段名/节点标题含 negative/neg，或 CLIPTextEncode 的 text 值含明显负向词 */
+export function isNegativePromptField(field: string, node?: any, value?: unknown): boolean {
+  const f = String(field || '').toLowerCase();
+  const cls = String(node?.class_type || '').toLowerCase();
+  const title = String(node?._meta?.title || '').toLowerCase();
+  if (/negative|neg/i.test(f) || /negative|neg/i.test(title)) return true;
+  // 仅对 CLIPTextEncode 的 text 字段做"值含负向词"判断（避免误伤正向提示词里的普通词汇）
+  if (f === 'text' && /clip.?text|encode|textencode/i.test(cls) && typeof value === 'string'
+    && /cartoon|childish|ugly|low.?quality|blurry|blur|worst|bad.?hand|deformed|malformed|watermark|signature|低分辨率|低画质|畸形|模糊|水印|变形|多余|丑陋|手指|肢体/i.test(value)) {
+    return true;
+  }
+  return false;
+}
+
+/** 正向提示词字段判定：prompt 字段名 / CLIPTextEncode 的 text / PrimitiveString(Multiline) 的 value（标题含 prompt/提示） */
+export function isPositivePromptField(field: string, node?: any): boolean {
+  const f = String(field || '').toLowerCase();
+  const cls = String(node?.class_type || '').toLowerCase();
+  const title = String(node?._meta?.title || '').toLowerCase();
+  if (isNegativePromptField(field, node)) return false;
+  if (/prompt/i.test(f)) return true; // prompt / positive_prompt / text_prompt
+  if (f === 'text' && /clip.?text|encode|textencode/i.test(cls)) return true; // CLIPTextEncode 的 text
+  if (f === 'value' && /primitive.?string/i.test(cls) && /prompt|提示/i.test(title)) return true; // PrimitiveString 提示词
+  if (f === 'text') return true; // 兜底：旧工作流的 text 字段
+  return false;
 }
 
 /** 默认是否展开：提示词 / 采样核心参数展开，模型/文件名等收起 */
@@ -54,8 +82,9 @@ export function validateWorkflowJson(json: unknown): { ok: boolean; message: str
 export function applyWorkflowParams(workflowJson: Record<string, any>, params: Record<string, unknown>): Record<string, any> {
   const prompt = JSON.parse(JSON.stringify(workflowJson)) as Record<string, any>;
   Object.entries(params || {}).forEach(([key, value]) => {
-    const sep = key.indexOf(':');
-    if (sep <= 0) return;
+    // 用最后一个冒号分割：节点 id 可能带冒号（子节点如 "398:376"），字段名通常不含冒号
+    const sep = key.lastIndexOf(':');
+    if (sep <= 0 || sep >= key.length - 1) return;
     const nodeId = key.slice(0, sep);
     const field = key.slice(sep + 1);
     const node = prompt[nodeId];
@@ -85,12 +114,23 @@ export function workflowPorts(workflowJson: Record<string, any> | undefined): { 
     else if (/^SaveImage/i.test(ct) || /^PreviewImage/i.test(ct) || /^ImageSave/i.test(ct) || /^SaveAnimatedWEBP/i.test(ct) || /^SaveAnimatedPNG/i.test(ct)) outputs.push({ id: nodeId, label: `${title}`, type: 'image' });
     else if (/^SaveVideo/i.test(ct) || /^VHS_VideoCombine/i.test(ct) || /^VHS_SaveVideo/i.test(ct)) outputs.push({ id: nodeId, label: `${title}`, type: 'video' });
   });
-  // 文本输入：工作流含 text/prompt 类参数时暴露「提示词」端口；含 negative 参数时额外暴露「负面提示词」端口（执行时分别映射）
-  const textParams = parseWorkflowParams(workflowJson);
-  const hasTextParam = textParams.some(p => /^text$/i.test(p.field) || (/prompt/i.test(p.field) && !/negative/i.test(p.field)));
-  const hasNegParam = textParams.some(p => /negative/i.test(p.field));
-  if (hasTextParam && !inputs.some(x => x.id === 'text')) inputs.unshift({ id: 'text', label: '提示词', type: 'text' });
-  if (hasNegParam && !inputs.some(x => x.id === 'negative')) inputs.unshift({ id: 'negative', label: '负面提示词', type: 'text' });
+  // 文本输入：正向提示词字段各暴露一个「提示词」端口（text / text-1 / text-2...），负向字段单独暴露「负面提示词」端口
+  const promptFields: Array<{ label: string }> = [];
+  let hasNeg = false;
+  Object.entries(workflowJson).forEach(([, node]) => {
+    const ins = node?.inputs || {};
+    Object.entries(ins).forEach(([field, value]) => {
+      if (typeof value !== 'string') return;
+      if (isNegativePromptField(field, node, value)) { hasNeg = true; return; }
+      if (isPositivePromptField(field, node)) promptFields.push({ label: String(node?._meta?.title || node?.class_type || '提示词') });
+    });
+  });
+  promptFields.forEach((pf, idx) => {
+    // 第一个字段兼容旧版 'text' 端口 id，其余用 text-1/text-2...
+    const id = idx === 0 ? 'text' : `text-${idx}`;
+    if (!inputs.some(x => x.id === id)) inputs.unshift({ id, label: pf.label || (idx === 0 ? '提示词' : `提示词 ${idx + 1}`), type: 'text' });
+  });
+  if (hasNeg && !inputs.some(x => x.id === 'negative')) inputs.unshift({ id: 'negative', label: '负面提示词', type: 'text' });
   if (!outputs.length) outputs.push({ id: 'output', label: '图片', type: 'image' });
   return { inputs, outputs };
 }

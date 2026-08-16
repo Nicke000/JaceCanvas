@@ -17,5 +17,21 @@
     { "from": "server/data", "to": "server/data" },
     { "from": "assets/ffmpeg", "to": "ffmpeg", "filter": ["**/*"] }
   ],
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] }
+    ],
+    "icon": "assets/icon1.ico",
+    "signAndEditExecutable": false
+  },
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "JaceCanvas",
+    "installerIcon": "assets/icon1.ico",
+    "uninstallerIcon": "assets/icon1.ico"
+  },
   "electronDownload": { "mirror": "https://npmmirror.com/mirrors/electron/" }
 }

@@ -39,28 +39,40 @@ export async function refreshApiNodeFields(nodes: AppNode[]): Promise<void> {
   }
 }
 
+/** 核心 ComfyUI ResolutionSelector 节点的 aspect_ratio 合法值（object_info 被主控壳拦截时的兜底）。
+ *  来源：ComfyUI comfy_extras/nodes_resolution.py 的 AspectRatio 枚举。 */
+const RESOLUTION_SELECTOR_ASPECT_RATIOS = ['1:1 (Square)', '2:3 (Portrait Photo)', '3:2 (Photo)', '3:4 (Portrait Standard)', '4:3 (Standard)', '9:16 (Portrait Widescreen)', '16:9 (Widescreen)', '21:9 (Ultrawide)'];
+
 /** 工作流节点字段（服务器配置） */
-function workflowFields(remote: Awaited<ReturnType<typeof fetchWorkflowConfig>>) {
+export function workflowFields(remote: Awaited<ReturnType<typeof fetchWorkflowConfig>>) {
   const enabled = remote.api_config?.enabledParams || {};
   const labels = remote.api_config?.customLabels || {};
   const values = remote.api_config?.formValues || {};
   const template = remote.workflow_template || {};
+  const nodeOptions = (remote.nodeOptions || {}) as Record<string, Record<string, { options?: unknown[] }>>;
   const optionsFor = (field: string, value: unknown) => {
     if (Array.isArray(value)) return value.map(option => ({ label: String(option), value: String(option) }));
     if (field === 'sampler_name') return [{ label: 'Euler', value: 'euler' }, { label: 'Euler A', value: 'euler_ancestral' }, { label: 'DPM++ 2M', value: 'dpmpp_2m' }, { label: 'DPM++ SDE', value: 'dpmpp_sde' }, { label: 'DDIM', value: 'ddim' }];
     if (field === 'scheduler') return [{ label: 'Normal', value: 'normal' }, { label: 'Karras', value: 'karras' }, { label: 'Simple', value: 'simple' }, { label: 'Exponential', value: 'exponential' }];
-    if (field === 'aspect_ratio') return [{ label: '1:1', value: '1:1' }, { label: '9:16 竖屏', value: '9:16' }, { label: '16:9 横屏', value: '16:9' }, { label: '3:4', value: '3:4' }, { label: '4:3', value: '4:3' }];
     return undefined;
   };
   return Object.keys(enabled).filter(key => enabled[key]).map(key => {
     const split = key.indexOf(':'); const nodeId = key.slice(0, split); const field = key.slice(split + 1);
-    const node = template[nodeId] || {}; const value = values[key] ?? node.inputs?.[field];
-    const cls = String(node.class_type || '').toLowerCase();
+    const node = template[nodeId] || {}; let value = values[key] ?? node.inputs?.[field];
+    const cls = String(node.class_type || '');
     const exactMediaField = /^(image|video|audio|file)$/i.test(field) ? field.toLowerCase() : '';
-    const fileType = cls.includes('loadaudio') || exactMediaField === 'audio' ? 'audio' : (cls.includes('loadvideo') || cls.includes('vhs_loadvideo') || exactMediaField === 'video') ? 'video' : (cls.includes('loadimage') || /image|mask|reference|file|path|font/i.test(field)) ? 'image' : undefined;
+    const fileType = cls.toLowerCase().includes('loadaudio') || exactMediaField === 'audio' ? 'audio' : (cls.toLowerCase().includes('loadvideo') || cls.toLowerCase().includes('vhs_loadvideo') || exactMediaField === 'video') ? 'video' : (cls.toLowerCase().includes('loadimage') || /image|mask|reference|file|path|font/i.test(field)) ? 'image' : undefined;
+    // 优先用 object_info 拉到的节点字段合法值（ResolutionSelector 等自定义节点的 Combo 值），否则回退启发式
+    const objOpts = nodeOptions?.[cls]?.[field]?.options;
+    let options = (Array.isArray(objOpts) && objOpts.length)
+      ? objOpts.map(o => ({ label: String(o), value: String(o) }))
+      : optionsFor(field, node.inputs?.[field]?.options || node.inputs?.[field]?.values);
+    // 主控壳拦截 /object_info 时，核心 ResolutionSelector 节点的 aspect_ratio 用内置合法值兜底（保证画布/工作室都渲染成下拉）
+    if (!options?.length && cls === 'ResolutionSelector' && field === 'aspect_ratio') options = RESOLUTION_SELECTOR_ASPECT_RATIOS.map(v => ({ label: v, value: v }));
+    // select 字段：默认值不在合法列表里时，自动取第一个合法值，避免 "Value not in list"
+    if (options?.length && !options.some(o => String(o.value) === String(value))) value = options[0].value;
     const boolValue = typeof value === 'boolean' || /^(true|false)$/i.test(String(value ?? ''));
     const numberValue = typeof value === 'number';
-    const options = optionsFor(field, node.inputs?.[field]?.options || node.inputs?.[field]?.values);
     return { key, label: labels[key] || field, value, field, nodeTitle: node._meta?.title || `节点 ${nodeId}`, fileType, type: boolValue ? 'boolean' : numberValue ? 'number' : options?.length ? 'select' : 'text', options };
   });
 }

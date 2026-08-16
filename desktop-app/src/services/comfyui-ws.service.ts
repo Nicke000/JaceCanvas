@@ -4,10 +4,12 @@ import { useSettingsStore } from '@/stores/settingsStore';
 export interface ProgressPayload { value: number; max: number; node?: string; promptId?: string }
 export interface ExecutingPayload { node: string | null; prompt_id?: string }
 export interface PromptDonePayload { prompt_id: string; status: 'success' | 'error' | 'interrupted' }
+export interface PreviewPayload { promptId?: string; node?: string; url: string }
 type ProgressCallback = (data: ProgressPayload) => void;
 type StatusCallback = (data: { status: string; sid?: string }) => void;
 type ExecutingCallback = (data: ExecutingPayload) => void;
 type PromptDoneCallback = (data: PromptDonePayload) => void;
+type PreviewCallback = (data: PreviewPayload) => void;
 
 function uuid() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return (crypto as any).randomUUID();
@@ -29,11 +31,13 @@ export function getClientId(): string {
 class ComfyWS {
   private ws: WebSocket | null = null;
   private url: string = '';
+  private base: string = '';
   private reconnectTimer: any = null;
   private progressCbs: Set<ProgressCallback> = new Set();
   private statusCbs: Set<StatusCallback> = new Set();
   private executingCbs: Set<ExecutingCallback> = new Set();
   private promptDoneCbs: Set<PromptDoneCallback> = new Set();
+  private previewCbs: Set<PreviewCallback> = new Set();
   private _connected = false;
 
   get connected() { return this._connected; }
@@ -42,9 +46,12 @@ class ComfyWS {
     const st = useSettingsStore.getState();
     const active = st.servers.find(s => s.id === st.activeServerId) || st.servers[0];
     const base = (active?.baseUrl || st.baseUrl || '').replace(/\/+$/, '');
-    const wsUrl = base.replace('https://', 'wss://').replace('http://', 'ws://') + '/comfyui-ws?clientId=' + encodeURIComponent(getClientId());
+    // 直连 ComfyUI 用原生 /ws；主控用 /comfyui-ws 转发端点
+    const wsPath = active?.type === 'comfyui' ? '/ws' : '/comfyui-ws';
+    const wsUrl = base.replace('https://', 'wss://').replace('http://', 'ws://') + wsPath + '?clientId=' + encodeURIComponent(getClientId());
     if (this.url === wsUrl && this._connected) return;
     this.url = wsUrl;
+    this.base = base;
     this.disconnect();
     try {
       this.ws = new WebSocket(wsUrl);
@@ -91,6 +98,14 @@ class ComfyWS {
       case 'execution_cached':
       case 'executed': {
         this.progressCbs.forEach(cb => cb({ value: 1, max: 1, promptId }));
+        // 解析 preview 图：ComfyUI 执行过程中 PreviewImage/SaveImage 节点会通过 executed 消息推送图片
+        const images = msg.data?.output?.images;
+        if (Array.isArray(images) && images.length && this.base) {
+          for (const img of images) {
+            const url = `${this.base}/view?filename=${encodeURIComponent(String(img.filename || ''))}&subfolder=${encodeURIComponent(String(img.subfolder || ''))}&type=${encodeURIComponent(String(img.type || 'output'))}`;
+            this.previewCbs.forEach(cb => cb({ promptId, node: msg.data?.node, url }));
+          }
+        }
         break;
       }
       case 'execution_success': {
@@ -112,6 +127,7 @@ class ComfyWS {
   onStatus(cb: StatusCallback) { this.statusCbs.add(cb); return () => { this.statusCbs.delete(cb); }; }
   onExecuting(cb: ExecutingCallback) { this.executingCbs.add(cb); return () => { this.executingCbs.delete(cb); }; }
   onPromptDone(cb: PromptDoneCallback) { this.promptDoneCbs.add(cb); return () => { this.promptDoneCbs.delete(cb); }; }
+  onPreview(cb: PreviewCallback) { this.previewCbs.add(cb); return () => { this.previewCbs.delete(cb); }; }
 
   private emitStatus(status: string) {
     this.statusCbs.forEach(cb => cb({ status }));

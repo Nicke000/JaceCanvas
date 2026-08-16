@@ -52,7 +52,7 @@ export const ShortcutHelp: React.FC = () => {
         </div>
       ))}
       <div className="shortcut-group">
-        <h4 className="shortcut-group__title">节点编辑（可自定义，点击按键修改）</h4>
+        <h4 className="shortcut-group__title">可自定义快捷键（点击按键修改）</h4>
         {SHORTCUT_DEFS.map(def => (
           <div key={def.id} className="shortcut-row">
             {editing === def.id ? (

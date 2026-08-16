@@ -101,7 +101,7 @@ function providerPath(provider: string, kind: 'models' | 'image' | 'video' | 'ta
   if (provider === 'openai') return kind === 'video' ? `${prefix}/videos` : `${prefix}/images/generations`;
   if (provider === 'google') return '/models';
   if (provider === 'kling') return kind === 'image' ? `${prefix}/images/generations` : kind === 'video' ? `${prefix}/videos/text2video` : `${prefix}/videos/image2video`;
-  if (provider === 'tongyi') return kind === 'image' ? '/services/aigc/text-to-image/image-synthesis' : '/services/aigc/video-generation/video-synthesis';
+  if (provider === 'tongyi') { const apiPrefix = /\/api\/v1$/i.test(baseUrl) ? '' : '/api/v1'; return kind === 'image' ? `${apiPrefix}/services/aigc/text-to-image/image-synthesis` : `${apiPrefix}/services/aigc/video-generation/video-synthesis`; }
   if (provider === 'stability') return kind === 'image' ? (baseUrl.endsWith('/v2beta') ? '/stable-image/generate/core' : '/v2beta/stable-image/generate/core') : (baseUrl.endsWith('/v2beta') ? '/image-to-video' : '/v2beta/image-to-video');
   if (provider === 'runway') return kind === 'task' ? '/v1/tasks' : `${prefix}/${kind}/generate`;
   if (provider === 'zhipu') return kind === 'image' ? `${prefix}/images/generations` : `${prefix}/videos/generations`;
@@ -269,7 +269,12 @@ async function pollTask(baseUrl: string, endpoint: string, config: PaidApiConfig
     await new Promise(r => setTimeout(r, 3000));
     // Runway 等任务端点形如 /v1/tasks/{id}：endpoint 以 /tasks 结尾时自动追加 taskId
     const finalEndpoint = /\/tasks$/i.test(endpoint) && taskId ? `${endpoint}/${taskId}` : endpoint;
-    const url = finalEndpoint.startsWith('http') ? finalEndpoint : `${baseUrl}${finalEndpoint.startsWith('/') ? finalEndpoint : `/${finalEndpoint}`}`;
+    // 版本段去重：baseUrl 已含 /v1|/v1beta 时，endpoint 若以同样版本开头则去掉 endpoint 的版本段（防 /v1/v1）
+    const normBase = baseUrl.replace(/\/+$/, '');
+    let ep = finalEndpoint;
+    const verMatch = normBase.match(/\/(v\d+(?:beta)?)$/i);
+    if (verMatch && ep.startsWith('/' + verMatch[1])) ep = ep.slice(verMatch[1].length + 1);
+    const url = ep.startsWith('http') ? ep : `${normBase}${ep.startsWith('/') ? ep : `/${ep}`}`;
     const useGatewayQuery = /task\/query/i.test(endpoint);
     const res = await fetch(url, {
       method: useGatewayQuery ? 'POST' : 'GET',
@@ -371,7 +376,8 @@ export async function callPaidApi(config: PaidApiConfig, params: {
   if (provider === 'google') {
     const model = encodeURIComponent(config.model || p.models[0] || 'imagen-3');
     const endpoint = joinUrl(baseUrl, `/models/${model}:predict`);
-    const googleBody = { instances: [{ prompt: params.prompt, ...(params.imageUrl ? { image: { bytesBase64Encoded: params.imageUrl.split(',')[1] || params.imageUrl } } : {}) }], parameters: { sampleCount: 1, aspectRatio: params.aspectRatio, width: params.width, height: params.height } };
+    const b64data = params.imageUrl?.startsWith('data:') ? (params.imageUrl.split(',')[1] || params.imageUrl) : params.imageUrl;
+    const googleBody = { instances: [{ prompt: params.prompt, ...(params.imageUrl ? { image: { bytesBase64Encoded: b64data } } : {}) }], parameters: { sampleCount: 1, aspectRatio: params.aspectRatio, width: params.width, height: params.height } };
     const googleResponse = await fetch(`${endpoint}${endpoint.includes('?') ? '&' : '?'}key=${encodeURIComponent(apiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(googleBody) });
     if (!googleResponse.ok) throw new Error(`厂商 google 请求 ${endpoint} 失败（HTTP ${googleResponse.status}）`);
     const googleData = await googleResponse.json();
@@ -385,7 +391,9 @@ export async function callPaidApi(config: PaidApiConfig, params: {
     if (params.imageUrl) body.image_url = params.imageUrl;
     if (params.type === 'image-to-image') body.image_urls = [params.imageUrl];
     delete body.aspect_ratio;
+    if (provider === 'gateway') delete body.image_urls; // OpenAI 兼容网关不识别 image_urls 数组
   }
+  if (provider === 'custom') { delete body.image_url; delete body.image_urls; } // OpenAI 兼容：图生图只发 image 字段，避免双字段 400
   const kind = isVideo ? 'video' : 'image';
   const endpoint = config.capabilityPath || (kind === 'video' ? (config.videoPath || providerPath(provider, 'video', baseUrl)) : (config.imagePath || providerPath(provider, 'image', baseUrl)));
   let requestUrl = joinUrl(baseUrl, endpoint);

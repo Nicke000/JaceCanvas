@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ConfigProvider, App as AntApp, theme, Button, Tooltip, Space, Input, Modal, message, Dropdown } from 'antd';
 import type { MenuProps } from 'antd';
-import { SaveOutlined, FolderOpenOutlined, ExportOutlined, ImportOutlined, AppstoreOutlined, CopyOutlined, PlusOutlined, CloseOutlined, CloudServerOutlined, UnorderedListOutlined, BgColorsOutlined, ApartmentOutlined, CameraOutlined, MoreOutlined, VideoCameraOutlined, PlaySquareOutlined, DesktopOutlined, ClusterOutlined, MessageOutlined, FieldTimeOutlined, HistoryOutlined, CompressOutlined, ExpandOutlined, RobotOutlined, FullscreenOutlined, StarOutlined } from '@ant-design/icons';
+import { SaveOutlined, FolderOpenOutlined, ExportOutlined, ImportOutlined, AppstoreOutlined, CopyOutlined, PlusOutlined, CloseOutlined, CloudServerOutlined, UnorderedListOutlined, BgColorsOutlined, ApartmentOutlined, CameraOutlined, MoreOutlined, VideoCameraOutlined, PlaySquareOutlined, MessageOutlined, FieldTimeOutlined, CompressOutlined, ExpandOutlined, RobotOutlined, FullscreenOutlined, StarOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { Canvas } from '@/components/Canvas';
 import { ConfigPanel } from '@/components/ConfigPanel';
@@ -15,8 +15,8 @@ import { GenerationHistory } from '@/components/GenerationHistory';
 import { PerformanceBar } from '@/components/PerformanceBar';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { db, generateId, loadChatSessions } from '@/utils';
-import { ServerControlPanel } from '@/components/ServerControlPanel';
 import { StoryDramaStudio } from '@/components/StoryDramaStudio';
+import { DirectorStage3D } from '@/components/DirectorStage3D';
 import { ThemeSelector } from '@/components/ThemeSelector';
 import { TaskQueue } from '@/components/TaskQueue';
 import { ChatWindow } from '@/components/ChatWindow';
@@ -44,7 +44,6 @@ const App: React.FC = () => {
   const [projectFilePath, setProjectFilePath] = useState<string>(() => localStorage.getItem('jacecanvas-project-file') || '');
   const [closeProjectId, setCloseProjectId] = useState<string | null>(null);
   const [closedProjectIds, setClosedProjectIds] = useState<string[]>([]);
-  const [serverControlOpen, setServerControlOpen] = useState(false);
   const [recoverModalOpen, setRecoverModalOpen] = useState(false);
   const [recoverData, setRecoverData] = useState<{ data: { nodes: unknown[]; edges: unknown[] }; projectId: string; projectName: string } | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
@@ -54,12 +53,16 @@ const App: React.FC = () => {
   const setActiveServer = useSettingsStore(s => s.setActiveServer);
   const activeServer = servers.find(item => item.id === activeServerId) || servers[0] || null;
   const [dramaStudioOpen, setDramaStudioOpen] = useState(false);
+  const [directorOpen, setDirectorOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyHeight, setHistoryHeight] = useState(0);
   const [taskQueueOpen, setTaskQueueOpen] = useState(true);
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
   const [favOpen, setFavOpen] = useState(false);
+  const selectedNodeId = useCanvasStore(s => s.selectedNodeId);
+  // 节点配置面板（右侧 Inspector）显示时收起执行列表，避免相互遮挡
+  useEffect(() => { if (selectedNodeId) setTaskQueueOpen(false); }, [selectedNodeId]);
   const [chatSession, setChatSession] = useState<ChatSession | null>(null);
   // 覆盖层标志：画布全局快捷键（Canvas keydown）据此禁用，避免在短剧工作室/聊天/DevAgent 里误删底层节点
   useEffect(() => { (window as any).__aiCanvasOverlayOpen = dramaStudioOpen || chatWindowOpen || agentOpen || favOpen || taskQueueOpen || historyOpen || historyModalOpen || recoverModalOpen || saveModalOpen || loadModalOpen || templateModalOpen; }, [dramaStudioOpen, chatWindowOpen, agentOpen, favOpen, taskQueueOpen, historyOpen, historyModalOpen, recoverModalOpen, saveModalOpen, loadModalOpen, templateModalOpen]);
@@ -300,54 +303,61 @@ const App: React.FC = () => {
     { key:'delete', label:'删除选中节点', extra:'Delete', onClick:() => useCanvasStore.getState().deleteSelectedNode() },
   ];
   const helpMenu: MenuProps['items'] = [
+    { key:'bilibili', label:'B站视频教程（作者主页）', onClick:() => window.open('https://space.bilibili.com/1233399780?spm_id_from=333.1007.0.0', '_blank') },
     { key:'ssh', label:'SSH 性能检测教程', onClick:() => window.open('https://github.com/Nicke000/JaceCanvas', '_blank') },
     { key:'shortcuts', label:'快捷键与操作', onClick:() => window.dispatchEvent(new Event('ai-canvas-open-shortcuts')) },
     { key:'devtools', label:'打开开发者工具', onClick:() => void (window as any).electronAPI?.openDevTools?.() },
     { key:'about', label:'关于 JaceCanvas', onClick:() => window.dispatchEvent(new Event('ai-canvas-open-settings')) },
   ];
   const appMenu = (label: string, items: MenuProps['items']) => <Dropdown menu={{ items }} trigger={['click']} placement="bottomLeft"><Button type="text" size="small" className="app-topbar__menu-button">{label}</Button></Dropdown>;
+  // 顶栏「更多」折叠菜单：次要功能收纳，适配小屏/窄窗口
+  const moreMenuItems: MenuProps['items'] = [
+    { key: 'prompt', icon: <StarOutlined />, label: '提示词库', onClick: () => setFavOpen(v => !v) },
+    { key: 'grid', icon: <BgColorsOutlined />, label: '显示/隐藏网格', onClick: () => window.dispatchEvent(new Event('ai-canvas-toggle-grid')) },
+    { key: 'minimap', icon: <AppstoreOutlined />, label: '显示/隐藏缩略图', onClick: () => window.dispatchEvent(new Event('ai-canvas-toggle-minimap')) },
+    { key: 'layout', icon: <ApartmentOutlined />, label: '一键整理画布', onClick: () => window.dispatchEvent(new Event('ai-canvas-auto-layout')) },
+    { key: 'snapshot', icon: <CameraOutlined />, label: '导出画布截图', onClick: () => window.dispatchEvent(new Event('ai-canvas-snapshot')) },
+    { type: 'divider' },
+    { key: 'save', icon: <SaveOutlined />, label: '保存项目', onClick: handleSave },
+  ];
+  // 顶栏「项目」折叠菜单：竖排一列，支持新建/切换/关闭，避免多项目横排撑爆顶栏
+  const projectDropdownItems: MenuProps['items'] = [
+    { key: 'new', icon: <PlusOutlined />, label: '新建项目', onClick: () => void createProject() },
+    { type: 'divider' },
+    ...projects.filter(p => !closedProjectIds.includes(p.id)).map(p => ({
+      key: p.id,
+      label: <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 200 }}>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: p.id === activeProjectId ? 600 : 400 }}>{p.name}{p.id === activeProjectId ? ' ✓' : ''}</span>
+        <CloseOutlined style={{ fontSize: 11, color: 'var(--theme-muted)' }} onClick={(e: any) => { e.stopPropagation(); setCloseProjectId(p.id); }} />
+      </span>,
+      onClick: () => void openProject(p.id),
+    })),
+  ];
 
   return (
     <ConfigProvider locale={zhCN} theme={{algorithm:themeId === 'light' ? theme.defaultAlgorithm : theme.darkAlgorithm,token:{colorPrimary:antdTokens.colorPrimary,borderRadius:antdTokens.borderRadius,colorBgBase:antdTokens.colorBgBase,colorText:antdTokens.colorText,colorBorder:antdTokens.colorBorder,fontFamily:antdTokens.fontFamily}}}>
       <AntApp>
         <ShortcutHelp />
-        <FloatingAssistant hidden={chatWindowOpen || dramaStudioOpen} />
+        <FloatingAssistant hidden={chatWindowOpen || dramaStudioOpen || directorOpen} />
         <div className={`app-shell ${historyOpen ? 'history-is-open' : ''}`} style={{'--history-height': `${historyHeight}px`, position:'relative',width:'100vw',height:'100vh',overflow:'hidden',background:'var(--theme-bg)'} as React.CSSProperties}>
           {/* 椤堕儴瀵艰埅鏍?*/}
           <div className="app-topbar">
             <span className="app-topbar__brand"><img src="./icon1.png" alt="" /><span>JaceCanvas</span><em>CREATIVE AI CANVAS</em></span>
              <span className="app-topbar__divider"/>
              <nav className="app-topbar__menus" aria-label="应用菜单">{appMenu('项目', projectMenu)}{appMenu('编辑', editMenu)}{appMenu('帮助', helpMenu)}</nav>
+             <SettingsButton/>
             <Space size={2} className="app-topbar__actions">
               <Button type="text" size="small" icon={<PlaySquareOutlined />} onClick={() => { setDramaStudioOpen(true); setAgentOpen(false); }} className="app-topbar__tool">短剧工作室</Button>
+              <Button type="text" size="small" icon={<VideoCameraOutlined />} onClick={() => setDirectorOpen(true)} className="app-topbar__tool">杰斯3D导演台</Button>
               <Button type="text" size="small" icon={<RobotOutlined />} onClick={() => { setDramaStudioOpen(false); setAgentOpen(v => !v); }} className="app-topbar__tool">DevAgent</Button>
               <Tooltip title="AI 聊天"><Button type="text" size="small" icon={<MessageOutlined />} onClick={() => void openChat()} className="app-topbar__tool">聊天</Button></Tooltip>
-              <Tooltip title="提示词库（收藏/置顶/发送到画布）"><Button type="text" size="small" icon={<StarOutlined />} onClick={() => setFavOpen(v => !v)} className="app-topbar__tool">提示词</Button></Tooltip>
-              <Tooltip title="生成历史"><Button type="text" size="small" icon={<HistoryOutlined />} onClick={() => setHistoryOpen(v => !v)} className="app-topbar__tool" /></Tooltip>
-              {servers.length > 0 && <Dropdown trigger={['click']} menu={{
-                items: [
-                  ...servers.map(s => ({
-                    key: s.id,
-                    label: <span className="server-switch-item">{healthDot(s.id)} {s.name || '未命名服务器'}{s.id === (activeServerId || servers[0]?.id) ? ' ✓' : ''}</span>,
-                    onClick: () => { setActiveServer(s.id); message.success(`已切换到「${s.name || s.baseUrl}」`); },
-                  })),
-                  { type: 'divider' },
-                  { key: 'srvctl2', label: <><DesktopOutlined /> 服务器控制</>, onClick: () => setServerControlOpen(true) },
-                ],
-              }}>
-                <Tooltip title="切换服务器"><Button type="text" size="small" className="app-topbar__tool"><ClusterOutlined /> {(activeServerId || servers[0]?.id) ? (servers.find(x => x.id === (activeServerId || servers[0]?.id))?.name || '服务器') : '服务器'}</Button></Tooltip>
-              </Dropdown>}
-              <Tooltip title="显示/隐藏网格"><Button type="text" size="small" icon={<BgColorsOutlined/>} onClick={() => window.dispatchEvent(new Event('ai-canvas-toggle-grid'))} className="app-topbar__tool"/></Tooltip>
-              <Tooltip title="显示/隐藏缩略图"><Button type="text" size="small" icon={<AppstoreOutlined/>} onClick={() => window.dispatchEvent(new Event('ai-canvas-toggle-minimap'))} className="app-topbar__tool"/></Tooltip>
-              <Tooltip title="一键整理画布"><Button type="text" size="small" icon={<ApartmentOutlined/>} onClick={() => window.dispatchEvent(new Event('ai-canvas-auto-layout'))} className="app-topbar__tool"/></Tooltip>
-              <Tooltip title="导出画布截图"><Button type="text" size="small" icon={<CameraOutlined/>} onClick={() => window.dispatchEvent(new Event('ai-canvas-snapshot'))} className="app-topbar__tool"/></Tooltip>
-              <Tooltip title="保存项目"><Button type="text" size="small" icon={<SaveOutlined/>} onClick={handleSave} className="app-topbar__tool"/></Tooltip>
-              <SettingsButton/>
+              <Dropdown menu={{ items: moreMenuItems }} trigger={['click']} placement="bottomRight">
+                <Button type="text" size="small" icon={<MoreOutlined />} className="app-topbar__tool" title="更多功能">更多</Button>
+              </Dropdown>
             </Space>
-            <div className="app-topbar__projects">
-              <Button type="text" size="small" icon={<PlusOutlined/>} onClick={createProject} title="新建项目" className="app-topbar__new">新建</Button>
-              {projects.filter(p => !closedProjectIds.includes(p.id)).map(p => <span key={p.id} className={`project-tab ${p.id===activeProjectId?'is-active':''}`}><Button type="text" size="small" onClick={() => void openProject(p.id)} title={'打开 ' + p.name} className="project-tab__name">{p.name}</Button><Button type="text" size="small" icon={<CloseOutlined/>} onClick={() => setCloseProjectId(p.id)} title="关闭项目" className="project-tab__close"/></span>)}
-            </div>
+            <Dropdown menu={{ items: projectDropdownItems }} trigger={['click']} placement="bottomLeft">
+              <Button type="text" size="small" icon={<FolderOpenOutlined />} className="app-topbar__menu-button" title="项目列表">项目{projectName ? ` · ${projectName}` : ''}</Button>
+            </Dropdown>
             <span title={projectName} className="topbar-project-name">{projectName}</span>
             {projectFilePath && <span title={projectFilePath} className="topbar-project-path">⌁ {projectFilePath}</span>}
             <span className="topbar-workspace-state"><i/> 稳定工作区 · {nodeCount} 节点</span>
@@ -398,7 +408,7 @@ const App: React.FC = () => {
           {/* 宸︿晶璧勪骇搴?*/}
           <WorkspaceSidebar/>
           {/* 鐢诲竷 */}
-          <div className="canvas-stage">
+          <div className="canvas-stage" style={{ display: (directorOpen || dramaStudioOpen || chatWindowOpen) ? 'none' : undefined }}>
             <Canvas/>
           </div>
           {/* 閰嶇疆闈㈡澘 - 甯搁┗鏄剧ず锛屼笉閬尅鐢诲竷 */}
@@ -413,9 +423,9 @@ const App: React.FC = () => {
             <Button type="text" className="canvas-text-editor__toggle" onClick={() => setTextEditorOpen(value => !value)} aria-label={textEditorOpen ? '收起文本编辑器' : '展开文本编辑器'}>{textEditorOpen ? '‹' : 'T'}</Button>
             {textEditorOpen && textEditor && <div className="canvas-text-editor__body"><div className="canvas-text-editor__title"><span className="canvas-text-editor__label">{textEditor.label}</span><span className="canvas-text-editor__actions"><Button type="text" size="small" icon={<FullscreenOutlined />} onClick={() => setTextEditorFullscreen(v => !v)} title={textEditorFullscreen ? '退出全屏' : '全屏编辑'} /><Button type="text" size="small" onClick={() => { const value = !textEditorAutoClose; setTextEditorAutoClose(value); localStorage.setItem('ai-canvas-text-editor-auto-close', String(value)); }}>{textEditorAutoClose ? '自动收起' : '手动收起'}</Button></span></div><textarea className="canvas-text-editor__input" autoFocus value={textEditor.value} style={{ height: textEditorHeight }} onChange={e => { updateTextEditor(e.target.value); e.target.style.height = '48px'; setTextEditorHeight(Math.max(48, e.target.scrollHeight)); }} /><div className="canvas-text-editor__meta"><span>{textEditor.value.length} 字</span><span className="canvas-text-editor__hint">点击输入区外自动收起</span></div></div>}
           </div>}
-          <TaskQueue open={taskQueueOpen} onClose={() => setTaskQueueOpen(false)} onToggle={() => setTaskQueueOpen(v => !v)} />
-          <ServerControlPanel open={serverControlOpen} onClose={()=>setServerControlOpen(false)}/>
+          {!selectedNodeId && <TaskQueue open={taskQueueOpen} onClose={() => setTaskQueueOpen(false)} onToggle={() => setTaskQueueOpen(v => !v)} />}
                     {dramaStudioOpen && <StoryDramaStudio onClose={()=>setDramaStudioOpen(false)}/>}
+          {directorOpen && <DirectorStage3D onClose={() => setDirectorOpen(false)} />}
           <PromptLibrary open={favOpen} onClose={() => setFavOpen(false)} />
           <AgentPanel open={agentOpen} onClose={()=>setAgentOpen(false)} />
           {chatWindowOpen && <ChatWindow initialSession={chatSession} onClose={() => { setChatWindowOpen(false); setChatSession(null); }} />}

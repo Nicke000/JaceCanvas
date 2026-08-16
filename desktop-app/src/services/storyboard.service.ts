@@ -1,6 +1,6 @@
 import { useSettingsStore } from '@/stores/settingsStore';
 
-export const DEFAULT_STORYBOARD_SYSTEM_PROMPT = '你是专业影视分镜师、摄影指导和视频提示词设计师。请根据剧情、参考人物/场景图片及其备注，按指定片段数和总时长生成连续分镜。严格返回约定 JSON。每段输出首帧生图提示词、尾帧生图提示词、首尾帧视频提示词，以及一句符合人物身份和剧情的台词（dialogue，口语化，用于配音）。保持人物身份、服装、场景空间和光线连续；不得把未出现的人物或场景写入当前图片提示词。';
+export const DEFAULT_STORYBOARD_SYSTEM_PROMPT = '你是专业影视分镜师、摄影指导和视频提示词设计师。请根据剧情、参考人物/场景图片及其备注，按指定片段数和总时长生成连续分镜。严格返回约定 JSON。每段输出首帧生图提示词、尾帧生图提示词、首尾帧视频提示词，以及一句符合人物身份和剧情的台词（dialogue，口语化，用于配音）。保持人物身份、服装、场景空间和光线连续；不得把未出现的人物或场景写入当前图片提示词。镜头之间要有景别与运镜的节奏变化（如远景→特写→跟拍→摇镜交替），避免连续多镜使用相同景别和运镜。';
 export interface StoryboardSegment { segmentId:string; duration:number; firstFrame:{prompt:string;inheritsPreviousLastFrame:boolean}; lastFrame:{prompt:string}; videoPrompt:string; characters:string[]; locations:string[]; continuity:string; negativePrompt:string; dialogue:string; }
 export interface StoryboardResult { segments:StoryboardSegment[]; warnings:string[]; }
 function endpoint(provider:string, base:string, model = useSettingsStore.getState().optimizerModel) { const b=base.replace(/\/+$/,''); if(provider==='gemini') return b.includes('/models/')?b:`${b}/models/${encodeURIComponent(model)}:generateContent`; if(provider==='ollama') return b.endsWith('/generate')?b:`${b}/api/generate`; if(provider==='anthropic') return b.endsWith('/messages')?b:`${b}/messages`; return b.endsWith('/chat/completions')?b:`${b}/chat/completions`; }
@@ -17,9 +17,16 @@ export async function generateStoryboard(input:{script:string;segmentCount:numbe
   if (!apiKey && provider !== 'ollama') throw new Error('请先配置分镜 AI API 密钥（短剧工作室 → 分镜 AI 设置，或在设置 → 提示词 AI 中配置，将自动回退聊天 AI）');
   if(!input.script.trim()) throw new Error('剧情/剧本不能为空'); if(input.segmentCount<1||input.segmentCount>100) throw new Error('片段数量必须为 1-100'); if(input.totalDuration<=0) throw new Error('总时长必须大于 0 秒');
   const requestId=crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`; const schema='{"segments":[{"segmentId":"segment_01","duration":5,"firstFrame":{"prompt":"","inheritsPreviousLastFrame":false},"lastFrame":{"prompt":""},"videoPrompt":"","characters":[],"locations":[],"continuity":"","negativePrompt":"","dialogue":""}],"warnings":[]}';
-  const user=`requestId: ${requestId}\n剧情：${input.script}\n片段数量：${input.segmentCount}\n分段规则：${input.segmentRule}\n总时长（秒）：${input.totalDuration}\n首帧承接上一段尾帧：${input.inheritPrevious}\n人物参考及备注：${input.characterNotes||'无'}\n场景参考及备注：${input.sceneNotes||'无'}\n专业效果：${input.effects||'无'}\n自定义要求：${input.customRequirements||'无'}\n重要：firstFrame.prompt、lastFrame.prompt、videoPrompt 必须先用中文生成；dialogue 直接写中文台词（配音用），每段一句。客户端会在用户确认后单独翻译成英文。只返回 JSON，结构示例：${schema}`;
+  // 图片上下文：支持纯 URL，以及「说明：URL」格式（画布节点传入带前缀说明，避免被误过滤）
+  const ctxItems=(input.imageContext||[]).map(x=>String(x));
+  const imageUrls:string[]=[]; const imageNotes:string[]=[];
+  for (const item of ctxItems) {
+    const m=item.match(/^(.{0,120}?[：:]\s*)(https?:\/\/\S+|data:image\/\S+)$/i);
+    if (m) { imageNotes.push(m[1].trim()); imageUrls.push(m[2]); }
+    else if (/^https?:\/\//i.test(item) || /^data:image\//i.test(item)) { imageUrls.push(item); }
+  }
+  const user=`requestId: ${requestId}\n剧情：${input.script}\n片段数量：${input.segmentCount}\n分段规则：${input.segmentRule}\n总时长（秒）：${input.totalDuration}\n首帧承接上一段尾帧：${input.inheritPrevious}\n人物参考及备注：${input.characterNotes||'无'}\n场景参考及备注：${input.sceneNotes||'无'}\n专业效果：${input.effects||'无'}\n自定义要求：${input.customRequirements||'无'}${imageNotes.length?`\n图片参考说明：${imageNotes.join('；')}`:''}\n重要：firstFrame.prompt、lastFrame.prompt、videoPrompt 必须先用中文生成；dialogue 直接写中文台词（配音用），每段一句。客户端会在用户确认后单独翻译成英文。只返回 JSON，结构示例：${schema}`;
   const systemPrompt=input.systemPrompt||s.storyboardSystemPrompt||DEFAULT_STORYBOARD_SYSTEM_PROMPT;
-  const imageUrls=(input.imageContext||[]).filter(url=>/^https?:\/\//i.test(url)||/^data:image\//i.test(url));
   const headers:Record<string,string>={'Content-Type':'application/json'}; if(provider==='anthropic'){headers['x-api-key']=apiKey;headers['anthropic-version']='2023-06-01';}else if(provider==='gemini'){if(apiKey)headers['x-goog-api-key']=apiKey;}else if(provider!=='ollama')headers.Authorization=`Bearer ${apiKey}`;
   const openAiContent=[{type:'text',text:user},...imageUrls.map(url=>({type:'image_url',image_url:{url}}))];
   const body=provider==='gemini'?{contents:[{role:'user',parts:[{text:`${systemPrompt}\n${user}`},...imageUrls.map(url=>url.startsWith('data:image/')?{inline_data:{mime_type:url.slice(5,url.indexOf(';')),data:url.split(',')[1]}}:{text:`参考图 URL：${url}`})]}],generationConfig:{temperature:0.25}}:provider==='anthropic'?{model:model,max_tokens:4000,temperature:0.25,system:systemPrompt,messages:[{role:'user',content:openAiContent}]}:provider==='ollama'?{model:model,stream:false,system:systemPrompt,prompt:user,images:imageUrls.filter(url=>url.startsWith('data:image/')).map(url=>url.split(',')[1])}:{model:model,temperature:0.25,response_format:{type:'json_object'},messages:[{role:'system',content:systemPrompt},{role:'user',content:imageUrls.length?openAiContent:user}]};

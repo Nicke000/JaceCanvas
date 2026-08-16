@@ -22,7 +22,12 @@ export async function downloadMedia(url: string, name: string, type: string): Pr
     const bytes = Uint8Array.from(atob(res.b64), c => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: res.mime || 'application/octet-stream' });
     const objectUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = objectUrl; a.download = name || 'ai-canvas-result';
+    // 按 MIME 推断扩展名，避免保存后无后缀/被识别为 json 需要手动改后缀
+    const mimeToExt: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg', 'model/gltf-binary': 'glb' };
+    const mime = String(res.mime || '');
+    const ext = mimeToExt[mime] || (url.match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i) || [])[1]?.toLowerCase() || '';
+    const finalName = /\.[a-z0-9]{2,5}$/i.test(name) ? name : `${safeFileName(name)}${ext ? '.' + ext : ''}`;
+    const a = document.createElement('a'); a.href = objectUrl; a.download = finalName;
     a.click(); setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     return;
   }

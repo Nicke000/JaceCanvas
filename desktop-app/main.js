@@ -522,9 +522,56 @@ ipcMain.handle("update-runtime-settings", (_event, patch) => {
 });
 
 // 素材二进制由 Electron 写入本机 userData，渲染进程只保留路径元数据，避免把大文件塞进 localStorage。
+function assetSettingsFile() { return path.join(app.getPath("userData"), "asset-settings.json"); }
+function loadAssetSettings() { try { return JSON.parse(fs.readFileSync(assetSettingsFile(), "utf8")) || {}; } catch { return {}; } }
+function assetsRootDir() {
+  const saved = loadAssetSettings();
+  if (saved.folder && typeof saved.folder === "string" && fs.existsSync(saved.folder)) return saved.folder;
+  return path.join(app.getPath("userData"), "assets");
+}
+// 用户选择素材文件夹（目录选择器）
+ipcMain.handle("choose-asset-folder", async () => {
+  const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"], title: "选择素材自动保存文件夹" });
+  if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+  const folder = result.filePaths[0];
+  return { canceled: false, folder };
+});
+ipcMain.handle("get-asset-settings", () => ({ ...loadAssetSettings(), currentFolder: assetsRootDir(), defaultFolder: path.join(app.getPath("userData"), "assets") }));
+ipcMain.handle("set-asset-folder", (_event, { folder, moveExisting }) => {
+  if (typeof folder !== "string" || !folder.trim()) return { ok: false, message: "路径无效" };
+  const oldDir = assetsRootDir();
+  fs.mkdirSync(folder, { recursive: true });
+  // 把原素材目录内容移动到新目录（可选）；跨盘（EXDEV）时改用复制+删除
+  let moved = 0;
+  if (moveExisting && oldDir !== folder && fs.existsSync(oldDir)) {
+    try {
+      for (const f of fs.readdirSync(oldDir)) {
+        const src = path.join(oldDir, f);
+        const dst = path.join(folder, f);
+        try {
+          fs.renameSync(src, dst);
+          moved += 1;
+        } catch (e) {
+          // renameSync 跨分区会抛 EXDEV：复制到新盘后删除源，保证素材真正迁移
+          try {
+            const code = e && e.code;
+            if (code === 'EXDEV' || code === 'EPERM' || code === 'EACCES') {
+              const st = fs.lstatSync(src);
+              if (st.isDirectory()) { fs.cpSync(src, dst, { recursive: true }); fs.rmSync(src, { recursive: true, force: true }); }
+              else { fs.copyFileSync(src, dst); fs.unlinkSync(src); }
+              moved += 1;
+            }
+          } catch { /* 单个失败继续 */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  fs.writeFileSync(assetSettingsFile(), JSON.stringify({ folder }));
+  return { ok: true, moved };
+});
 ipcMain.handle("save-local-asset", async (_event, payload) => {
   if (!payload || typeof payload.name !== "string" || !payload.data) throw new Error("素材数据不完整");
-  const root = path.join(app.getPath("userData"), "assets");
+  const root = assetsRootDir();
   const folder = String(payload.folder || "未分类").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "未分类";
   const safeName = path.basename(payload.name).replace(/[\\/:*?"<>|]/g, "_");
   const targetDir = path.join(root, folder);
@@ -569,22 +616,25 @@ function cleanupGeneratedCache(ttlMs = GENERATED_CACHE_TTL_MS, maxBytes = 0) {
   return removed;
 }
 // 下载远程媒体到本地缓存，返回 file:// URL（渲染进程无文件系统权限，由主进程落盘）
-ipcMain.handle("cache-media", async (_event, { url }) => {
+ipcMain.handle("cache-media", async (_event, { url, dir }) => {
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("仅支持 http(s) 媒体地址");
+  // dir='assets' → 永久素材目录（不参与 48h 缓存清理）；默认 cache 目录
+  const root = dir === "assets" ? path.join(assetsRootDir(), "generated") : getGeneratedCacheDir();
+  fs.mkdirSync(root, { recursive: true });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
+  const timer = setTimeout(() => controller.abort(), 180000);
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`下载失败（HTTP ${res.status}）`);
     const buffer = Buffer.from(await res.arrayBuffer());
     const contentType = String(res.headers.get("content-type") || "");
     let ext = (String(url).split("?")[0].match(/\.([a-z0-9]{2,5})$/i) || [])[1]?.toLowerCase() || "";
-    if (!/^(jpg|jpeg|png|webp|gif|mp4|webm|mov|mkv)$/.test(ext)) {
-      const m = contentType.match(/^\s*(?:image|video)\/([a-z0-9.+-]+)/i);
+    if (!/^(jpg|jpeg|png|webp|gif|mp4|webm|mov|mkv|mp3|wav|m4a|aac|ogg|glb)$/.test(ext)) {
+      const m = contentType.match(/^\s*(?:image|video|audio|model)\/([a-z0-9.+-]+)/i);
       ext = m ? m[1].replace("jpeg", "jpg").split("+")[0] : "bin";
     }
     const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const target = path.join(getGeneratedCacheDir(), name);
+    const target = path.join(root, name);
     fs.writeFileSync(target, buffer);
     return { path: target, url: pathToFileURL(target).toString(), size: buffer.length };
   } finally {
@@ -600,10 +650,12 @@ ipcMain.handle("cleanup-cache", async (_event, opts) => {
 // 本地文件落盘（上传节点/素材自动保存）：渲染端传 base64 + 建议文件名 → 主进程写入素材目录返回 file://
 ipcMain.handle("save-local-file", async (_event, { b64, filename, dir }) => {
   if (typeof b64 !== "string" || !b64) throw new Error("缺少文件数据");
-  let base = (typeof dir === "string" && dir.trim()) ? path.resolve(dir.trim()) : getGeneratedCacheDir();
-  // 白名单：只允许应用数据目录（素材/缓存）内，防止渲染端被攻破时任意路径写入
+  // 默认写入永久素材目录（上传节点/素材不随缓存清理丢失）；dir 用于显式指定（含用户自定义素材文件夹）
+  let base = (typeof dir === "string" && dir.trim()) ? path.resolve(dir.trim()) : assetsRootDir();
+  // 白名单：允许应用数据目录 + 用户自定义素材文件夹（assetsRootDir 可能不在 userData 内），防任意路径写入
   const userDataRoot = path.resolve(app.getPath("userData"));
-  if (!(base === userDataRoot || base.startsWith(userDataRoot + path.sep))) base = getGeneratedCacheDir();
+  const allowed = [userDataRoot, assetsRootDir(), getGeneratedCacheDir()].map(p => path.resolve(p));
+  if (!allowed.some(p => base === p || base.startsWith(p + path.sep))) base = getGeneratedCacheDir();
   try { fs.mkdirSync(base, { recursive: true }); } catch { /* ignore */ }
   const safe = String(filename || "asset").replace(/[\/:*?"<>|]/g, "_").slice(0, 160);
   const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`;
@@ -626,6 +678,25 @@ ipcMain.handle("proxy-fetch", async (_event, { url, method, headers, body }) => 
     throw new Error(String(msg));
   }
   return { b64: buf.toString("base64"), text: buf.toString("utf-8"), mime: String(res.headers.get("content-type") || "application/octet-stream") };
+});
+
+// 上传文件到 ComfyUI（multipart/form-data）：主进程执行，规避渲染进程 file:// 跨域被云端网关 403。
+// 直连 ComfyUI 用 /upload/image（fieldName=image），主控用 /api/comfy/upload/file（fieldName=file）。
+ipcMain.handle("upload-file", async (_event, { url, b64, filename, fieldName, mime }) => {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("仅支持 http(s) 地址");
+  if (!b64 || typeof b64 !== "string") throw new Error("缺少文件内容 (b64)");
+  const buf = Buffer.from(b64, "base64");
+  const name = filename || ("upload_" + Date.now() + ".bin");
+  const fd = new FormData();
+  fd.append(fieldName || "image", new Blob([buf], { type: mime || "application/octet-stream" }), name);
+  const res = await fetch(url + (url.includes("?") ? "&" : "?") + "overwrite=true", { method: "POST", body: fd });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = JSON.parse(text); msg = j.message || j.error?.message || msg; } catch { /* keep status */ }
+    throw new Error(String(msg));
+  }
+  return { text, name, status: res.status };
 });
 
 // 读取媒体文件为 base64（3D 模型预览等）：file:// 限 userData 内；http(s) 由主进程下载规避 CORS
@@ -654,7 +725,7 @@ ipcMain.handle("promote-cache", async (_event, { url, folder, name }) => {
   const cacheDir = getGeneratedCacheDir();
   const src = path.resolve(fileURLToPath(String(url)));
   if (src !== cacheDir && !src.startsWith(cacheDir + path.sep)) throw new Error("仅支持缓存目录中的文件");
-  const root = path.join(app.getPath("userData"), "assets");
+  const root = assetsRootDir();
   const safeFolder = String(folder || "未分类").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "未分类";
   const base = path.basename(src);
   let safeName = String(name || base).replace(/[\\/:*?"<>|]/g, "_").slice(0, 120) || base;
@@ -707,53 +778,6 @@ function runFfmpeg(binary, args) {
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve() : reject(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0] || `FFmpeg 退出码 ${code}`)));
   });
-}
-
-// Video2X 必须使用应用随附的完整目录，禁止回退到 PATH 或系统安装目录。
-function findBundledVideo2x() {
-  const root = app.isPackaged
-    ? path.join(process.resourcesPath, "video2x")
-    : path.join(__dirname, "assets", "video2x");
-  const binary = path.join(root, process.platform === "win32" ? "video2x.exe" : "video2x");
-  if (!fs.existsSync(binary)) throw new Error("未找到应用内置的 Video2X Qt6。请重新安装包含本地模型的版本。");
-  return { root, binary };
-}
-
-function runVideo2x(binary, cwd, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { cwd, windowsHide: true });
-    let stderr = "";
-    let stdout = "";
-    child.stdout?.on("data", data => { stdout += String(data); });
-    child.stderr?.on("data", data => { stderr += String(data); });
-    child.on("error", reject);
-    child.on("close", code => {
-      if (code === 0) return resolve();
-      const output = `${stderr}\n${stdout}`.trim();
-      reject(new Error(output.split(/\r?\n/).filter(Boolean).slice(-1)[0] || `Video2X 退出码 ${code}`));
-    });
-  });
-}
-
-async function resolveVideo2xInput(value) {
-  if (typeof value !== "string" || !value) throw new Error("视频路径为空");
-  if (/^file:/i.test(value)) return fileURLToPath(value);
-  if (!/^https?:/i.test(value)) {
-    const local = path.resolve(value);
-    if (!fs.existsSync(local)) throw new Error("输入视频文件不存在");
-    return local;
-  }
-  // 上游 ComfyUI 结果通常是远程 URL，Video2X 只能读取本地文件。
-  // 下载到用户数据目录后再交给本地 Video2X，避免要求用户手动另存视频。
-  const response = await fetch(value);
-  if (!response.ok) throw new Error(`无法下载输入视频 (HTTP ${response.status})`);
-  const sourceDir = path.join(app.getPath("userData"), "video2x-input");
-  fs.mkdirSync(sourceDir, { recursive: true });
-  const rawName = decodeURIComponent(value.split("/").pop()?.split("?")[0] || "input.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${/\.[a-z0-9]{2,5}$/i.test(rawName) ? rawName : "input.mp4"}`;
-  const local = path.join(sourceDir, filename);
-  fs.writeFileSync(local, Buffer.from(await response.arrayBuffer()));
-  return local;
 }
 
 ipcMain.handle("ffmpeg-trim-video", async (_event, payload) => {
@@ -840,8 +864,149 @@ ipcMain.handle("ffmpeg-compose", async (_event, payload) => {
   }
   const concatList = path.join(outDir, `${id}-list.txt`);
   fs.writeFileSync(concatList, segments.map(s => `file '${String(s).replace(/'/g, "'\\''")}'`).join("\n"));
-  const output = path.join(outDir, `${id}-final.mp4`);
+  let output = path.join(outDir, `${id}-final.mp4`);
   await runFfmpeg(binary, ["-y", "-f", "concat", "-safe", "0", "-i", concatList, "-c", "copy", output]);
+  // 字幕烧录（可选）：concat 后把 SRT 字幕烧进画面
+  const subtitles = String(payload?.subtitles || "").trim();
+  let subtitleApplied = false;
+  if (subtitles) {
+    const srtPath = path.join(outDir, `${id}-subs.srt`);
+    fs.writeFileSync(srtPath, subtitles);
+    const subbed = path.join(outDir, `${id}-subbed.mp4`);
+    try {
+      // Windows 路径需转义（冒号 + 反斜杠）供 ffmpeg subtitles filter 使用
+      const esc = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
+      await runFfmpeg(binary, ["-y", "-i", output, "-vf", `subtitles='${esc}'`, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", subbed]);
+      output = subbed;
+      subtitleApplied = true;
+    } catch (e) {
+      // 字幕烧录失败（如 ffmpeg 无 libass）：回退无字幕成片，不阻断成片输出
+    }
+  }
+  return { url: pathToFileURL(output).toString(), path: output, subtitleApplied };
+});
+
+// 音频拼接：把多段对白音频按顺序拼接成一个音频文件（多角色对白拆分配音用）
+ipcMain.handle("ffmpeg-concat-audio", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const files = Array.isArray(payload?.files) ? payload.files.filter(Boolean) : [];
+  if (!files.length) throw new Error("没有音频片段可拼接");
+  const outDir = path.join(app.getPath("userData"), "video-edits");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const segments = [];
+  for (let i = 0; i < files.length; i++) {
+    const src = await localMediaPath(files[i]);
+    if (!fs.existsSync(src)) throw new Error(`第 ${i + 1} 段音频文件不存在`);
+    const seg = path.join(outDir, `${id}-a${String(i).padStart(2, "0")}.m4a`);
+    await runFfmpeg(binary, ["-y", "-i", src, "-vn", "-c:a", "aac", "-ar", "44100", "-ac", "2", seg]);
+    segments.push(seg);
+  }
+  const concatList = path.join(outDir, `${id}-list.txt`);
+  fs.writeFileSync(concatList, segments.map(s => `file '${String(s).replace(/'/g, "'\\''")}'`).join("\n"));
+  const output = path.join(outDir, `${id}-concat.m4a`);
+  await runFfmpeg(binary, ["-y", "-f", "concat", "-safe", "0", "-i", concatList, "-c", "copy", output]);
+  return { url: pathToFileURL(output).toString(), path: output };
+});
+
+// 补帧：用 minterpolate 运动补偿插值把低帧率视频补到目标帧率（纯本地传统算法，零模型依赖）
+ipcMain.handle("ffmpeg-interpolate", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const input = await localMediaPath(payload?.input);
+  if (!fs.existsSync(input)) throw new Error("输入视频文件不存在");
+  const targetFps = Math.max(1, Math.min(120, Number(payload?.fps) || 60));
+  const outDir = path.join(app.getPath("userData"), "video-edits");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const output = path.join(outDir, `${id}-interpolated.mp4`);
+  await runFfmpeg(binary, ["-y", "-i", input, "-vf", `minterpolate=fps=${targetFps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", output]);
+  return { url: pathToFileURL(output).toString(), path: output, fps: targetFps };
+});
+
+// 视频片段替换：用重生成的片段替换原视频的 [startFrame, endFrame] 区间，拼接回完整视频（纯视频，不含原音频）
+ipcMain.handle("ffmpeg-splice", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const input = await localMediaPath(payload?.input);
+  const newClip = await localMediaPath(payload?.newClip);
+  if (!fs.existsSync(input)) throw new Error("原视频文件不存在");
+  if (!fs.existsSync(newClip)) throw new Error("重生成片段不存在，请先执行「首尾帧重生成」");
+  const fps = Math.max(1, Number(payload?.fps) || 30);
+  const startFrame = Math.max(0, Math.round(Number(payload?.startFrame) || 0));
+  const endFrame = Math.max(startFrame + 1, Math.round(Number(payload?.endFrame) || startFrame + 1));
+  const startTime = startFrame / fps;
+  const endTime = endFrame / fps;
+  const outDir = path.join(app.getPath("userData"), "video-edits");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const segments = [];
+  // 前段：0 ~ startTime（统一重编码为纯视频，保证后续可无损 concat）
+  if (startTime > 1 / fps) {
+    const head = path.join(outDir, `${id}-head.mp4`);
+    await runFfmpeg(binary, ["-y", "-ss", "0", "-i", input, "-t", String(startTime), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", head]);
+    segments.push(head);
+  }
+  // 新片段：统一重编码
+  const mid = path.join(outDir, `${id}-mid.mp4`);
+  await runFfmpeg(binary, ["-y", "-i", newClip, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", mid]);
+  segments.push(mid);
+  // 后段：endTime ~ 末尾
+  const tail = path.join(outDir, `${id}-tail.mp4`);
+  await runFfmpeg(binary, ["-y", "-ss", String(endTime), "-i", input, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", tail]);
+  segments.push(tail);
+  const concatList = path.join(outDir, `${id}-list.txt`);
+  fs.writeFileSync(concatList, segments.map(s => `file '${String(s).replace(/'/g, "'\\''")}'`).join("\n"));
+  const splicedVideo = path.join(outDir, `${id}-spliced-video.mp4`);
+  await runFfmpeg(binary, ["-y", "-f", "concat", "-safe", "0", "-i", concatList, "-c", "copy", splicedVideo]);
+  // 保留原音频：提取原视频完整音轨，与替换后的画面合成（无音轨则回退纯视频）
+  let output = splicedVideo;
+  try {
+    const audioPath = path.join(outDir, `${id}-audio.m4a`);
+    await runFfmpeg(binary, ["-y", "-i", input, "-vn", "-c:a", "aac", "-map", "0:a:0?", audioPath]);
+    if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
+      const final = path.join(outDir, `${id}-spliced.mp4`);
+      await runFfmpeg(binary, ["-y", "-i", splicedVideo, "-i", audioPath, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", final]);
+      output = final;
+    }
+  } catch { /* 无音频或提取失败：保持纯视频 */ }
+  return { url: pathToFileURL(output).toString(), path: output };
+});
+
+// 抽帧：把视频片段抽成帧图序列（供逐帧修图），返回帧 URL 列表 + 抽帧 fps
+ipcMain.handle("ffmpeg-extract-frames", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const input = await localMediaPath(payload?.input);
+  if (!fs.existsSync(input)) throw new Error("视频文件不存在");
+  const fps = Math.max(1, Math.min(12, Number(payload?.fps) || 4));
+  const outDir = path.join(app.getPath("userData"), "video-edits", `frames-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  fs.mkdirSync(outDir, { recursive: true });
+  await runFfmpeg(binary, ["-y", "-i", input, "-vf", `fps=${fps}`, path.join(outDir, "frame_%04d.png")]);
+  const frames = fs.readdirSync(outDir).filter(f => /\.png$/i.test(f)).sort();
+  if (!frames.length) throw new Error("抽帧失败（视频可能过短）");
+  return { frames: frames.map(f => pathToFileURL(path.join(outDir, f)).toString()), fps, dir: outDir };
+});
+
+// 帧合成视频：把修图后的帧序列合成回视频
+ipcMain.handle("ffmpeg-frames-to-video", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const frames = Array.isArray(payload?.frames) ? payload.frames.filter(Boolean) : [];
+  if (frames.length < 2) throw new Error("修图后的帧数不足，无法合成视频");
+  const fps = Math.max(1, Number(payload?.fps) || 4);
+  const outDir = path.join(app.getPath("userData"), "video-edits");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const framesDir = path.join(outDir, `compose-${id}`);
+  fs.mkdirSync(framesDir, { recursive: true });
+  for (let i = 0; i < frames.length; i++) {
+    const src = await localMediaPath(frames[i]);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(framesDir, `frame_${String(i + 1).padStart(4, "0")}.png`));
+  }
+  const output = path.join(outDir, `${id}-restyled.mp4`);
+  await runFfmpeg(binary, ["-y", "-framerate", String(fps), "-i", path.join(framesDir, "frame_%04d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output]);
   return { url: pathToFileURL(output).toString(), path: output };
 });
 

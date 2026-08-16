@@ -3,6 +3,7 @@ import { Button, Dropdown, Input, Modal, Select, Tag, message } from 'antd';
 import { CloseOutlined, DownOutlined, EditOutlined, FileTextOutlined, MoreOutlined, PaperClipOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { fetchModelsFromApi, sendChat, type ChatAttachment, type ChatTurn } from '@/services/chat.service';
+import { resolveAttachmentUrl } from '@/utils/chatAttachments';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { generateId, loadChatSessions, saveChatSession } from '@/utils';
 import type { ChatMessage, ChatSession } from '@/types';
@@ -109,7 +110,7 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
     const items: SourceItem[] = [];
     if (tab === 'local') return;
     if (tab === 'asset') {
-      try { const assets = JSON.parse(localStorage.getItem('ai-canvas-assets-v2') || '[]') as Array<{id:string;name:string;type:string;url:string}>; assets.forEach(a => items.push({ id:a.id, name:a.name, mimeType:'application/octet-stream', url:a.url, source:'asset', type:sourceType(a.type || '', a.url) })); } catch { /* ignore */ }
+      try { const assets = JSON.parse(localStorage.getItem('ai-canvas-assets-v2') || '[]') as Array<{id:string;name:string;type:string;url:string}>; assets.filter(a => a.url).forEach(a => items.push({ id:a.id, name:a.name, mimeType:'application/octet-stream', url:a.url, source:'asset', type:sourceType(a.type || '', a.url) })); } catch { /* ignore */ }
     } else if (tab === 'canvas') {
       nodes.forEach(node => { (node.data.results || []).forEach((result, index) => items.push({ id:`${node.id}-${index}`, name:result.filename || node.data.label, mimeType:`${result.type}/unknown`, url:result.url, source:'canvas', type:result.type as SourceType })); const url=String(node.data.resultUrl || ''); if (url && !(node.data.results || []).some(result => result.url === url)) items.push({ id:`${node.id}-result`, name:node.data.label, mimeType:'application/octet-stream', url, source:'canvas', type:sourceType('', url) || 'text' }); });
     } else {
@@ -133,10 +134,11 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
 
   const send = async (overrideText?: string, overrideAttachments?: ChatAttachment[], replaceFrom?: number) => {
     const text=(overrideText ?? input).trim(); const sentAttachments=overrideAttachments ?? attachments; if (!text && !sentAttachments.length) return;
-    const historyMessages=replaceFrom == null ? messages : messages.slice(0, replaceFrom); const userMessage: ChatMessage={id:generateId(),role:'user',content:text,timestamp:Date.now(),attachments:sentAttachments,status:'complete'};
+    const sentAttachmentsResolved = await Promise.all(sentAttachments.map(resolveAttachmentUrl));
+    const historyMessages=replaceFrom == null ? messages : messages.slice(0, replaceFrom); const userMessage: ChatMessage={id:generateId(),role:'user',content:text,timestamp:Date.now(),attachments:sentAttachmentsResolved,status:'complete'};
     setMessages([...historyMessages,userMessage]); setInput(''); setAttachments([]); setBusy(true); draftRef.current=''; const controller=new AbortController(); controllerRef.current=controller;
     const history: ChatTurn[]=historyMessages.map(item => ({role:item.role,content:item.content}));
-    try { const result=await sendChat(text,sentAttachments,history,controller.signal,{model:selectedModel || undefined,thinkingMode,onChunk:chunk => { draftRef.current += chunk; }}); setMessages(current => [...current,{id:generateId(),role:'assistant',content:result.text,timestamp:Date.now(),status:'complete'}]); }
+    try { const result=await sendChat(text,sentAttachmentsResolved,history,controller.signal,{model:selectedModel || undefined,thinkingMode,onChunk:chunk => { draftRef.current += chunk; }}); setMessages(current => [...current,{id:generateId(),role:'assistant',content:result.text,timestamp:Date.now(),status:'complete'}]); }
     catch (error) { if ((error as Error)?.name === 'AbortError') { if (draftRef.current) setMessages(current => [...current,{id:generateId(),role:'assistant',content:draftRef.current,timestamp:Date.now(),status:'stopped'}]); } else message.error(error instanceof Error ? error.message : '发送失败'); }
     finally { controllerRef.current=null; setBusy(false); draftRef.current=''; }
   };

@@ -4,7 +4,7 @@ import { getClientId } from '@/services/comfyui-ws.service';
 
 export interface GenerateInput { workflow_id: string; input_values: Record<string, unknown>; client_id?: string; }
 export interface GenerateResponse { prompt_id: string; success: boolean; error?: string; images?: { filename: string; base64: string }[]; [key: string]: unknown; }
-export interface ResultItem { type: 'image' | 'video' | 'audio' | 'text' | '3d'; url: string; filename?: string; }
+export interface ResultItem { type: 'image' | 'video' | 'audio' | 'text' | '3d'; url: string; filename?: string; remoteUrl?: string; }
 export interface ResultResponse { success: boolean; data?: ResultItem[]; results?: ResultItem[]; error?: string; pending?: boolean; }
 export interface WorkflowTemplate { id: string; name: string; description: string; workflow_id: string; defaultInputs: Record<string, unknown>; }
 
@@ -36,7 +36,7 @@ export function getActiveServer(serverId?: string): ActiveServer | null {
 }
 
 export function getApiBase(serverId?: string): string {
-  const raw = (getActiveServer(serverId)?.baseUrl || '').replace(/\/+$/, '');
+  const raw = (getActiveServer(serverId)?.baseUrl || '').replace(/\/+$/, '').split('#')[0];
   // 自动补协议：用户填 127.0.0.1:8188 / localhost:8188 等也按 http 处理
   return raw && !/^https?:\/\//i.test(raw) ? 'http://' + raw : raw;
 }
@@ -44,7 +44,7 @@ function getControlBases(): string[] {
   // 性能检测：主控服务器优先用 perfUrl（节点地址 baseUrl 可能不含控制端点）；未配 perfUrl 时回退 baseUrl
   const active = getActiveServer();
   const bases: string[] = [];
-  if (active?.perfUrl) bases.push(active.perfUrl.replace(/\/+$/, ''));
+  if (active?.perfUrl) bases.push(active.perfUrl.replace(/\/+$/, '').split('#')[0]);
   const base = getApiBase();
   if (base && bases.every(b => b !== base)) bases.push(base);
   return bases;
@@ -83,12 +83,15 @@ async function ftch(url: string, opts: RequestInit, ms: number): Promise<Respons
       clearTimeout(t); opts.signal?.removeEventListener('abort', abort);
       return { ok: true, status: 200, text: async () => text, headers: new Headers({ 'content-type': result.mime || 'application/json' }) } as unknown as Response;
     } catch (e: any) {
-      // 代理失败（网络/HTTP 错误）：回退原生 fetch 再试（覆盖代理环境问题）
-      try { return await native(); }
-      catch {
-        const msg = e instanceof Error ? e.message : String(e);
-        return { ok: false, status: 400, text: async () => JSON.stringify({ error: msg }), headers: new Headers() } as unknown as Response;
-      }
+      // 主进程代理已可用：直接透传代理拿到的错误（HTTP 状态 / ComfyUI 校验信息），不再回退原生 fetch。
+      // 原生 fetch 从 file:// 渲染进程发往云端会被网关 403（Origin: null），回退只会把真实错误掩盖成 403。
+      clearTimeout(t); opts.signal?.removeEventListener('abort', abort);
+      const raw = e instanceof Error ? e.message : String(e);
+      // Electron 会把主进程错误包成 "Error invoking remote method 'proxy-fetch': Error: <原始信息>"
+      const msg = raw.replace(/^Error invoking remote method ['"][^'"]+['"]:\s*(?:Error:\s*)?/i, '') || raw;
+      const statusMatch = msg.match(/HTTP (\d{3})/);
+      const status = statusMatch ? Number(statusMatch[1]) : 400;
+      return { ok: false, status, text: async () => JSON.stringify({ error: msg }), headers: new Headers() } as unknown as Response;
     }
   }
   try { return await native(); }
@@ -109,7 +112,7 @@ function errorMessage(error: unknown): string {
 }
 
 export async function testConnection(serverId?: string, baseUrlOverride?: string): Promise<{ ok: boolean; message: string }> {
-  const baseRaw = (baseUrlOverride || getApiBase(serverId)).replace(/\/+$/, '');
+  const baseRaw = (baseUrlOverride || getApiBase(serverId)).replace(/\/+$/, '').split('#')[0];
   const base = baseRaw && !/^https?:\/\//i.test(baseRaw) ? 'http://' + baseRaw : baseRaw; // override 同样自动补协议
   // 健康检查 /api/health 只对主控类服务存在；ComfyUI 直连没有此端点（404 是常态），
   // 任何非 2xx 或异常都必须回退 /system_stats，否则所有 ComfyUI 直连都会误报"连接失败"。
@@ -133,15 +136,50 @@ export async function getModels(serverId?: string): Promise<string[]> {
   }
 }
 
-export async function uploadFile(file: File): Promise<string> {
-  const fd = new FormData(); fd.append('file', file); fd.append('overwrite', 'true');
-  const auth = hdrs(); delete auth['Content-Type'];
-  const r = await ftch(getApiBase() + '/api/comfy/upload/file', { method: 'POST', headers: auth, body: fd }, Math.max(60000, tms()));
-  const d = await readJson(r);
-  if (!r.ok) throw new Error(d.error || `上传失败 (HTTP ${r.status})`);
-  const name = d.name || d.filename || d.path;
-  if (!name) throw new Error('上传成功，但 API 未返回文件名');
-  return name;
+/** Blob → base64 */
+async function blobToB64(blob: Blob): Promise<string> {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = ''; for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+  return btoa(bin);
+}
+
+/** 读取媒体为 base64（file:// 走主进程 loadMediaB64，http(s)/data/blob 走 fetch） */
+async function mediaToB64(src: string): Promise<string | null> {
+  if (src.startsWith('file://')) {
+    try {
+      const res = await (window as any).electronAPI?.loadMediaB64?.({ url: src });
+      if (res?.b64) return res.b64;
+    } catch { /* ignore */ }
+    return null;
+  }
+  try {
+    const r = await fetch(src);
+    if (!r.ok) return null;
+    return await blobToB64(await r.blob());
+  } catch { return null; }
+}
+
+/** 主进程上传（multipart/form-data），规避渲染进程 file:// 跨域被云端网关 403。返回服务器文件名。 */
+async function uploadViaMain(url: string, b64: string, filename: string, fieldName: string, mime: string): Promise<string> {
+  const api = (window as any).electronAPI;
+  if (api?.uploadFile) {
+    const res = await api.uploadFile({ url, b64, filename, fieldName, mime });
+    try { const j = JSON.parse(res?.text || '{}'); return j.name || res?.name || filename; }
+    catch { return res?.name || filename; }
+  }
+  // fallback：渲染进程原生 fetch（本地/带 CORS 的服务器）
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const fd = new FormData();
+  fd.append(fieldName, new Blob([bytes], { type: mime }), filename);
+  const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'overwrite=true', { method: 'POST', body: fd });
+  const text = await r.text();
+  try { const j = JSON.parse(text); return j.name || filename; } catch { return filename; }
+}
+
+export async function uploadFile(file: File, serverId?: string): Promise<string> {
+  const b64 = await blobToB64(file);
+  const name = file.name || ('upload_' + Date.now() + '.bin');
+  return await uploadViaMain(getApiBase(serverId) + '/api/comfy/upload/file', b64, name, 'file', file.type || 'application/octet-stream');
 }
 
 const bridgedFileCache = new Map<string, Promise<string>>();
@@ -154,20 +192,29 @@ function extensionFor(type: string): string {
 }
 
 /** 将浏览器可访问的素材转存到 ComfyUI input，规避远程 URL/内网地址安全限制。 */
-export async function bridgeMediaToInput(value: unknown, type: 'image'|'video'|'audio'|'text'): Promise<unknown> {
+export async function bridgeMediaToInput(value: unknown, type: 'image'|'video'|'audio'|'text', serverId?: string): Promise<unknown> {
   if (typeof value !== 'string' || !value) return value;
-  if (!value.startsWith('http://') && !value.startsWith('https://') && !value.startsWith('data:') && !value.startsWith('blob:')) return value;
-  const cacheKey = `${type}:${value}`;
+  let src: string = value;
+  // 本地 file:// 素材（上传节点/素材目录）→ 先经主进程转 dataURL，否则服务器收到 file:// 路径直接 400
+  if (src.startsWith('file://')) {
+    try {
+      const res = await (window as any).electronAPI?.loadMediaB64?.({ url: src });
+      if (res?.b64) src = `data:${res.mime || 'application/octet-stream'};base64,${res.b64}`;
+      else return src;
+    } catch { return src; }
+  }
+  if (!src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:') && !src.startsWith('blob:')) return src;
+  const cacheKey = `${type}:${src}`;
   if (!bridgedFileCache.has(cacheKey)) {
     if (bridgedFileCache.size > 200) bridgedFileCache.clear(); // 上限 200 条，防无界膨胀
     bridgedFileCache.set(cacheKey, (async () => {
-      const response = await fetch(value);
+      const response = await fetch(src);
       if (!response.ok) throw new Error(`无法读取上游${type}素材 (HTTP ${response.status})`);
       const blob = await response.blob();
-      const rawName = decodeURIComponent(value.split('/').pop()?.split('?')[0] || `asset.${extensionFor(type)}`);
+      const rawName = decodeURIComponent(src.split('/').pop()?.split('?')[0] || `asset.${extensionFor(type)}`);
       const hasExt = /\.[a-z0-9]{2,5}$/i.test(rawName);
       const name = `ai-canvas-${Date.now()}-${Math.random().toString(36).slice(2,7)}-${hasExt ? rawName : `asset.${extensionFor(type)}`}`;
-      return uploadFile(new File([blob], name, { type: blob.type || `${type}/*` }));
+      return uploadFile(new File([blob], name, { type: blob.type || `${type}/*` }), serverId);
     })());
   }
   try { return await bridgedFileCache.get(cacheKey)!; }
@@ -207,18 +254,93 @@ export interface RemoteWorkflowConfig {
     formValues: Record<string, unknown>;
     customLabels: Record<string, string>;
   };
+  /** ComfyUI object_info 中相关节点的输入定义（含 Combo 字段的真实合法值列表），按节点 id 索引 */
+  nodeOptions?: Record<string, Record<string, { options?: unknown[]; type?: string; min?: number; max?: number }>>;
 }
 
-export async function fetchWorkflowConfig(workflowId: string): Promise<RemoteWorkflowConfig> {
+export async function fetchWorkflowConfig(workflowId: string, serverId?: string): Promise<RemoteWorkflowConfig> {
   let r: Response | undefined;
-  for (const base of getControlBases()) {
-    r = await ftch(base + '/api/workflow/config/' + encodeURIComponent(workflowId), { headers: hdrs() }, 20000);
-    if (r.ok) break;
+  if (serverId) {
+    // 指定端口：直接用该服务器的 base（不 fallback 到全局激活服务器）
+    r = await ftch(getApiBase(serverId) + '/api/workflow/config/' + encodeURIComponent(workflowId), { headers: hdrs(serverId) }, 20000);
+  } else {
+    for (const base of getControlBases()) {
+      r = await ftch(base + '/api/workflow/config/' + encodeURIComponent(workflowId), { headers: hdrs() }, 20000);
+      if (r.ok) break;
+    }
   }
   if (!r) throw new Error('无法连接工作流配置接口');
   const data = await readJson<RemoteWorkflowConfig & { error?: string }>(r);
   if (!r.ok || !data.success) throw new Error(data.error || `无法读取工作流配置 (HTTP ${r.status})`);
+  // 拉取 ComfyUI object_info 节点定义，填充 select 字段的真实合法值（避免 "Value not in list"）。
+  // 直连 ComfyUI /object_info 可用；主控壳可能拦截，容错失败不影响主流程。
+  try {
+    const template = data.workflow_template || {};
+    const nodeIds = [...new Set(Object.keys(template))];
+    if (nodeIds.length) {
+      // 并行 + 短超时拉 object_info：服务器离线/壳拦截时快速返回，不拖慢节点创建
+      const info = await Promise.race([
+        fetchObjectInfo(nodeIds),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 4000)),
+      ]);
+      if (info && Object.keys(info).length) data.nodeOptions = info;
+    }
+  } catch { /* object_info 拉取失败不阻塞节点创建 */ }
   return data;
+}
+
+/** 从 ComfyUI /object_info 提取指定节点 id 的输入定义（Combo 字段 options / number 范围）。
+ *  主控壳可能把 /object_info 返回 HTML，尝试多个路径；失败返回空对象。 */
+async function fetchObjectInfo(nodeIds: string[]): Promise<RemoteWorkflowConfig['nodeOptions']> {
+  const out: NonNullable<RemoteWorkflowConfig['nodeOptions']> = {};
+  let raw: unknown = null;
+  for (const base of getControlBases()) {
+    for (const path of ['/object_info', '/api/comfy/object_info']) {
+      try {
+        const resp = await ftch(base + path, { headers: hdrs() }, 4000);
+        const text = await resp.text();
+        const ct = String(resp.headers.get('content-type') || '');
+        if (!/json/i.test(ct)) continue; // 壳返回 HTML 时跳过
+        const j = JSON.parse(text);
+        if (j && typeof j === 'object') { raw = j; break; }
+      } catch { /* try next */ }
+    }
+    if (raw) break;
+  }
+  if (!raw || typeof raw !== 'object') return out;
+  const byClass = raw as Record<string, any>;
+  // object_info 结构：{ "节点类名": { input: { required: { 字段名: [定义] }, optional: {...} } } }
+  // 遍历所有节点类，提取每个字段的 Combo options / number 范围
+  for (const clsName of Object.keys(byClass)) {
+    const def = byClass[clsName];
+    const inputs = def?.input || {};
+    const fields: NonNullable<RemoteWorkflowConfig['nodeOptions']>[string] = {};
+    for (const section of ['required', 'optional']) {
+      const group = inputs[section] || {};
+      for (const [fname, fdef] of Object.entries(group) as Array<[string, any]>) {
+        // ComfyUI 字段定义多种形态：
+        // 1) 旧 Combo: [["选项1","选项2"...], {默认值}]  → fdef[0] 是数组
+        // 2) 旧 FLOAT/INT: ["FLOAT", {min,max,step}]     → fdef[0] 是字符串，fdef[1] 有 min/max
+        // 3) 新 Combo（ComfyUI 0.32+）: ["COMBO", {options:[...], default}]
+        // 4) 新 FLOAT/INT（ComfyUI 0.32+）: ["INT"/"FLOAT", {default,min,max,step}]
+        if (Array.isArray(fdef)) {
+          if (Array.isArray(fdef[0]) && fdef[0].length) {
+            fields[fname] = { options: fdef[0] };
+          } else if (typeof fdef[0] === 'string' && fdef[1] && typeof fdef[1] === 'object') {
+            const meta = fdef[1];
+            if (String(fdef[0]).toUpperCase() === 'COMBO' && Array.isArray(meta.options) && meta.options.length) {
+              fields[fname] = { options: meta.options };
+            }
+            if (typeof meta.min === 'number' || typeof meta.max === 'number') {
+              fields[fname] = { type: 'number', min: meta.min, max: meta.max };
+            }
+          }
+        }
+      }
+    }
+    if (Object.keys(fields).length) out[clsName] = fields;
+  }
+  return out;
 }
 
 export interface PerformanceInfo {
@@ -322,21 +444,33 @@ export async function fetchPerformanceInfo(): Promise<PerformanceInfo> {
   };
 }
 /** 提交本地 ComfyUI 工作流（直连 /prompt），返回 prompt_id */
-/** 上传图片到 ComfyUI（/upload/image），返回服务器文件名（供 LoadImage 节点使用）。
- *  本地 ComfyUI 未开 CORS 时，multipart 请求会成功发出但响应读取被浏览器拦截（拿不到 name），
- *  因此用固定文件名 + overwrite 覆盖，请求发出即视为成功——保证上游图片能进入工作流。 */
+/** 上传图片/视频/音频到 ComfyUI（/upload/image），返回服务器文件名（供 LoadImage/LoadVideo/LoadAudio 节点使用）。
+ *  原生 ComfyUI 只有 /upload/image 端点（实测可接收任意文件类型），/upload/video、/upload/audio 不存在（404）。
+ *  通过主进程 upload-file 上传，规避渲染进程 file:// 跨域被云端网关 403。 */
+export async function uploadMediaToComfy(base: string, mediaUrl: string, type: 'image' | 'video' | 'audio'): Promise<string> {
+  const ext = type === 'image' ? 'png' : type === 'video' ? 'mp4' : 'wav';
+  const mime = type === 'image' ? 'image/png' : type === 'video' ? 'video/mp4' : 'audio/wav';
+  const name = 'input_' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.' + ext;
+  try {
+    const b64 = await mediaToB64(mediaUrl);
+    if (!b64) return name;
+    return await uploadViaMain(base.replace(/\/+$/, '') + '/upload/image', b64, name, 'image', mime);
+  } catch (error) {
+    console.warn('[uploadMediaToComfy] 上传失败:', (error as Error)?.message || error);
+    return name;
+  }
+}
+
 export async function uploadImageToComfy(base: string, imageUrl: string): Promise<string> {
   const name = 'input_' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.png'; // 随机后缀：同毫秒并发上传不互相覆盖
   try {
-    const blobRes = await fetch(imageUrl);
-    if (!blobRes.ok) throw new Error('获取上游图片失败');
-    const blob = await blobRes.blob();
-    const fd = new FormData();
-    fd.append('image', blob, name);
-    // fire-and-forget：请求发出即可（响应读取可能被 CORS 拦，但上传本身成功）
-    fetch(base.replace(/\/$/, '') + '/upload/image?overwrite=true', { method: 'POST', body: fd }).catch((err) => { console.warn('[uploadImageToComfy] 上传失败:', err?.message || err); });
+    const b64 = await mediaToB64(imageUrl);
+    if (!b64) return name;
+    return await uploadViaMain(base.replace(/\/+$/, '') + '/upload/image', b64, name, 'image', 'image/png');
+  } catch (error) {
+    console.warn('[uploadImageToComfy] 上传失败:', (error as Error)?.message || error);
     return name;
-  } catch { return name; }
+  }
 }
 
 /** 从 ComfyUI 校验/执行错误结构中提取人类可读信息（含 node_errors 各节点细节） */
@@ -450,7 +584,14 @@ export async function generate(input: GenerateInput, serverId?: string): Promise
   const r = await ftch(getApiBase(serverId) + '/api/workflow/generate', { method: 'POST', headers: hdrs(serverId), body: JSON.stringify(payload) }, tms());
   const data = await readJson<GenerateResponse>(r);
   if (!r.ok) {
-    throw new Error(data.error || `任务提交失败 (HTTP ${r.status})`);
+    // 带上 ComfyUI validation 详情（node_errors），方便定位哪个节点/字段失败
+    let detail = data.error || `任务提交失败 (HTTP ${r.status})`;
+    const raw = data as any;
+    if (raw?.node_errors && typeof raw.node_errors === 'object') {
+      const parts = Object.entries(raw.node_errors).map(([nid, e]: any) => `${nid}: ${e?.errors?.map?.((x: any) => x.message).join('; ') || String(e?.class_type || '')}`);
+      if (parts.length) detail += '\n节点校验失败：' + parts.join('\n');
+    }
+    throw new Error(detail);
   }
   if (!data.success) throw new Error((data.error as string) || '生成任务提交失败');
   if (!data.prompt_id) throw new Error('任务已提交，但 API 未返回 prompt_id');

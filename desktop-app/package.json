@@ -1,6 +1,6 @@
 {
   "name": "ai-canvas-desktop",
-  "version": "4.6.9",
+  "version": "4.7.1",
   "private": true,
   "description": "JaceCanvas - AI canvas application",
   "main": "main.js",
@@ -37,7 +37,7 @@
     "appId": "com.jacecanvas.desktop",
     "productName": "JaceCanvas",
     "directories": {
-      "output": "release-v4.6.8"
+      "output": "release-v4.7.1"
     },
     "compression": "store",
     "files": [
@@ -82,7 +82,7 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico",
+      "icon": "assets/icon1.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
@@ -92,8 +92,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "JaceCanvas",
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico"
+      "installerIcon": "assets/icon1.ico",
+      "uninstallerIcon": "assets/icon1.ico"
     },
     "beforePack": "scripts/prepare-opensource.cjs",
     "electronDownload": {

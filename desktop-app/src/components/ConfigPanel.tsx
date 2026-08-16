@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Button, Form, Input, InputNumber, Space, Tag, Select, Switch, App, Modal } from 'antd';
 import { CloseOutlined, PlayCircleOutlined, ThunderboltOutlined, SettingOutlined, MessageOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
-import { parseWorkflowParams, defaultParamVisible, type LocalWorkflowParam } from '@/utils/comfyWorkflow';
+import { parseWorkflowParams, defaultParamVisible, isPositivePromptField, isNegativePromptField, type LocalWorkflowParam } from '@/utils/comfyWorkflow';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { fetchWorkflows, type ServerWorkflow } from '@/services/comfyui.service';
@@ -68,16 +68,74 @@ export const ConfigPanel: React.FC = () => {
 
   const change = (key: string, value: unknown) => { setConfig(node.id, { ...(useCanvasStore.getState().nodes.find(n => n.id === node.id)?.data.config || {}), [key]: value }); form.setFieldValue(key, value); };
   const isSeed = (name: string) => /(?:^|_)(?:seed|noise_seed|random_seed)$/i.test(name);
-  const renderNumber = (key: string, label: string, value: unknown, fieldName = key) => <div key={key} style={{ marginBottom: 10 }}><div style={{ color: 'var(--theme-muted)', fontSize: 11, marginBottom: 3 }}>{label}</div><Space.Compact style={{ width: '100%' }}><InputNumber style={{ width: isSeed(fieldName) ? 'calc(100% - 58px)' : '100%' }} value={value === '' || value == null ? null : Number(value)} onChange={v => change(key, v)} />{isSeed(fieldName) && <Button onClick={() => change(key, randomSeedLike(value))}>随机</Button>}</Space.Compact></div>;
+  // 像素宽高/分辨率字段：给常用尺寸快捷选项（宽高一起则一起给，分开则分开给）
+  const renderDimQuick = (key: string, label: string, fieldName: string) => {
+    const lower = fieldName.toLowerCase();
+    const isWidth = /width|宽/.test(lower);
+    const isHeight = /height|高/.test(lower);
+    const isRes = /resolution|res|尺寸|分辨|size/.test(lower);
+    if (!isWidth && !isHeight && !isRes) return null;
+    const allFields = (config._apiFields as Array<any>) || [];
+    const widthKey = allFields.find(f => /width|宽/.test(String(f.field || f.key)))?.key;
+    const heightKey = allFields.find(f => /height|高/.test(String(f.field || f.key)))?.key;
+    const widthValue = widthKey ? Number(config[widthKey] ?? 1024) : 1024;
+    const heightValue = heightKey ? Number(config[heightKey] ?? 1024) : 1024;
+    // 宽高字段同时存在 → 一起给常见比例；否则给单侧常见数值
+    const chips: Array<{ label: string; w?: number; h?: number; v?: number }> = (widthKey && heightKey)
+      ? [
+          { label: '1:1 512²', w: 512, h: 512 }, { label: '1:1 768²', w: 768, h: 768 }, { label: '1:1 1024²', w: 1024, h: 1024 },
+          { label: '16:9', w: 1344, h: 768 }, { label: '9:16', w: 768, h: 1344 },
+          { label: '4:3', w: 1152, h: 896 }, { label: '3:4', w: 896, h: 1152 },
+          { label: '自定义', w: widthValue, h: heightValue },
+        ]
+      : [512, 640, 768, 896, 1024, 1344, 1440, 1920, 2560].map(v => ({ label: String(v), v }));
+    return <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+      {chips.map(c => <button key={c.label} type="button" onClick={() => {
+        if (c.w && c.h && widthKey && heightKey) { change(widthKey, c.w); change(heightKey, c.h); }
+        else if (c.v !== undefined) change(key, c.v);
+      }} style={{ padding: '1px 7px', fontSize: 9, border: '1px solid var(--theme-border)', background: 'var(--theme-input)', color: 'var(--theme-text-2)', borderRadius: 4, cursor: 'pointer' }}>{c.label}</button>)}
+    </div>;
+  };
+  const renderNumber = (key: string, label: string, value: unknown, fieldName = key) => {
+    const quick = renderDimQuick(key, label, fieldName);
+    // 兼容带描述字符串值（如 "0.4 | 864 x 480"）：提取数字显示，改时只存数字
+    let numValue: number | null = null;
+    if (value !== '' && value != null) {
+      const n = Number(value);
+      numValue = Number.isFinite(n) ? n : (() => { const m = String(value).match(/^\s*(-?\d+(?:\.\d+)?)/); return m ? Number(m[1]) : null; })();
+    }
+    return <div key={key} style={{ marginBottom: 10 }}><div style={{ color: 'var(--theme-muted)', fontSize: 11, marginBottom: 3 }}>{label}</div>{quick}<Space.Compact style={{ width: '100%' }}><InputNumber style={{ width: isSeed(fieldName) ? 'calc(100% - 58px)' : '100%' }} value={numValue} onChange={v => change(key, v)} />{isSeed(fieldName) && <Button onClick={() => change(key, randomSeedLike(value))}>随机</Button>}</Space.Compact></div>;
+  };
   const renderApi = () => {
     const fields = (config._apiFields as Array<any>) || [];
     if (!fields.length) return <div style={{ color: 'var(--theme-muted)', fontSize: 12 }}>当前节点没有可用的服务器参数，请重新从节点库添加。</div>;
+    // 兼容旧节点：ResolutionSelector 的 aspect_ratio 在旧 _apiFields 里可能是 text 类型且无 options，
+    // 动态补全为 select（合法值是 ComfyUI 官方预设 "宽:高 (描述)"）；megapixels/multiple 是 FLOAT/INT 数字，保持数字输入
+    const AR_OPTIONS = ['1:1 (Square)','2:3 (Portrait Photo)','3:2 (Photo)','3:4 (Portrait Standard)','4:3 (Standard)','9:16 (Portrait Widescreen)','16:9 (Widescreen)','21:9 (Ultrawide)'];
     const render = (field: any) => {
-      const value = config[field.key] ?? field.value ?? '';
-      if (field.fileType) return <Form.Item key={field.key} label={field.label}><Input value={String(value)} onChange={e => change(field.key, e.target.value)} placeholder={`输入或连接${field.fileType}资源`} /></Form.Item>;
-      if (field.type === 'boolean') return <Form.Item key={field.key} label={field.label}><Switch checked={value === true || String(value).toLowerCase() === 'true'} onChange={v => change(field.key, v)} /></Form.Item>;
-      if (field.type === 'number') return renderNumber(field.key, field.label, value, field.field || field.key);
-      if (field.type === 'select' && field.options) return <Form.Item key={field.key} label={field.label}><Select style={{ width: '100%' }} value={String(value)} options={field.options} onChange={v => change(field.key, v)} /></Form.Item>;
+      let f = field;
+      if ((field.field === 'aspect_ratio' || (field.key && field.key.split(':')[1] === 'aspect_ratio')) && !field.options?.length) {
+        f = { ...field, type: 'select', options: AR_OPTIONS.map(v => ({ label: v, value: v })) };
+      }
+      const value = config[f.key] ?? f.value ?? '';
+      if (f.fileType) return <Form.Item key={f.key} label={f.label}><Input value={String(value)} onChange={e => change(f.key, e.target.value)} placeholder={`输入或连接${f.fileType}资源`} /></Form.Item>;
+      if (f.type === 'boolean') return <Form.Item key={f.key} label={f.label}><Switch checked={value === true || String(value).toLowerCase() === 'true'} onChange={v => change(f.key, v)} /></Form.Item>;
+      if (f.type === 'number') return renderNumber(f.key, f.label, value, f.field || f.key);
+      if (f.type === 'select' && f.options) {
+        // 兼容旧值：aspect_ratio 值可能是纯比例（旧数据/手填），映射到带官方描述的选项
+        const arShortMap: Record<string, string> = {
+          '1:1': '1:1 (Square)', '2:3': '2:3 (Portrait Photo)', '3:2': '3:2 (Photo)', '3:4': '3:4 (Portrait Standard)',
+          '4:3': '4:3 (Standard)', '9:16': '9:16 (Portrait Widescreen)', '16:9': '16:9 (Widescreen)', '21:9': '21:9 (Ultrawide)',
+        };
+        const cur = String(value);
+        // 值匹配：完整值、短值（arShortMap）、或数字匹配（megapixels 0.4 → "0.4 | 864 x 480"）
+        const numCur = Number(cur);
+        const matchedOpt = f.options.find((o: any) => String(o.value) === cur || arShortMap[String(o.value)] === cur || (Number.isFinite(numCur) && String(o.value).startsWith(cur + ' |')));
+        return <Form.Item key={f.key} label={f.label}><Select style={{ width: '100%' }}
+          value={matchedOpt ? String(matchedOpt.value) : cur}
+          options={f.options.map((o: any) => ({ label: o.label, value: String(o.value) }))}
+          onChange={v => change(f.key, v)} /></Form.Item>;
+      }
       const long = /text|prompt|negative|positive|script|description|system/i.test(field.field || field.key);
       return <Form.Item key={field.key} label={<span style={{ display: 'flex', justifyContent: 'space-between' }}>{field.label}{long && <PromptActions nodeId={node.id} value={String(value)} kind={promptKindForNode(nodeType || 'apiNode')} fieldKey={field.key} onChange={v => change(field.key, v)} />}</span>}>{long ? <Input.TextArea value={String(value)} autoSize={{ minRows: 3, maxRows: 10 }} onChange={e => change(field.key, e.target.value)} /> : <Input value={String(value)} onChange={e => change(field.key, e.target.value)} />}</Form.Item>;
     };
@@ -121,7 +179,7 @@ export const ConfigPanel: React.FC = () => {
                 {notes[p.key] && <span title={notes[p.key]} style={{ fontSize: 10, color: 'var(--theme-muted)', marginLeft: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}><MessageSquare size={11} /> {notes[p.key]}</span>}</div>
               {p.type === 'number' ? <InputNumber style={{ width: '100%' }} value={value === '' || value == null ? null : Number(value)} onChange={v => setParam(p.key, v)} /> :
                 p.type === 'boolean' ? <Switch checked={value === true || String(value).toLowerCase() === 'true'} onChange={v => setParam(p.key, v)} /> :
-                /text|prompt|negative|positive/i.test(p.field) ? <Input.TextArea value={String(value)} autoSize={{ minRows: 2, maxRows: 6 }} onChange={e => setParam(p.key, e.target.value)} /> :
+                (isPositivePromptField(p.field, { class_type: p.nodeClass, _meta: { title: p.nodeTitle } }) || isNegativePromptField(p.field, { class_type: p.nodeClass, _meta: { title: p.nodeTitle } }, value)) ? <Input.TextArea value={String(value)} autoSize={{ minRows: 2, maxRows: 6 }} onChange={e => setParam(p.key, e.target.value)} /> :
                 <Input value={String(value)} onChange={e => setParam(p.key, e.target.value)} />}
             </div>;
           })}

@@ -11,6 +11,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'redo', label: '重做', desc: '重做', default: 'Ctrl+Shift+Z' },
   { id: 'group', label: '成组', desc: '选中 ≥2 节点成组（Frame）', default: 'Ctrl+G' },
   { id: 'ungroup', label: '解散分组', desc: '解散 Frame 分组', default: 'Ctrl+Shift+G' },
+  { id: 'director-move', label: '导演台·移动', desc: '3D 导演台：Gizmo 切换为移动', default: 'G' },
+  { id: 'director-rotate', label: '导演台·旋转', desc: '3D 导演台：Gizmo 切换为旋转', default: 'R' },
+  { id: 'director-scale', label: '导演台·缩放', desc: '3D 导演台：Gizmo 切换为缩放', default: 'T' },
+  { id: 'director-keyframe', label: '导演台·记录关键帧', desc: '3D 导演台：记录当前姿态/位置为关键帧', default: 'I' },
 ];
 
 const KEY = 'jacecanvas-shortcuts';

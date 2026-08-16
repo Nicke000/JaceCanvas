@@ -18,7 +18,7 @@ type NodeTab = 'fixed' | 'paid' | 'workflow' | 'template';
 const FIXED_NODES: Array<{ type: NodeComponentType; label: string }> = [
   { type:'textInput', label:'文本' }, { type:'scriptInput', label:'剧本' },
   { type:'uploadNode', label:'上传' }, { type:'sceneSettings', label:'场景设定' },
-  { type:'imageCrop', label:'修图裁切' }, { type:'videoTrim', label:'视频剪辑' },
+  { type:'imageCrop', label:'修图裁切' }, { type:'inpaint', label:'圈画修图' }, { type:'videoTrim', label:'视频剪辑' }, { type:'interpolate', label:'视频补帧' },
   { type:'preview', label:'结果预览' },
   { type:'compare', label:'前后对比' }, { type:'storyboardPrompt', label:'剧情分镜' }, { type:'storyboardRender', label:'分镜出图' }, { type:'timelineRender', label:'时间线合成' },
   { type:'cinematographyKnowledge', label:'影视知识库' },

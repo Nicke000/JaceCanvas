@@ -144,7 +144,9 @@ async function executeAgentAction(action: string, args: Record<string, any>, onE
       const id = resolveNodeId(String(args?.node || ''));
       if (!id) return { ok: false, message: `找不到节点: ${args?.node}` };
       st.setSelectedNodeId(id);
-      window.dispatchEvent(new CustomEvent('ai-canvas-focus-node', { detail: { nodeId: id } }));
+      // 通过画布暴露的聚焦入口滚动到节点（选中 + fitView）；入口未就绪时至少已选中
+      const focusFn = (window as any).__focusCanvasNode;
+      if (typeof focusFn === 'function') focusFn(id);
       return { ok: true, message: `已在画布选中节点 ${args?.node}` };
     }
     case 'request_source_access': {

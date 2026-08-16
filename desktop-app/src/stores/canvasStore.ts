@@ -1,13 +1,14 @@
 import { create } from 'zustand';
 import { message } from 'antd';
-import { applyNodeChanges, applyEdgeChanges, type NodeChange, type EdgeChange, type Connection, type Edge } from '@xyflow/react';
+import { applyNodeChanges, applyEdgeChanges, MarkerType, type NodeChange, type EdgeChange, type Connection, type Edge } from '@xyflow/react';
 import type { AppNode, CanvasNodeData, ToolAction, HistorySnapshot, NodeComponentType, ContextMenuState, NodeStatus } from '@/types';
 import { NODE_CONFIGS } from '@/types';
-import { generate, pollResult, uploadFile, getApiBase, bridgeMediaToInput, cancelComfyTask, submitLocalWorkflow, uploadImageToComfy, pollLocalWorkflow, type ResultItem } from '@/services/comfyui.service';
+import { generate, pollResult, uploadFile, getApiBase, bridgeMediaToInput, cancelComfyTask, submitLocalWorkflow, uploadImageToComfy, uploadMediaToComfy, pollLocalWorkflow, type ResultItem } from '@/services/comfyui.service';
 import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
 import { getPaidModelsForAdapter } from '@/config/paidApiAdapters';
 import { generateId, expandPromptVariants } from '@/utils';
-import { applyWorkflowParams, workflowImageInputs, workflowPorts } from '@/utils/comfyWorkflow';
+import { applyWorkflowParams, workflowImageInputs, workflowPorts, isPositivePromptField, isNegativePromptField } from '@/utils/comfyWorkflow';
+import { portTypeColor } from '@/utils/portColor';
 import { NODE_MAP } from '@/config/registry';
 import { mediaTypeForFile } from '@/utils/fileDrop';
 import { sendChat, type ChatTurn } from '@/services/chat.service';
@@ -18,7 +19,7 @@ import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
 import { useSettingsStore, type PaidApiNodeSettings } from '@/stores/settingsStore';
 import { getSupportedPaidCapabilities } from '@/config/paidCapabilityCatalog';
 import { getAllStyles } from '@/config/stylePresets';
-import { callBailianTextToImage } from '@/services/bailianTextToImage.service';
+import { cameraMotionPrompt } from '@/config/cameraMotions';
 import { addGenerationHistory, autoSaveToAssets } from '@/utils/generationHistory';
 
 /** 动态端口类型解析（BUG-3 修复）：apiNode 用 _apiFields，localWorkflow 用 workflowPorts()，静态节点用 NODE_CONFIGS；查不到返回 undefined（不拦截） */
@@ -36,6 +37,18 @@ function getDynamicPortType(node: AppNode, handleId: string | null | undefined, 
     const ports = workflowPorts(node.data.config?.workflowJson as Record<string, any> | undefined);
     const list = isOutput ? ports.outputs : ports.inputs;
     return list.find(x => x.id === handleId)?.type;
+  }
+  if (nt === 'paidCapability') {
+    // 能力节点输出端口随能力动态变化（image↔video↔audio↔3d），从 PAID_CAPABILITIES 解析
+    try {
+      const cap = String(node.data.config?.capability || '');
+      const def = (PAID_CAPABILITIES as any)[cap];
+      if (isOutput) return def?.output;
+      const ins = def?.input || [];
+      const found = ins.find((x: any) => x === handleId);
+      if (found) return typeof found === 'string' ? found : (found as any)?.type;
+      return 'text';
+    } catch { return undefined; }
   }
   const meta = NODE_CONFIGS[nt as NodeComponentType];
   const list = isOutput ? meta?.outputs : meta?.inputs;
@@ -71,7 +84,7 @@ export const NODE_DEFAULTS: Record<NodeComponentType, { label: string; color: st
   refMultiFusion:{label:'多图融合',color:'#ec4899'},refWashImage:{label:'洗图',color:'#f43f5e'},
   refImageClear:{label:'变清晰',color:'#22c55e'},refImageToVideo:{label:'图生视频',color:'#3b82f6'},
   uploadNode:{label:'上传文件',color:'#60a5fa'},downloadNode:{label:'下载结果',color:'#f59e0b'},
-  imageCrop:{label:'修图裁切',color:'#f97316'}, apiNode:{label:'API节点',color:'#6366f1'}, chatNode:{label:'AI聊天',color:'#22c55e'}, videoTrim:{label:'视频剪辑',color:'#f97316'},
+  imageCrop:{label:'修图裁切',color:'#f97316'}, inpaint:{label:'圈画修图',color:'#22d3ee'}, interpolate:{label:'视频补帧',color:'#34d399'}, apiNode:{label:'API节点',color:'#6366f1'}, chatNode:{label:'AI聊天',color:'#22c55e'}, videoTrim:{label:'视频剪辑',color:'#f97316'},
   paidTextToImage:{label:'付费API·文生图',color:'#a855f7'},paidImageToImage:{label:'付费API·图生图',color:'#0ea5e9'},paidTextToVideo:{label:'付费API·文生视频',color:'#ec4899'},paidImageToVideo:{label:'付费API·图生视频',color:'#f43f5e'},paidCapability:{label:'付费扩展能力',color:'#14b8a6'},bailianTextToImage:{label:'文生图',color:'#ff7a45'},localWorkflow:{label:'本地工作流',color:'#0ea5e9'},
 };
 
@@ -115,15 +128,21 @@ interface Store {
   clearCanvas: () => void;
   loadCanvas: (n: AppNode[], e: Edge[], opts?: { preserveEdgeType?: boolean }) => void;
   _pushHistory: () => void;
+  promoteCanvasFiles: (nodes?: AppNode[]) => Promise<void>;
 }
 
 const runningControllers = new Map<string, AbortController>();
 
-/** 付费图片/音频结果自动下载到本地缓存（Flux 等签名 URL 有效期短）；视频文件大，保持远程直链 */
+/** 付费生成结果自动下载到本地【永久素材目录】（不随 48h 缓存清理丢失），
+ * 图片/视频/音频/3D 全部落盘（含多结果变体，每个 url 单独保存）；失败回退远程 URL */
 export async function cachePaidMedia(url: string, outputKind: string): Promise<string> {
-  if (outputKind === 'video' || outputKind === 'text' || !url || !/^https?:\/\//i.test(url)) return url;
+  if (outputKind === 'text' || !url) return url;
+  // dataURL / 本地文件直接保留（已可访问且不依赖远端）；http(s) 下载到本地
+  if (!/^https?:\/\//i.test(url)) return url;
   try {
-    const saved = await (window as any).electronAPI?.cacheMedia?.({ url });
+    // 关闭「自动保存」时下载到缓存目录（48h 自动清理）；开启时下载到永久素材目录
+    const autoSave = useSettingsStore.getState().assetAutoSave !== false;
+    const saved = await (window as any).electronAPI?.cacheMedia?.({ url, dir: autoSave ? 'assets' : undefined });
     if (saved?.url) return saved.url;
   } catch { /* 下载失败时回退远程 URL */ }
   return url;
@@ -163,6 +182,35 @@ export const useCanvasStore = create<Store>((set, get) => ({
   nodes: INITIAL, edges: [], selectedNodeId: null, clipboard: null as AppNode[] | null, activeTool: 'select', projectName: '未命名项目',
   history: [snap(INITIAL, [])], historyIndex: 0,
 
+  promoteCanvasFiles: async (nodesArg) => {
+    // 把画布中引用「缓存目录」的 file:// 结果复制到永久素材目录（不随 48h 缓存清理丢失），并更新节点引用
+    try {
+      const list = nodesArg ?? get().nodes;
+      const candidates: Array<{ nodeId: string; url: string }> = [];
+      list.forEach(n => {
+        const d = n.data as any;
+        const urls: string[] = [];
+        if (typeof d?.resultUrl === 'string') urls.push(d.resultUrl);
+        if (Array.isArray(d?.results)) urls.push(...d.results.map((r: any) => r?.url).filter(Boolean));
+        Object.values(d?.outputValues || {}).forEach(v => { if (typeof v === 'string' && /^file:/.test(v)) urls.push(v); });
+        urls.filter((u, idx, arr) => u.startsWith('file://') && arr.indexOf(u) === idx).forEach(url => candidates.push({ nodeId: n.id, url }));
+      });
+      if (!candidates.length) return;
+      for (const c of candidates) {
+        try {
+          const saved = await (window as any).electronAPI?.promoteCache?.({ url: c.url });
+          if (saved?.url && saved.url !== c.url) {
+            const replace = (v: unknown): unknown => typeof v === 'string' && v === c.url ? saved.url : v;
+            get().updateNodeData(c.nodeId, {
+              resultUrl: replace((get().nodes.find(n => n.id === c.nodeId)?.data as any)?.resultUrl),
+              outputValues: Object.fromEntries(Object.entries((get().nodes.find(n => n.id === c.nodeId)?.data as any)?.outputValues || {}).map(([k, v]) => [k, replace(v)])),
+              results: ((get().nodes.find(n => n.id === c.nodeId)?.data as any)?.results || []).map((r: any) => ({ ...r, url: replace(r.url) })),
+            } as any);
+          }
+        } catch { /* 缓存提升失败（非 cache 目录文件等）保持原样 */ }
+      }
+    } catch { /* ignore */ }
+  },
   _pushHistory: () => {
     const s = get(); const ns = snap(s.nodes, s.edges);
     const h = s.history.slice(0, s.historyIndex + 1); h.push(ns); if (h.length > 50) h.shift();
@@ -172,7 +220,20 @@ export const useCanvasStore = create<Store>((set, get) => ({
   undo: () => { const { historyIndex: i, history: h } = get(); if (i <= 0) return; const s = h[i - 1]; set({ nodes: JSON.parse(JSON.stringify(s.nodes)), edges: JSON.parse(JSON.stringify(s.edges)), historyIndex: i - 1, selectedNodeId: null }); },
   redo: () => { const { historyIndex: i, history: h } = get(); if (i >= h.length - 1) return; const s = h[i + 1]; set({ nodes: JSON.parse(JSON.stringify(s.nodes)), edges: JSON.parse(JSON.stringify(s.edges)), historyIndex: i + 1, selectedNodeId: null }); },
 
-  onNodesChange: (c) => { set({ nodes: applyNodeChanges(c, get().nodes) as AppNode[] }); if (c.some(x => x.type === 'remove' || x.type === 'add')) get()._pushHistory(); },
+  onNodesChange: (c) => {
+    // locked 节点不可拖动：过滤 position/dimensions 变化（keep draggable 由 CSS 处理，避免每次 nodes 变化全量 map 展开）
+    const current = get().nodes;
+    const locked = new Set(current.filter(n => n.data?.locked).map(n => n.id));
+    if (locked.size) {
+      c = c.filter(ch => {
+        const id = (ch as { id?: string }).id;
+        if (id == null) return true; // add 等无 id 的变化不过滤
+        return !locked.has(id) || (ch.type !== 'position' && ch.type !== 'dimensions');
+      });
+    }
+    set({ nodes: applyNodeChanges(c, current) as AppNode[] });
+    if (c.some(x => x.type === 'remove' || x.type === 'add')) get()._pushHistory();
+  },
   onEdgesChange: (c) => { set({ edges: applyEdgeChanges(c, get().edges) }); if (c.some(x => x.type === 'remove')) get()._pushHistory(); },
   deleteEdge: (id) => {
     const edge=get().edges.find(item=>item.id===id);const remaining=get().edges.filter(item=>item.id!==id);
@@ -203,14 +264,19 @@ export const useCanvasStore = create<Store>((set, get) => ({
       const dup = get().edges.find(e => e.target === c.target && e.targetHandle === c.targetHandle && e.source !== c.source);
       if (dup) set({ edges: get().edges.filter(e => e.id !== dup.id) });
     }
-    const color = source?.data.color || '#7c6df2';
-    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', animated: true, style: { stroke: color, strokeWidth: 2.2 } } as Edge;
+    // 连线颜色按端口数据类型区分（与连接点一致）；查不到类型时回退到源节点色
+    const sPortType = source ? getDynamicPortType(source, c.sourceHandle, true) : undefined;
+    const edgeColor = sPortType ? portTypeColor(sPortType) : (source?.data.color || '#7c6df2');
+    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', animated: true, style: { stroke: edgeColor, strokeWidth: 2.2 }, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: edgeColor } } as Edge;
     const sourceValues=source?.data.outputValues||{};
     const sourceKey=c.sourceHandle||''; const targetKey=c.targetHandle||sourceKey||'input';
     const scriptId=sourceKey.startsWith('script-')?sourceKey.slice(7):'';
     const scriptValue=scriptId?((source?.data.config?.scripts as Array<{id:string;text:string}>)||[]).find(item=>item.id===scriptId)?.text:undefined;
-    const configValue=sourceKey?source?.data.config?.[sourceKey]:undefined;
+    const configValue=sourceKey?(source?.data.config?.[sourceKey]??(typeof source?.data.config?.text==='string'?source.data.config.text:undefined)):undefined;
     const directValue=sourceKey&&sourceKey in sourceValues?sourceValues[sourceKey]:scriptValue??configValue??sourceValues.output??sourceValues.url??sourceValues.image??sourceValues.text;
+    if (source?.data?.nodeType === 'textInput' || (target?.data?.nodeType === 'apiNode' || target?.data?.nodeType === 'localWorkflow')) {
+      try { const logs = (window as any).__submitLogs || []; logs.push({ t: Date.now(), kind: 'connect', src: source?.data?.nodeType, srcCfg: JSON.stringify(source?.data?.config || {}).slice(0, 300), target: target?.data?.nodeType, sourceKey, targetKey, directValue: String(directValue ?? '').slice(0, 120) }); (window as any).__submitLogs = logs.slice(-30); } catch { /* ignore */ }
+    }
     const nodes = get().nodes.map(n=>n.id===target?.id?{...n,data:{...n.data,inputValues:{...n.data.inputValues,
       ...(c.targetHandle?{[targetKey]:directValue}:sourceValues),...(source?.data.results?{results:source.data.results}:{})}}}:n);
     set({ edges: [...get().edges, edge], nodes });
@@ -232,10 +298,12 @@ export const useCanvasStore = create<Store>((set, get) => ({
       storyboardPrompt: { script:'',personCount:2,sceneCount:2,personNotes:{},sceneNotes:{},segmentCount:3,segmentRule:'每段 5 秒',totalDuration:15,inheritPrevious:'true',effects:'',customRequirements:'',systemPrompt:'' },
       cinematographyKnowledge: { selectedEffectIds:[],customTerms:[],presetName:'' },
       imageCrop: { x: 0, y: 0, width: 512, height: 512, aspectRatio: '1:1' },
+      inpaint: { prompt: '', brushSize: 24 },
+      interpolate: { fps: 60 },
       paidTextToImage: { prompt:'', model:'', aspectRatio:'1:1', width:1024, height:1024 },
       paidImageToImage: { prompt:'', model:'', aspectRatio:'1:1', width:1024, height:1024 },
-      paidTextToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5 },
-      paidImageToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5 },
+      paidTextToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5, cameraMotion:'' },
+      paidImageToVideo: { prompt:'', model:'', aspectRatio:'16:9', width:1280, height:720, duration:5, cameraMotion:'' },
       paidCapability: { capability:'image-upscale', prompt:'', model:'' },
       bailianTextToImage: { prompt:'', ratio:'1:1', resolution:1024, seed:-1 },
       chatNode: { message: '', memory: true, historyLimit: 20, history: [] },
@@ -245,10 +313,13 @@ export const useCanvasStore = create<Store>((set, get) => ({
     if (!dynCfg) { const e = NODE_MAP.get(t); if (e) dynCfg = { ...e.defaultParams }; else dynCfg = {}; }
     const initialStyle = t === 'preview' ? { width: 240, height: 180 } : t === 'compare' ? {width:460,height:260} : t === 'chatNode' ? {width:520,height:620,minWidth:420,minHeight:420} : t === 'storyboardPrompt' ? {width:680,minWidth:620} : t === 'cinematographyKnowledge' ? {width:520,minWidth:420} : undefined;
     const nodeId=generateId();
+    // 自动绑定当前激活服务器端口（用户可再手动改；显式传入的 serverId 优先）
+    const settings = useSettingsStore.getState();
+    const autoServerId = d?.serverId ?? settings.activeServerId ?? settings.servers[0]?.id ?? undefined;
     set({ nodes: [...get().nodes, { id: nodeId, type: t, position: p, style: initialStyle,
       data: { label: nd.label, content: '', color: nd.color, nodeType: t,
         config: dynCfg, inputValues: {}, outputValues: {}, status: 'idle',
-        createdAt: now, updatedAt: now, ...d } } as AppNode] });
+        serverId: autoServerId, createdAt: now, updatedAt: now, ...d } } as AppNode] });
     get()._pushHistory();
     return nodeId;
   },
@@ -388,7 +459,8 @@ export const useCanvasStore = create<Store>((set, get) => ({
   setActiveTool: (t) => set({ activeTool: t }),
   setProjectName: (n) => set({ projectName: n }),
   clearCanvas: () => { set({ nodes: [], edges: [], selectedNodeId: null }); get()._pushHistory(); },
-  loadCanvas: (n, e, opts) => { queuedTaskIds.clear(); localExecutionQueues.clear(); queueRunningSet.clear(); runningControllers.forEach(ctrl => ctrl.abort()); runningControllers.clear(); const migrated=migrateNodes(n).map(node => (node.data.status === 'running' || node.data.status === 'queued') ? { ...node, data: { ...node.data, status: 'idle' as const, queuedAt: undefined, queueOrder: undefined } } : node); const smooth=opts?.preserveEdgeType ? e.map(edge=>({...edge})) : e.map(edge=>({...edge,type:'deletable'})); set({ nodes:migrated,edges:smooth,selectedNodeId:null,history:[snap(migrated,smooth)],historyIndex:0 }); },
+  loadCanvas: (n, e, opts) => { queuedTaskIds.clear(); localExecutionQueues.clear(); queueRunningSet.clear(); runningControllers.forEach(ctrl => ctrl.abort()); runningControllers.clear(); const migrated=migrateNodes(n).map(node => (node.data.status === 'running' || node.data.status === 'queued') ? { ...node, data: { ...node.data, status: 'idle' as const, queuedAt: undefined, queueOrder: undefined } } : node); const smooth=opts?.preserveEdgeType ? e.map(edge=>({...edge})) : e.map(edge=>({...edge,type:'deletable'})); // 已有连线按端口数据类型自动校正颜色（与连接点一致），便于分辨数据流；查不到类型则保持原色
+  const colorized=smooth.map(edge=>{const source=migrated.find(nn=>nn.id===edge.source);if(!source)return edge;const pt=getDynamicPortType(source,(edge.sourceHandle??null) as string|null,true);if(!pt)return edge;const color=portTypeColor(pt);const style={...(edge.style||{}),stroke:color};const markerEnd=edge.markerEnd?{...(typeof edge.markerEnd==='object'&&edge.markerEnd?edge.markerEnd:{}),color}:undefined;return {...edge,style,...(markerEnd?{markerEnd}:{})} as Edge;}); set({ nodes:migrated,edges:colorized,selectedNodeId:null,history:[snap(migrated,colorized)],historyIndex:0 }); void get().promoteCanvasFiles(migrated); },
 
   setNodeConfig: (id, partialConfig) => {
     const current = get().nodes.find(n => n.id === id);
@@ -483,7 +555,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
         if (n.id === sourceId) {
           return { ...n, data: { ...n.data, outputValues: { ...n.data.outputValues, [outputName]: value } } };
         }
-        const matches = targets.filter(t => t.targetId === n.id && (outputName==='results'||!t.sourceHandle||t.sourceHandle === outputName || (outputName === 'output' && ['image','video','audio','media','input'].includes(t.sourceHandle || ''))));
+        const mediaNames=['image','video','audio','3d','media']; const matches = targets.filter(t => t.targetId === n.id && (outputName==='results'||!t.sourceHandle||t.sourceHandle === outputName || (outputName === 'output' && mediaNames.concat('input').includes(t.sourceHandle || '')) || (mediaNames.includes(outputName) && t.sourceHandle === 'output') || (outputName === 'text' && /(^|:)text|^text-/.test(t.sourceHandle || '')) || (outputName === 'settings' && /settings|scene/i.test(t.sourceHandle || ''))));
         if (matches.length) {
           const additions:Record<string,unknown>={};
           matches.forEach(match=>{ additions[match.targetHandle || outputName] = value; });
@@ -609,24 +681,6 @@ export const useCanvasStore = create<Store>((set, get) => ({
         get().updateNodeData(id,{status:'success',generationDurationMs:Date.now()-startedAt});
         runningControllers.delete(id); // 提前返回前清理 AbortController（防任务计数泄漏）
         return true;
-      } else if (false && nt === 'bailianTextToImage') {
-        const bailian = useSettingsStore.getState().bailianTextToImage;
-        const prompt = expandPromptVariants(String(config.prompt || node?.data.inputValues?.prompt || node?.data.inputValues?.text || '').trim());
-        if (!prompt) throw new Error('请输入提示词，或连接文本节点到提示词输入端口');
-        const result = await callBailianTextToImage(bailian, {
-          prompt,
-          ratio: String(config.ratio || '1:1'),
-          resolution: Number(config.resolution) || 1024,
-          seed: Number(config.seed),
-        }, controller.signal);
-        const results = [{ type: 'image' as const, url: result.url }];
-        const outputValues = { image: result.url, output: result.url, url: result.url, results };
-        get().updateNodeData(id, { resultUrl: result.url, outputValues, results, content: '文生图生成完成', status: 'success' });
-        get().propagateData(id, 'image', result.url);
-        get().propagateData(id, 'output', result.url);
-        get().propagateData(id, 'results', results);
-        runningControllers.delete(id); // 提前返回前清理 AbortController（防任务计数泄漏）
-        return true;
       } else if (['paidTextToImage','paidImageToImage','paidTextToVideo','paidImageToVideo','paidCapability','bailianTextToImage'].includes(nt)) {
         const paid = useSettingsStore.getState();
         const legacyCapability = nt === 'paidImageToImage' ? 'image-to-image' : nt === 'paidTextToVideo' ? 'text-to-video' : nt === 'paidImageToVideo' ? 'image-to-video' : 'text-to-image';
@@ -644,7 +698,8 @@ export const useCanvasStore = create<Store>((set, get) => ({
         const variants = Math.max(1, Math.min(8, Number(config.variants) || 1));
         const styleId = String(config.style || '');
         const styleSuffix = styleId ? (getAllStyles().find(x => x.id === styleId)?.suffix || '') : '';
-        const rawPrompt = (String(config.prompt || node.data.inputValues?.prompt || node.data.inputValues?.text || '').trim()) + (styleSuffix ? `, ${styleSuffix}` : '');
+        const cameraSuffix = cameraMotionPrompt(String(config.cameraMotion || ''));
+        const rawPrompt = (String(config.prompt || node.data.inputValues?.prompt || node.data.inputValues?.text || '').trim()) + (styleSuffix ? `, ${styleSuffix}` : '') + (cameraSuffix ? `, ${cameraSuffix}` : '');
         if (!rawPrompt) throw new Error('请输入提示词，或连接文本节点到提示词输入端口');
         const imageUrl = String(node.data.inputValues?.image || node.data.inputValues?.firstImage || node.data.inputValues?.url || '');
         const lastImageUrl = String(node.data.inputValues?.lastImage || '');
@@ -667,7 +722,8 @@ export const useCanvasStore = create<Store>((set, get) => ({
         for (let v = 0; v < variants; v++) {
           // 每次执行重新展开占位符 {a|b|c}，得到不同变体
           const prompt = expandPromptVariants(rawPrompt);
-          const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: String(config.model || profile.selectedModel || ''), region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, {
+          const nodeCfg = (useSettingsStore.getState().paidApiNodes as any)?.[nt];
+          const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: String(config.model || profile.selectedModel || ''), region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer', ...(nodeCfg?.imagePath ? { imagePath: nodeCfg.imagePath } : {}), ...(nodeCfg?.videoPath ? { videoPath: nodeCfg.videoPath } : {}), ...(nodeCfg?.taskPath ? { taskPath: nodeCfg.taskPath } : {}), ...(nodeCfg?.capabilityPath ? { capabilityPath: nodeCfg.capabilityPath } : {}) }, {
             type,
             prompt,
             negativePrompt: String(config.negativePrompt || config.negative_prompt || ''),
@@ -872,27 +928,60 @@ export const useCanvasStore = create<Store>((set, get) => ({
             if (targetNode && targetNode.inputs) targetNode.inputs.image = uploaded;
           }
         }
+        // 上游视频/音频 → 上传 ComfyUI → 填入 LoadVideo/VHS_LoadVideo/LoadAudio 节点（同样需要数组格式）
+        for (const [nid, n] of Object.entries(prompt)) {
+          const ins = (n as any)?.inputs || {};
+          const ct = String((n as any)?.class_type || '');
+          const vInput = node.data.inputValues?.[nid] || node.data.inputValues?.video;
+          const aInput = node.data.inputValues?.[nid] || node.data.inputValues?.audio;
+          if ((/^LoadVideo/i.test(ct) || /^VHS_LoadVideo/i.test(ct) || /^VHS_VideoLoad/i.test(ct)) && vInput && typeof vInput === 'string') {
+            const uploaded = await uploadMediaToComfy(getApiBase(node.data.serverId), vInput, 'video');
+            if (ins.video !== undefined || Object.keys(ins).some(k => /video/i.test(k))) {
+              const key = Object.keys(ins).find(k => /video/i.test(k)) || 'video';
+              ins[key] = uploaded;
+            }
+          } else if ((/^LoadAudio/i.test(ct) || /^VHS_LoadAudio/i.test(ct)) && aInput && typeof aInput === 'string') {
+            const uploaded = await uploadMediaToComfy(getApiBase(node.data.serverId), aInput, 'audio');
+            if (ins.audio !== undefined || Object.keys(ins).some(k => /audio/i.test(k))) {
+              const key = Object.keys(ins).find(k => /audio/i.test(k)) || 'audio';
+              ins[key] = uploaded;
+            }
+          }
+        }
         // 上游文本 → 覆盖工作流的文本/prompt 参数（CLIPTextEncode 的 text / NunchakuSana 的 prompt 等）
-        const upstreamText = String(node.data.inputValues?.text || node.data.inputValues?.prompt || '').trim();
+        // 支持多个文本输入端口 text / text-1 / text-2 ...：按顺序覆盖工作流中非负向的 text/prompt 字段；
+        // 负向字段（含 negative）用 inputValues.negative 单独覆盖。
+        const textInputs: string[] = [];
+        const collectText = (v: unknown) => { const s = String(v ?? '').trim(); if (s) textInputs.push(s); };
+        collectText(node.data.inputValues?.text);
+        collectText(node.data.inputValues?.prompt);
+        for (let i = 1; i <= 8; i++) collectText(node.data.inputValues?.[`text-${i}`]);
         const upstreamNeg = String(node.data.inputValues?.negative || '').trim();
-        if (upstreamText) {
-          let textCovered = false; // 只覆盖第一个 text 字段（正向 CLIPTextEncode），避免负向/其它 text 被误覆盖
-          Object.entries(prompt).forEach(([nid, n]) => {
-            const ins = (n as any).inputs || {};
+        if (textInputs.length) {
+          let ti = 0; // 已使用的文本输入序号
+          // 收集所有可覆盖的正向提示词字段（text/prompt/value），负向字段用 inputValues.negative 单独覆盖
+          const targets: Array<{ node: any; field: string }> = [];
+          Object.entries(prompt).forEach(([, n]) => {
+            const ins = (n as any)?.inputs || {};
             Object.entries(ins).forEach(([f, v]) => {
               if (typeof v !== 'string') return;
-              if (/^text$/i.test(f)) { if (!textCovered) { ins[f] = upstreamText; textCovered = true; } }
-              else if (/^prompt$/i.test(f)) ins[f] = upstreamText; // 生成节点（NunchakuSana 等）的提示词字段
-              else if (/negative/i.test(f)) { if (upstreamNeg) ins[f] = upstreamNeg; } // 负面提示词端口 → 负向字段
+              if (isNegativePromptField(f, n, v)) { if (upstreamNeg) ins[f] = upstreamNeg; return; }
+              if (isPositivePromptField(f, n)) targets.push({ node: ins, field: f });
             });
           });
+          // 非占位字段优先（正向 CLIPTextEncode），占位字段（负向空格）最后填
+          targets.sort((a, b) => (String(a.node[a.field]).trim() === '' ? 1 : 0) - (String(b.node[b.field]).trim() === '' ? 1 : 0));
+          for (const t of targets) {
+            if (ti >= textInputs.length) break;
+            t.node[t.field] = textInputs[ti]; ti++;
+          }
         } else if (upstreamNeg) {
           // 只有负面提示词时也单独映射
-          Object.entries(prompt).forEach(([nid, n]) => {
-            const ins = (n as any).inputs || {};
+          Object.entries(prompt).forEach(([, n]) => {
+            const ins = (n as any)?.inputs || {};
             Object.entries(ins).forEach(([f, v]) => {
               if (typeof v !== 'string') return;
-              if (/negative/i.test(f)) ins[f] = upstreamNeg;
+              if (isNegativePromptField(f, n, v)) ins[f] = upstreamNeg;
             });
           });
         }
@@ -923,8 +1012,53 @@ export const useCanvasStore = create<Store>((set, get) => ({
         workflow_id = (config.workflow_id as string) || (config._apiName as string) || '';
         if (!workflow_id) { get().setNodeStatus(id, 'error', '未配置工作流API'); runningControllers.delete(id); return false; }
         Object.entries(config).forEach(([k, v]) => {
-          if (!k.startsWith('_') && k !== 'workflow_id' && typeof v !== 'object' && v !== null && v !== undefined && v !== '') {
+          if (!k.startsWith('_') && k !== 'workflow_id' && typeof v !== 'object' && v !== null && v !== undefined) {
             input_values[k] = v;
+          }
+        });
+        // ResolutionSelector 的 aspect_ratio 兼容：旧数据/手填可能是纯比例 "1:1" / "16:9"（无方向后缀），
+        // 补全成 ComfyUI 官方合法值（"1:1 (Square)" / "16:9 (Widescreen)"），否则服务器校验报 "Value not in list"（用户改比例后必现）
+        // 字段名是带节点前缀的 "115:aspect_ratio"（不是裸 aspect_ratio），需遍历所有键
+        const AR_MAP: Record<string, string> = {
+          '1:1': '1:1 (Square)', '2:3': '2:3 (Portrait Photo)', '3:2': '3:2 (Photo)', '3:4': '3:4 (Portrait Standard)',
+          '4:3': '4:3 (Standard)', '9:16': '9:16 (Portrait Widescreen)', '16:9': '16:9 (Widescreen)', '21:9': '21:9 (Ultrawide)',
+        };
+        for (const k of Object.keys(input_values)) {
+          if (!/:aspect_ratio$/.test(k) && k !== 'aspect_ratio') continue;
+          const ar = String(input_values[k] ?? '').trim();
+          if (/^(\d+(?:\.\d+)?\s*[:：xX]\s*\d+(?:\.\d+)?)$/.test(ar)) {
+            const norm = ar.replace(/\s+/g, '').replace(/[：xX]/g, ':');
+            input_values[k] = AR_MAP[norm] || ar;
+          }
+        }
+        // 通用 select 字段兼容：任何 type=select 的字段，若当前值不在合法选项里，
+        // 尝试按「前缀匹配」补全为完整选项值（如 "16:9" → "16:9 (Widescreen)"、"euler" → "euler" 已在列表则不动）。
+        // 覆盖 aspect_ratio 之外的其它 Combo 字段（ResolutionSelector 等），避免 "Value not in list"
+        ((config._apiFields as Array<{ key: string; type?: string; options?: Array<{ label: string; value: unknown }> }>) || []).forEach((f) => {
+          if (f.type !== 'select' || !Array.isArray(f.options) || !f.options.length) return;
+          const val = input_values[f.key];
+          if (val == null || typeof val !== 'string') return;
+          const v = val.trim();
+          if (!v) return;
+          const values = f.options.map(o => String(o.value));
+          if (values.includes(v)) return; // 已在列表，无需处理
+          // 前缀匹配：找一个选项以「当前值 + 分隔符」开头（如 "16:9" 匹配 "16:9 (Widescreen)"）
+          const hit = f.options.find(o => {
+            const ov = String(o.value);
+            return ov.startsWith(v + ' ') || ov.startsWith(v + '|') || ov.startsWith(v + '（') || ov.startsWith(v + '(') || ov.startsWith(v + ':');
+          }) || f.options.find(o => String(o.value).toLowerCase().startsWith(v.toLowerCase()));
+          if (hit) input_values[f.key] = String(hit.value);
+        });
+        // ComfyUI 校验：数字类型字段必须是 number（配置里可能是字符串 "1024"，或带描述的 "0.4 | 864 x 480"）
+        ((config._apiFields as Array<{ key: string; type?: string }>) || []).forEach((f) => {
+          if (f.type === 'number' && input_values[f.key] != null) {
+            let n = Number(input_values[f.key]);
+            // 兼容带描述字符串（megapixels 曾被存成 "0.4 | 864 x 480"）：提取前导数字
+            if (!Number.isFinite(n)) {
+              const m = String(input_values[f.key]).match(/^\s*(-?\d+(?:\.\d+)?)/);
+              if (m) n = Number(m[1]);
+            }
+            if (Number.isFinite(n)) input_values[f.key] = n;
           }
         });
         const fields = (config._apiFields as Array<{key:string;fileType?:string}>) || [];
@@ -944,7 +1078,11 @@ export const useCanvasStore = create<Store>((set, get) => ({
           const mediaValues = sourceResults.filter(r=>r.type===mediaType).map(r=>r.url);
           for (let index=0;index<mediaFields.length;index++) {
             const field=mediaFields[index];const direct=upstream[field.key];const value=direct??mediaValues[index]??upstream[mediaType]??upstream.url;
-            if(value!=null)input_values[field.key]=await bridgeMediaToInput(String(value),mediaType);
+            if(value!=null){
+              const bridged = await bridgeMediaToInput(String(value),mediaType,(node.data.serverId as string | undefined));
+              // 直连 ComfyUI 的 LoadImage 等节点 media 输入是字符串文件名（服务器实测：数组会被校验拒绝 'list' object has no attribute 'endswith'）；主控（control）也已自行适配字符串，一律不包数组
+              input_values[field.key] = bridged;
+            }
           }
         }
         // 所有非媒体字符串字段都可接收文本；不能只依赖 prompt/text 等字段名，
@@ -954,15 +1092,17 @@ export const useCanvasStore = create<Store>((set, get) => ({
           const direct=source.data.outputValues?.text ?? source.data.config?.text;
           return direct==null?[]:[String(direct)];
         });
-        textFields.forEach((field,index)=>{const isNeg=/negative/i.test(field.key);const value=upstream[field.key]??(isNeg?upstream['negative']:upstream['text'])??texts[index];if(value!=null)input_values[field.key]=`${settingText ? settingText+'\n\n' : ''}${String(value)}`});
+        textFields.forEach((field,index)=>{const isNeg=/negative/i.test(field.key);const portEdge = get().edges.find(e => e.target === id && (e.sourceHandle === field.key || e.sourceHandle === `text-${index}` || (!isNeg && e.sourceHandle === 'text')));const portSource = portEdge ? get().nodes.find(n => n.id === portEdge.source) : undefined;const portText = portSource ? String(portSource.data.outputValues?.text ?? portSource.data.config?.text ?? '') : '';const value = upstream[field.key] ?? portText ?? (isNeg ? upstream['negative'] : upstream[`text-${index}`] ?? upstream['text']) ?? texts[index];if (value != null && String(value) !== '') input_values[field.key]=`${settingText ? settingText+'\n\n' : ''}${String(value)}`});
+
+
       } else if (nt === 'imageToImage') {
         workflow_id = 'img2img-workflow';
-        if(node.data.inputValues?.image!=null)input_values['image']=await bridgeMediaToInput(node.data.inputValues.image,'image');
+        if(node.data.inputValues?.image!=null)input_values['image']=await bridgeMediaToInput(node.data.inputValues.image,'image',(node.data.serverId as string | undefined));
         input_values['prompt'] = config.prompt || node.data.inputValues?.prompt || '';
         input_values['strength'] = config.strength ?? 0.7;
       } else if (nt === 'videoGeneration') {
         workflow_id = 'txt2video-workflow';
-        if(node.data.inputValues?.image!=null)input_values['image']=await bridgeMediaToInput(node.data.inputValues.image,'image');
+        if(node.data.inputValues?.image!=null)input_values['image']=await bridgeMediaToInput(node.data.inputValues.image,'image',(node.data.serverId as string | undefined));
         input_values['prompt'] = config.prompt || node.data.inputValues?.prompt || '';
         input_values['duration'] = config.duration ?? 5;
       } else if (nt === 'textInput' || nt === 'scriptInput' || nt === 'sceneSettings' || nt === 'compare' || nt === 'asset' || nt === 'preview') {
@@ -981,10 +1121,16 @@ export const useCanvasStore = create<Store>((set, get) => ({
         try {
           const entry = NODE_MAP.get(nt);
           if (entry) { workflow_id = entry.workflowId; }
-          // 1) 上游节点的输出作为输入
+          // 1) 上游节点的输出作为输入（文本节点连接的 prompt/text 等）
           Object.assign(input_values, node.data.inputValues || {});
-          // 2) 用户配置覆盖
-          Object.assign(input_values, config);
+          // 2) 用户配置覆盖：仅当「上游已连接该字段（有非空值）且 config 为默认空值」时保留上游值，
+          //    否则文本节点连到 prompt 输入后，config 默认空 prompt 会把上游文本吞掉（"文本节点传不到下游"根因）；
+          //    config 为空且上游也没有该字段时照常写入空值（保持原行为，registry 文生图等节点不丢字段）
+          Object.entries(config).forEach(([k, v]) => {
+            const hasUpstream = input_values[k] !== undefined && input_values[k] !== null && String(input_values[k]) !== '';
+            if (hasUpstream && (v === '' || v === null || v === undefined)) return;
+            input_values[k] = v;
+          });
           // 合并 kv 参数
           Object.entries(config).forEach(([k, v]) => { if (k.includes(':')) input_values[k] = v; });
         } catch (error) { throw new Error(error instanceof Error ? error.message : '节点配置无效'); }
@@ -995,6 +1141,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
       for (const k of Object.keys(input_values)) {
         if (typeof input_values[k] === 'string') (input_values as Record<string, any>)[k] = expandPromptVariants(String(input_values[k]));
       }
+      try { const logs = (window as any).__submitLogs || []; logs.push({ t: Date.now(), wf: workflow_id, sid: node.data.serverId, input: JSON.stringify(input_values).slice(0, 2500) }); (window as any).__submitLogs = logs.slice(-20); } catch { /* ignore */ }
       const resp = await generate({ workflow_id, input_values }, node.data.serverId as string | undefined);
       get().updateNodeData(id, { promptId: resp.prompt_id });
       // 轮询结果

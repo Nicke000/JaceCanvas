@@ -53,9 +53,9 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 | 版本 | 内容 | 适合 |
 |------|------|------|
-| **纯安装版** `JaceCanvas Setup 4.6.8-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
-| **安装+内置开源** `JaceCanvas Setup 4.6.8.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
-| **纯开源** `JaceCanvas-4.6.8-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
+| **纯安装版** `JaceCanvas Setup 4.7.1-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
+| **安装+内置开源** `JaceCanvas Setup 4.7.1.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
+| **纯开源** `JaceCanvas-4.7.1-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
@@ -84,7 +84,7 @@ npm install
 ```batch
 cd desktop-app
 npm run build:web     # Vite 构建前端 → dist/
-npm run build         # electron-builder → release-v4.6.8/（内置 opensource，方案 B）
+npm run build         # electron-builder → release-v4.7.1/（内置 opensource，方案 B）
 ```
 
 - `npm run build` 会先自动生成 `opensource-resource`（完整源码 + node_modules）并作为 `resources/opensource` 打进安装包，安装版用户可用 DevAgent 改码。
@@ -179,7 +179,7 @@ desktop-app/
 ├── scripts/                 # 构建与打包脚本（prepare-opensource 等）
 ├── assets/                  # 图标、素材
 ├── config/                  # 提示词配置（.example.json 为开源模板）
-└── release-v4.6.8/          # 打包输出
+└── release-v4.7.1/          # 打包输出
 ```
 
 ---
@@ -208,7 +208,15 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📝 更新日志
 
-### v4.6.9（未发布 · 开发版）
+### v4.7.1（最新）
+- **导演台（3D 白模）大升级**：模型复制、无人机式 FPV 运镜录制（鼠标转向 + 键盘移动）、录制运镜同时采样模型/骨骼、关键帧删除后时间轴自动归一化、运镜速度/灯光/关键帧/机位退出持久化
+- **视频与媒体**：视频拖入画布不再被识别成封面图片（按 URL 扩展名修正类型）、视频缩略图封面显示优化
+- **付费 API**：补齐百炼 qwen-image-3.0/3.0-pro/2.0-pro、wan2.7 多图参考/视频编辑、happyhorse 1.1 系列等最新模型
+- **素材持久化**：修复素材保存目录切换（跨盘迁移、显示刷新）、素材不再误存 48h 缓存目录
+- **ComfyUI 直连端口**：修复 403/400 错误掩码、图片上传走主进程、带冒号子节点 id 的参数识别与提示词字段识别
+- **打包**：修复安装包桌面快捷方式图标与窗口图标不一致（ICO 损坏项剔除）
+
+### v4.6.9（已并入 v4.7.1）
 - **短剧工作室大升级**：角色卡管理、BGM/音效三轨混音、套路模板库、变体矩阵、数字人口播（对口型）、主控/非主控服务器分开、首图/首尾图生视频、分镜衔接上下文统一、退出不丢失（自动保存工作区）
 - **素材持久化**：设置 → 素材管理（自动保存/保存路径/清理天数/大小上限）、上传节点落盘本地 file://、历史默认隐藏失败记录
 - **UI/交互**：顶部提示词库、拖出自动生成预览/对比节点、连接磁吸、宽高常用尺寸快捷、执行列表点画布自动收起、历史卡片布局修复
@@ -218,7 +226,14 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 - **画布修复**：预览节点可连下游（多图/任意媒体）、负面提示词独立端口、主控性能优先 perfUrl、节点下载统一、启动恢复不丢项目、ConfigPanel 崩溃修复
 - **可靠性**：修复卸载保存回滚、项目 id 不同步、弹窗打开时误删画布、素材 0 值被覆盖等 60+ 项
 
-最新版本：**v4.6.8**（本轮大更新在开发版，待测试后发布）。更新内容见 GitHub Releases。
+最新版本：**v4.7.1**。更新内容见 GitHub Releases。
+
+---
+
+## 👥 贡献者
+
+- [Nicke000](https://github.com/Nicke000)（原作者与维护者）
+- [DeepSeek](https://www.deepseek.com)（AI 开发助手，参与本版功能开发与测试）
 
 ---
 

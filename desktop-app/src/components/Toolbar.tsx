@@ -77,7 +77,18 @@ function workflowFields(remote: Awaited<ReturnType<typeof fetchWorkflowConfig>>)
     if (Array.isArray(value)) return value.map(option => ({ label: String(option), value: String(option) }));
     if (field === 'sampler_name') return [{ label: 'Euler', value: 'euler' }, { label: 'Euler A', value: 'euler_ancestral' }, { label: 'DPM++ 2M', value: 'dpmpp_2m' }, { label: 'DPM++ SDE', value: 'dpmpp_sde' }, { label: 'DDIM', value: 'ddim' }];
     if (field === 'scheduler') return [{ label: 'Normal', value: 'normal' }, { label: 'Karras', value: 'karras' }, { label: 'Simple', value: 'simple' }, { label: 'Exponential', value: 'exponential' }];
-    if (field === 'aspect_ratio') return [{ label: '1:1', value: '1:1' }, { label: '9:16 竖屏', value: '9:16' }, { label: '16:9 横屏', value: '16:9' }, { label: '3:4', value: '3:4' }, { label: '4:3', value: '4:3' }];
+    // ResolutionSelector 的 aspect_ratio 合法值是 ComfyUI 官方预设（"宽:高 (描述)"），
+    // 描述是 Widescreen/Standard/Portrait Photo 等，不能自造（"16:9 (Landscape)" 会 Value not in list）
+    if (field === 'aspect_ratio') return [
+      { label: '1:1 方形', value: '1:1 (Square)' },
+      { label: '2:3 竖版照片', value: '2:3 (Portrait Photo)' },
+      { label: '3:2 照片', value: '3:2 (Photo)' },
+      { label: '3:4 竖版标准', value: '3:4 (Portrait Standard)' },
+      { label: '4:3 标准', value: '4:3 (Standard)' },
+      { label: '9:16 竖版宽屏', value: '9:16 (Portrait Widescreen)' },
+      { label: '16:9 宽屏', value: '16:9 (Widescreen)' },
+      { label: '21:9 超宽屏', value: '21:9 (Ultrawide)' },
+    ];
     return undefined;
   };
   return Object.keys(enabled).filter(key => enabled[key]).map(key => {
@@ -89,7 +100,14 @@ function workflowFields(remote: Awaited<ReturnType<typeof fetchWorkflowConfig>>)
     const boolValue = typeof value === 'boolean' || /^(true|false)$/i.test(String(value ?? ''));
     const numberValue = typeof value === 'number';
     const options = optionsFor(field, node.inputs?.[field]?.options || node.inputs?.[field]?.values);
-    return { key, label: labels[key] || field, value, field, nodeTitle: node._meta?.title || `节点 ${nodeId}`, fileType, type: boolValue ? 'boolean' : numberValue ? 'number' : options?.length ? 'select' : 'text', options };
+    // 优先用服务器 object_info 的真实合法值（Combo 字段），覆盖硬编码（aspect_ratio 等全部适用）
+    const nodeOpts = remote.nodeOptions?.[String(node.class_type || '')]?.[field];
+    const realOptions = nodeOpts?.options && nodeOpts.options.length
+      ? nodeOpts.options.map(o => ({ label: String(o), value: String(o) }))
+      : undefined;
+    const finalOptions = realOptions || options;
+    // 有合法选项列表的字段优先 select（megapixels 等虽是数字但合法值是带描述字符串，必须下拉选择不能手填数字）
+    return { key, label: labels[key] || field, value, field, nodeTitle: node._meta?.title || `节点 ${nodeId}`, fileType, type: boolValue ? 'boolean' : finalOptions?.length ? 'select' : numberValue ? 'number' : 'text', options: finalOptions };
   });
 }
 

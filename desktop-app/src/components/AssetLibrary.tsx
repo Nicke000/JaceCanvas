@@ -4,6 +4,8 @@ import { PictureOutlined, VideoCameraOutlined, FileTextOutlined, AudioOutlined, 
   UserOutlined, EnvironmentOutlined, ToolOutlined, BgColorsOutlined, TagsOutlined,
   InboxOutlined, DeleteOutlined, UploadOutlined, EditOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { Lightbox, type LightboxItem } from '@/components/Lightbox';
+import { MediaThumb } from '@/components/MediaThumb';
 import { downloadMedia } from '@/utils/downloadMedia';
 import { loadAssetsAsync, saveAssets, type AssetEntry } from '@/utils/generationHistory';
 
@@ -31,6 +33,13 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
   const [editNameId, setEditNameId] = useState<string|null>(null);
   const [nameInput, setNameInput] = useState('');
   const addNode = useCanvasStore(s => s.addNode);
+  const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
+  // 资产实际媒体类型：条目 type 可能标错（视频被标成 image），按 URL 扩展名兜底修正
+  const assetMediaType = (a: AssetItem): 'image' | 'video' | 'audio' | 'text' | '3d' => {
+    if (a.type !== 'image') return a.type;
+    if (a.url && /\.(mp4|webm|mov|mkv|avi|m4v)(?:[?#]|$)/i.test(String(a.url).split('?')[0])) return 'video';
+    return a.type;
+  };
 
   useEffect(() => { void loadAssetsAsync().then(list => setAssets(list as unknown as AssetItem[])); }, []);
   const save = (a:AssetItem[]) => { setAssets(a); saveAssets(a as unknown as AssetEntry[]); };
@@ -116,19 +125,21 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
           <InboxOutlined style={{fontSize:24,marginBottom:8,display:'block'}}/>
           拖拽文件到此处<br/>归入「{CATS.find(c=>c.key===cat)?.label}」
         </div>)}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
         {filtered.map(a=>(<div key={a.id} draggable
-          onDragStart={e=>{e.dataTransfer.setData('asset-id',a.id);e.dataTransfer.setData('asset-url',a.url||'');e.dataTransfer.setData('application/ai-asset',JSON.stringify({id:a.id,name:a.name,type:a.type,url:a.url}));e.dataTransfer.effectAllowed='copy';}}
+          onDragStart={e=>{e.dataTransfer.setData('asset-id',a.id);e.dataTransfer.setData('asset-url',a.url||'');e.dataTransfer.setData('application/ai-asset',JSON.stringify({id:a.id,name:a.name,type:assetMediaType(a),url:a.url}));e.dataTransfer.effectAllowed='copy';}}
           className="asset-card"
-          style={{padding:6,borderRadius:8,cursor:'grab',marginBottom:4,border:'1px solid var(--theme-border)',
+          onDoubleClick={() => setLightbox({ url: a.url, type: assetMediaType(a), name: a.name })}
+          style={{padding:6,borderRadius:8,cursor:'grab',border:'1px solid var(--theme-border)',minWidth:0,
             fontSize:11,color:'var(--theme-text)'}}>
-          {a.type==='image'&&a.url ? <img src={a.url} style={{width:'100%',height:90,borderRadius:6,objectFit:'cover',marginBottom:4}} alt=""/> :
-           a.type==='video' && a.url ? <video src={a.url} muted playsInline style={{width:'100%',height:90,borderRadius:6,objectFit:'contain',background:'var(--theme-input)',marginBottom:4}}/> : a.type==='video' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-input)',
+          {assetMediaType(a)==='image'&&a.url ? <MediaThumb url={a.url} type="image" style={{width:'100%',height:90,borderRadius:6,marginBottom:4}} /> :
+           assetMediaType(a)==='video' && a.url ? <MediaThumb url={a.url} type="video" style={{width:'100%',height:90,borderRadius:6,marginBottom:4}} /> : assetMediaType(a)==='video' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-input)',
              display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><VideoCameraOutlined style={{fontSize:24,color:'var(--theme-muted)'}}/></div> :
-           a.type==='3d' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-surface-2)',
+           assetMediaType(a)==='3d' ? <div style={{width:'100%',height:70,borderRadius:6,background:'var(--theme-surface-2)',
              display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4,color:'var(--theme-text-3)',fontSize:11}}>3D</div> :
            <div style={{width:'100%',height:50,borderRadius:6,background:'var(--theme-input)',
              display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4}}><FileTextOutlined style={{fontSize:20,color:'var(--theme-muted)'}}/></div>}
-          {editNameId===a.id?<Input size="small" value={nameInput} autoFocus onChange={e=>setNameInput(e.target.value)} onPressEnter={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}} onBlur={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}}/>:<div title="双击重命名" onDoubleClick={()=>{setEditNameId(a.id);setNameInput(a.name)}} style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>{a.name.length>20?a.name.slice(0,20)+'...':a.name}</div>}
+          {editNameId===a.id?<Input size="small" value={nameInput} autoFocus onChange={e=>setNameInput(e.target.value)} onPressEnter={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}} onBlur={()=>{if(nameInput.trim())save(assets.map(x=>x.id===a.id?{...x,name:nameInput.trim()}:x));setEditNameId(null)}}/>:<div title="点击重命名" onClick={e=>{e.stopPropagation();setEditNameId(a.id);setNameInput(a.name)}} style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>{a.name.length>20?a.name.slice(0,20)+'...':a.name}</div>}
           <div style={{display:'flex',flexWrap:'wrap',gap:2,marginBottom:3}}>
             {a.tags.map(t=>(<Tag key={t} closable style={{fontSize:9,margin:0,padding:'0 4px',lineHeight:'16px'}}
               onClose={e=>{e.preventDefault();removeTag(a.id,t);}}>{t}</Tag>))}
@@ -143,7 +154,9 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
             <span style={{display:'flex',gap:8}}><DownloadOutlined title="保存到本机" style={{fontSize:11,color:'#60a5fa',cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveAsset(a)}}/><EditOutlined title="重命名" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setEditNameId(a.id);setNameInput(a.name)}}/><DeleteOutlined title="删除" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();save(assets.filter(x=>x.id!==a.id));}}/></span>
           </div>
         </div>))}
+        </div>
       </div>
+      <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 };

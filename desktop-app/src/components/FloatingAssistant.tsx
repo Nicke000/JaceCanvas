@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Paperclip, Video, Sparkles } from 'lucide-react';
 import { sendChat, fetchModelsFromApi, type ChatAttachment, type ChatTurn } from '@/services/chat.service';
+import { resolveAttachmentUrl } from '@/utils/chatAttachments';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 type Msg = { role: 'user' | 'ai'; text: string };
@@ -90,7 +91,7 @@ export const FloatingAssistant: React.FC<{ hidden?: boolean }> = ({ hidden }) =>
     const text = input.trim(); if ((!text && !attachments.length) || busy) return;
     setMessages(m => [...m, { role: 'user', text: text || '（附件）' }]);
     setInput(''); setBusy(true);
-    const sent = attachments; setAttachments([]);
+    const sent = await Promise.all(attachments.map(resolveAttachmentUrl)); setAttachments([]);
     try {
       const history: ChatTurn[] = messages.filter(m => m.role === 'user').map(m => ({ role: 'user', content: m.text }));
       const result = await sendChat(text, sent, history, undefined, { model: selectedModel || undefined, thinkingMode: settings.chatThinkingMode, onChunk: () => {} });

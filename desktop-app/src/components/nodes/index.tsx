@@ -4,22 +4,26 @@ import { parseWorkflowParams, defaultParamVisible, workflowPorts, workflowImageI
 import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { CanvasNodeData } from '@/types';
-import { useCanvasStore } from '@/stores/canvasStore';
+import { useCanvasStore, cachePaidMedia } from '@/stores/canvasStore';
 import { downsampleImage } from '@/utils/imageUtils';
 import { downloadMedia } from '@/utils/downloadMedia';
-import { getApiBase, uploadFile, type ResultItem } from '@/services/comfyui.service';
+import { getApiBase, uploadFile, type ResultItem, fetchWorkflows, fetchWorkflowConfig, generate, pollResult, uploadImageToComfy } from '@/services/comfyui.service';
+import { comfyWS } from '@/services/comfyui-ws.service';
 import { mediaFilesFromDrop, mediaTypeForFile } from '@/utils/fileDrop';
 import { PromptActions } from '@/components/PromptActions';
+import { MediaThumb } from '@/components/MediaThumb';
 import { CINEMATOGRAPHY_EFFECTS, EFFECT_GROUPS, formatEffects } from '@/config/cinematographyKnowledge';
 import { optimizePrompt } from '@/services/promptOptimizer.service';
 import { message, Modal, Input, Button } from 'antd';
 import { useSettingsStore, type PaidApiNodeSettings } from '@/stores/settingsStore';
 import { fetchModelsFromApi, sendChat, type ChatAttachment, type ChatTurn } from '@/services/chat.service';
-import { ASPECT_RATIOS, PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
+import { ASPECT_RATIOS, PAID_CAPABILITIES, type PaidCapability, callPaidApi } from '@/services/paidApi.service';
 import { ModelViewer } from '../ModelViewer';
+import { DirectorStage3D } from '../DirectorStage3D';
 import { callPaidManage, type PaidManageItem } from '@/services/paidApi.service';
 import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
 import { getAllStyles, saveCustomStyle, deleteCustomStyle } from '@/config/stylePresets';
+import { CAMERA_MOTIONS } from '@/config/cameraMotions';
 import { getSupportedPaidCapabilities, PAID_CAPABILITY_LABELS } from '@/config/paidCapabilityCatalog';
 import { PAID_API_ADAPTERS, getPaidModelsForAdapter, getPaidProvidersForCapability, type PaidProviderId } from '@/config/paidApiAdapters';
 import { BAILIAN_RATIO_OPTIONS, BAILIAN_RESOLUTION_OPTIONS, BAILIAN_VIDEO_RATIO_OPTIONS, BAILIAN_VIDEO_RESOLUTION_OPTIONS } from '@/services/bailianTextToImage.service';
@@ -27,6 +31,7 @@ import { generateId, saveChatSession } from '@/utils';
 import { UserRound, Mic, Music, Video, Paperclip, Type as TypeIcon, Image as ImageIcon, Plug, WandSparkles } from 'lucide-react';
 import { NodeIcon } from '@/config/nodeIcons';
 import { getBailianImageSize } from '@/services/bailianTextToImage.service';
+import { portTypeColor } from '@/utils/portColor';
 
 const ST: Record<string, { bg: string; icon: string; glow: string }> = {
   idle:    { bg: '#444', icon: '\u25CB', glow: '#444' },
@@ -42,7 +47,7 @@ const DIMS = [{ l:'512',w:512,h:512 },{ l:'HD',w:768,h:1136 },{ l:'FHD',w:1080,h
 type PortSpec = { id:string; label:string; type?:string };
 type SP = { data: any; id: string; selected: boolean; icon?: React.ReactNode; color: string; hasInput?: boolean; hasOutput?: boolean; inputs?:PortSpec[]; outputs?:PortSpec[]; resizable?: boolean; hideExec?: boolean; children?: React.ReactNode };
 
-const portColor=(type?:string)=>type==='text'?'#a78bfa':type==='video'?'#f472b6':type==='audio'?'var(--theme-warning)':type==='3d'?'#34d399':'#38bdf8';
+const portColor = portTypeColor;
 const openTextEditor=(nodeId:string,field:string,value:string,label:string,kind:'text'|'script'|'scene')=>window.dispatchEvent(new CustomEvent('ai-canvas-open-text-editor',{detail:{nodeId,field,value,label,kind}}));
 
 function formatDuration(ms?: number) {
@@ -62,12 +67,35 @@ export const VideoTrimNode = memo((p: NodeProps) => {
   const [meta, setMeta] = useState({ duration: 0, fps: Number(d.config?.fps) || 30 });
   const [range, setRange] = useState({ start: Number(d.config?.startFrame) || 0, end: Number(d.config?.endFrame) || 0 });
   const [busy, setBusy] = useState(false);
-  const [outputs, setOutputs] = useState<{clip?:string;firstFrame?:string;lastFrame?:string}>({});
+  const [outputs, setOutputs] = useState<{clip?:string;firstFrame?:string;lastFrame?:string;regenerated?:string}>({});
+  const [regenerating, setRegenerating] = useState(false);
+  const [splicing, setSplicing] = useState(false);
+  const [restyling, setRestyling] = useState(false);
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const [regenDuration, setRegenDuration] = useState(5); // 片段重生成时长（秒）
+  const [originalPrompt, setOriginalPrompt] = useState(''); // 片段所属视频的原提示词（可选，AI 分析时结合）
+  const [analyzing, setAnalyzing] = useState(false);
+  const [regenEngine, setRegenEngine] = useState<'paid' | 'comfyui'>('paid');
+  const [regenWorkflow, setRegenWorkflow] = useState('');
+  const [regenWorkflows, setRegenWorkflows] = useState<Array<{ id: string; name: string }>>([]);
+  // 工作流的图片输入字段候选 + 用户指定的首帧/尾帧字段（避免自定义节点首尾错乱）
+  const [regenImgKeys, setRegenImgKeys] = useState<string[]>([]);
+  const [firstKey, setFirstKey] = useState('');
+  const [lastKey, setLastKey] = useState('');
+  const [restylePrompt, setRestylePrompt] = useState('');
+  const [restyleFps, setRestyleFps] = useState(4); // 抽帧修图帧率
   const frame = 1 / Math.max(1, meta.fps);
   const maxFrame = Math.max(0, Math.round(meta.duration * meta.fps) - 1);
   const setFrame = (key: 'start'|'end', value: number) => {
     const next = Math.max(0, Math.min(maxFrame, Math.round(value)));
-    setRange(r => { const n = key === 'start' ? {start:Math.min(next,r.end||maxFrame),end:r.end} : {start:r.start,end:Math.max(next,r.start+1)}; update(p.id,{config:{...d.config,startFrame:n.start,endFrame:n.end,fps:meta.fps}}); return n; });
+    setRange(r => {
+      const n = key === 'start' ? {start:Math.min(next,r.end||maxFrame),end:r.end} : {start:r.start,end:Math.max(next,r.start+1)};
+      update(p.id,{config:{...d.config,startFrame:n.start,endFrame:n.end,fps:meta.fps}});
+      // 预览：拖动入点/出点时，让视频跳到对应帧，直观看到截取位置（不再只能靠进度条）
+      const v = ref.current;
+      if (v && meta.fps > 0) { try { v.currentTime = Math.min((key === 'start' ? n.start : n.end) / meta.fps, v.duration || Number.MAX_SAFE_INTEGER); } catch { /* ignore */ } }
+      return n;
+    });
   };
   const download = (url: string, name: string) => { const a=document.createElement('a');a.href=url;a.download=name;a.click(); };
   const exportAll = async () => {
@@ -79,6 +107,199 @@ export const VideoTrimNode = memo((p: NodeProps) => {
       const next={clip:result.clip,firstFrame:result.firstFrame,lastFrame:result.lastFrame}; setOutputs(next);
       const values={clip:result.clip,firstFrame:result.firstFrame,lastFrame:result.lastFrame}; useCanvasStore.getState().updateNodeData(p.id,{outputValues:values,results:[{type:'video',url:result.clip,filename:'trimmed.mp4'},{type:'image',url:result.firstFrame,filename:'first-frame.png'},{type:'image',url:result.lastFrame,filename:'last-frame.png'}],resultUrl:result.clip,status:'success',error:undefined}); Object.entries(values).forEach(([k,val])=>useCanvasStore.getState().propagateData(p.id,k,val));
     } catch (e) { useCanvasStore.getState().updateNodeData(p.id,{error:e instanceof Error?e.message:'导出失败',status:'error'}); } finally { setBusy(false); }
+  };
+  // 拉取 ComfyUI 工作流列表（首尾帧生视频节点选择用）
+  const ensureRegenWorkflows = async () => {
+    if (regenWorkflows.length) return;
+    try { const list = await fetchWorkflows(); setRegenWorkflows(list.map(w => ({ id: w.id, name: w.name || w.id }))); } catch { /* 忽略 */ }
+  };
+  // 选中工作流后：分析出图片输入字段候选，默认首=第一个、尾=第二个，用户可手动改（避免自定义节点首尾错乱）
+  const onSelectRegenWorkflow = async (id: string) => {
+    setRegenWorkflow(id);
+    if (!id) { setRegenImgKeys([]); setFirstKey(''); setLastKey(''); return; }
+    try {
+      const wf = await fetchWorkflowConfig(id).catch(() => null);
+      const keys = Object.keys(wf?.api_config?.enabledParams || {}).filter(k => wf?.api_config?.enabledParams?.[k]);
+      const byClassOrName = keys.filter(k => {
+        const [nodeId, field] = k.split(':');
+        const node = wf?.workflow_template?.[nodeId];
+        const cls = String(node?.class_type || '').toLowerCase();
+        return cls.includes('loadimage') || /image|reference|first|last|file|path/i.test(field);
+      });
+      const fallback = keys.filter(k => { const [nodeId, field] = k.split(':'); return /image|img|reference|input_image|first/i.test(field) || String(nodeId).includes('Image'); });
+      const all = Array.from(new Set([...byClassOrName, ...fallback]));
+      setRegenImgKeys(all);
+      setFirstKey(all[0] || '');
+      setLastKey(all.length > 1 ? all[1] : (all[0] || ''));
+    } catch { setRegenImgKeys([]); setFirstKey(''); setLastKey(''); }
+  };
+  // AI 分析首尾帧 + 用户提示词/原提示词 → 生成片段提示词
+  const analyzeClip = async () => {
+    if (!outputs.firstFrame || !outputs.lastFrame) { message.warning('请先截取片段（拿到首尾帧）'); return; }
+    setAnalyzing(true);
+    try {
+      const api = (window as any).electronAPI;
+      const toData = async (url: string) => {
+        try { const r = await api?.loadMediaB64?.({ url }); return r?.b64 ? `data:${r.mime || 'image/png'};base64,${r.b64}` : url; } catch { return url; }
+      };
+      const first = await toData(outputs.firstFrame);
+      const last = await toData(outputs.lastFrame);
+      const attachments: ChatAttachment[] = [
+        { name: 'first-frame.png', mimeType: 'image/png', dataUrl: first },
+        { name: 'last-frame.png', mimeType: 'image/png', dataUrl: last },
+      ];
+      const draft = regenPrompt.trim();
+      const orig = originalPrompt.trim();
+      let context = '';
+      if (draft) context += `用户对片段修改的初步提示词（请在其基础上完善，保留用户意图）：\n${draft}\n\n`;
+      if (orig) context += `该片段所属视频的原始提示词（供参考，保持风格/主体一致）：\n${orig}\n\n`;
+      const res = await sendChat(
+        `${context}这是视频片段的「首帧」和「尾帧」两张图。请分析画面内容（人物、场景、动作、光线、镜头），生成一段适合「首尾帧图生视频」的英文提示词，描述从首帧画面过渡到尾帧画面的动作与运镜。只输出提示词本身，不要任何解释。`,
+        attachments, [], undefined,
+        { systemPrompt: '你是专业视频提示词设计师，擅长把首尾帧图片转成图生视频提示词（英文，含主体、动作过渡、镜头运动、光影）。' }
+      );
+      const text = String(res?.text || '').trim();
+      if (!text) throw new Error('AI 未返回提示词');
+      setRegenPrompt(text);
+      message.success('已生成片段提示词');
+    } catch (e: any) { message.error('AI 分析失败：' + String(e?.message || e)); }
+    finally { setAnalyzing(false); }
+  };
+  // 构建 ComfyUI 工作流输入：文本字段填提示词，首帧/尾帧字段由用户指定（避免自定义节点首尾错乱）
+  const buildComfyRegenInput = async (workflowId: string, prompt: string, firstKey: string, lastKey: string): Promise<Record<string, unknown>> => {
+    const wf = await fetchWorkflowConfig(workflowId).catch(() => null);
+    const input: Record<string, unknown> = {};
+    const keys = Object.keys(wf?.api_config?.enabledParams || {}).filter(k => wf?.api_config?.enabledParams?.[k]);
+    const textKey = keys.find(k => {
+      const [nodeId, field] = k.split(':');
+      const v = wf?.workflow_template?.[nodeId]?.inputs?.[field];
+      return typeof v === 'string';
+    }) || keys[0];
+    if (textKey) input[textKey] = prompt;
+    // 图片字段：LoadImage 类节点需上传后填文件名（远程 ComfyUI 也能读到）；其他节点直接填 URL
+    const fillImage = async (key: string, imageUrl: string) => {
+      const [nodeId] = key.split(':');
+      const cls = String(wf?.workflow_template?.[nodeId]?.class_type || '').toLowerCase();
+      if (cls.includes('loadimage')) {
+        const api = (window as any).electronAPI;
+        let dataUrl = imageUrl;
+        try { const r = await api?.loadMediaB64?.({ url: imageUrl }); if (r?.b64) dataUrl = `data:${r.mime || 'image/png'};base64,${r.b64}`; } catch { /* 保留原 URL */ }
+        const st = useSettingsStore.getState();
+        const base = getApiBase(st.activeServerId || st.servers[0]?.id) || '';
+        const name = await uploadImageToComfy(base, dataUrl);
+        input[key] = name;
+      } else {
+        input[key] = imageUrl;
+      }
+    };
+    if (firstKey) await fillImage(firstKey, outputs.firstFrame!);
+    if (lastKey) await fillImage(lastKey, outputs.lastFrame!);
+    if (!Object.keys(input).length) input['93:text'] = prompt;
+    return input;
+  };
+  // 首尾帧重生成：按首尾帧重生成该片段（本地版 seedance 片段修改），支持付费 API / ComfyUI 工作流
+  const regenerate = async () => {
+    if (!outputs.firstFrame || !outputs.lastFrame) { message.warning('请先截取片段（拿到首尾帧）'); return; }
+    setRegenerating(true);
+    try {
+      const prompt = regenPrompt.trim() || '平滑衔接首尾帧，保持人物与场景一致';
+      let cached: string;
+      if (regenEngine === 'comfyui') {
+        if (!regenWorkflow) throw new Error('请选择首尾帧生视频的 ComfyUI 工作流');
+        if (!firstKey) throw new Error('请指定工作流的「首帧」输入字段');
+        if (!lastKey) throw new Error('请指定工作流的「尾帧」输入字段');
+        const inputValues = await buildComfyRegenInput(regenWorkflow, prompt, firstKey, lastKey);
+        const st = useSettingsStore.getState();
+        const serverId = st.activeServerId || st.servers[0]?.id;
+        const resp = await generate({ workflow_id: regenWorkflow, input_values: inputValues }, serverId);
+        const result = await pollResult(resp.prompt_id, undefined, 3000, undefined, undefined, serverId);
+        const url = result.data?.[0]?.url;
+        if (!url) throw new Error('工作流未返回视频');
+        cached = await cachePaidMedia(url, 'video');
+      } else {
+        const paid = useSettingsStore.getState();
+        const providerDef = (getPaidProvidersForCapability('image-to-video') || []).find(ad => paid.paidApiProviders?.[ad.id]?.apiKey);
+        const provider = providerDef?.id || '';
+        const profile = provider ? paid.paidApiProviders?.[provider] : undefined;
+        if (!provider || !profile?.apiKey) throw new Error('请先在设置 → 付费 API 配置一个支持「图生视频」的厂商');
+        const model = profile.selectedModel || (profile.models || [])[0] || '';
+        if (!model) throw new Error('请选择该厂商的视频模型');
+        // 首尾帧是本地 file://，需转成 data:image 才能被远程付费 API 读取（否则必失败）
+        const api = (window as any).electronAPI;
+        let firstImage = outputs.firstFrame, lastImage = outputs.lastFrame;
+        try {
+          const f1 = await api?.loadMediaB64?.({ url: outputs.firstFrame });
+          if (f1?.b64) firstImage = `data:${f1.mime || 'image/png'};base64,${f1.b64}`;
+          const f2 = await api?.loadMediaB64?.({ url: outputs.lastFrame });
+          if (f2?.b64) lastImage = `data:${f2.mime || 'image/png'};base64,${f2.b64}`;
+        } catch { /* 回退原始 URL */ }
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-video', imageUrl: firstImage, lastImageUrl: lastImage, prompt, duration: regenDuration });
+        if (!result.url) throw new Error('视频接口未返回地址');
+        cached = await cachePaidMedia(result.url, 'video');
+      }
+      setOutputs(prev => ({ ...prev, regenerated: cached }));
+      useCanvasStore.getState().updateNodeData(p.id, { outputValues: { clip: outputs.clip, firstFrame: outputs.firstFrame, lastFrame: outputs.lastFrame, regenerated: cached }, results: [{ type: 'video', url: cached, filename: 'regenerated.mp4' }, { type: 'image', url: outputs.firstFrame, filename: 'first-frame.png' }, { type: 'image', url: outputs.lastFrame, filename: 'last-frame.png' }], resultUrl: cached, status: 'success', error: undefined });
+      useCanvasStore.getState().propagateData(p.id, 'regenerated', cached);
+      addGenerationHistory({ id: 'video-trim-regen-' + Date.now(), nodeId: p.id, nodeName: d.label || '视频剪辑', nodeType: 'videoTrim', params: { prompt: regenPrompt, engine: regenEngine, workflow: regenWorkflow }, resultUrl: cached, results: [{ type: 'video', url: cached }], status: 'success', timestamp: Date.now() });
+      message.success('首尾帧重生成完成');
+    } catch (e: any) {
+      useCanvasStore.getState().updateNodeData(p.id, { error: e?.message || '重生成失败', status: 'error' });
+    } finally { setRegenerating(false); }
+  };
+  // 替换回原视频：用重生成片段替换原视频的 [startFrame, endFrame]，拼接回完整视频
+  const spliceBack = async () => {
+    const newClip = outputs.regenerated || outputs.clip;
+    if (!newClip) { message.warning('请先截取片段（或首尾帧重生成）'); return; }
+    const api = (window as any).electronAPI;
+    if (!api?.ffmpegSplice) throw new Error('请使用 Electron 桌面版执行 FFmpeg 替换');
+    setSplicing(true);
+    try {
+      const result = await api.ffmpegSplice({ input: exportInput, newClip, fps: meta.fps, startFrame: range.start, endFrame: range.end || maxFrame });
+      useCanvasStore.getState().updateNodeData(p.id, { outputValues: { ...d.outputValues, spliced: result.url }, results: [{ type: 'video', url: result.url, filename: 'spliced.mp4' }], resultUrl: result.url, status: 'success', error: undefined });
+      useCanvasStore.getState().propagateData(p.id, 'spliced', result.url);
+      message.success('片段已替换回原视频（已保留原音频）');
+    } catch (e: any) {
+      useCanvasStore.getState().updateNodeData(p.id, { error: e?.message || '替换失败', status: 'error' });
+    } finally { setSplicing(false); }
+  };
+  // 抽帧修图重合成：片段抽帧 → 逐帧图生图修改 → 合成回视频
+  const restyleFrames = async () => {
+    const clip = outputs.clip;
+    if (!clip) { message.warning('请先截取片段'); return; }
+    const paid = useSettingsStore.getState();
+    const providerDef = (getPaidProvidersForCapability('image-to-image') || []).find(ad => paid.paidApiProviders?.[ad.id]?.apiKey);
+    const provider = providerDef?.id || '';
+    const profile = provider ? paid.paidApiProviders?.[provider] : undefined;
+    if (!provider || !profile?.apiKey) throw new Error('请先在设置 → 付费 API 配置一个支持「图生图/图片编辑」的厂商');
+    const model = profile.selectedModel || (profile.models || [])[0] || '';
+    if (!model) throw new Error('请选择该厂商的图片模型');
+    const api = (window as any).electronAPI;
+    if (!api?.ffmpegExtractFrames || !api?.ffmpegFramesToVideo) throw new Error('请使用 Electron 桌面版执行抽帧修图');
+    setRestyling(true);
+    try {
+      const ext = await api.ffmpegExtractFrames({ input: clip, fps: restyleFps });
+      const frames: string[] = Array.isArray(ext?.frames) ? ext.frames : [];
+      if (frames.length < 2) throw new Error('抽帧数不足（视频过短）');
+      const restyled: string[] = [];
+      for (let i = 0; i < frames.length; i++) {
+        let imageUrl = frames[i];
+        try {
+          const b64 = await api.loadMediaB64?.({ url: frames[i] });
+          if (b64?.b64) imageUrl = `data:${b64.mime || 'image/png'};base64,${b64.b64}`;
+        } catch { /* 回退直接传帧 URL */ }
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-image', imageUrl, prompt: restylePrompt.trim() || '保持画面与人物一致，统一风格' });
+        if (!result.url) throw new Error(`第 ${i + 1} 帧修图未返回结果`);
+        const cached = await cachePaidMedia(result.url, 'image');
+        restyled.push(cached);
+        useCanvasStore.getState().updateNodeData(p.id, { content: `抽帧修图 ${i + 1}/${frames.length}` });
+      }
+      const composed = await api.ffmpegFramesToVideo({ frames: restyled, fps: ext?.fps || restyleFps });
+      useCanvasStore.getState().updateNodeData(p.id, { outputValues: { ...d.outputValues, restyled: composed.url }, results: [{ type: 'video', url: composed.url, filename: 'restyled.mp4' }], resultUrl: composed.url, status: 'success', content: `抽帧修图完成 · ${frames.length} 帧`, error: undefined });
+      useCanvasStore.getState().propagateData(p.id, 'restyled', composed.url);
+      message.success(`抽帧修图重合成完成 · ${frames.length} 帧`);
+    } catch (e: any) {
+      useCanvasStore.getState().updateNodeData(p.id, { error: e?.message || '抽帧修图失败', status: 'error' });
+    } finally { setRestyling(false); }
   };
   const chooseVideo = () => fileInputRef.current?.click();
   const onChooseVideo = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -99,7 +320,7 @@ export const VideoTrimNode = memo((p: NodeProps) => {
     event.target.value = '';
   };
   useEffect(()=>{ setOutputs({}); if(!input)return; },[input]);
-  return <NodeShell {...p} color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'}]} resizable>
+  return <NodeShell {...p} color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'},{id:'regenerated',label:'重生成片段',type:'video'},{id:'spliced',label:'替换后视频',type:'video'},{id:'restyled',label:'抽帧修图视频',type:'video'}]} resizable>
     <div className="video-trim-node">
       {input?<video ref={ref} src={input} controls playsInline className="video-trim-preview" onLoadedMetadata={e=>{const v=e.currentTarget;const duration=v.duration||0;setMeta(m=>({duration,fps:m.fps}));setRange(r=>({start:Math.min(r.start,Math.max(0,Math.round(duration*meta.fps)-1)),end:r.end||Math.max(1,Math.round(duration*meta.fps)-1)}));}}/>:<div className="video-trim-empty">连接视频、从素材库拖入，或选择本地文件</div>}
       <button className="nodrag" onClick={chooseVideo} style={{marginBottom:5,fontSize:10}}>选择本地视频</button><input ref={fileInputRef} hidden type="file" accept="video/*,.mp4,.mov,.mkv,.avi,.webm" onChange={onChooseVideo}/>
@@ -107,6 +328,58 @@ export const VideoTrimNode = memo((p: NodeProps) => {
       <input className="video-trim-range" type="range" min={0} max={maxFrame||1} value={range.start} onChange={e=>setFrame('start',Number(e.target.value))}/><input className="video-trim-range" type="range" min={1} max={maxFrame||1} value={Math.max(1,range.end||1)} onChange={e=>setFrame('end',Number(e.target.value))}/>
       <div className="video-trim-controls"><button className="nodrag" onClick={()=>setFrame('start',range.start-1)}>入点 −1帧</button><button className="nodrag" onClick={()=>setFrame('start',range.start+1)}>入点 +1帧</button><button className="nodrag" onClick={()=>setFrame('end',(range.end||1)-1)}>出点 −1帧</button><button className="nodrag" onClick={()=>setFrame('end',(range.end||1)+1)}>出点 +1帧</button></div>
       <div className="video-trim-actions"><button className="nodrag video-trim-primary" disabled={!input||busy} onClick={exportAll}>{busy?'FFmpeg 导出中…':'截取并生成 MP4 输出'}</button>{outputs.clip&&<button className="nodrag" onClick={()=>download(outputs.clip!,'trimmed.mp4')}>下载 MP4</button>}{outputs.firstFrame&&<button className="nodrag" onClick={()=>download(outputs.firstFrame!,'first-frame.png')}>首帧</button>}{outputs.lastFrame&&<button className="nodrag" onClick={()=>download(outputs.lastFrame!,'last-frame.png')}>尾帧</button>}</div>
+      {outputs.firstFrame && outputs.lastFrame && <div className="video-trim-regen">
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>引擎</span>
+          <select value={regenEngine} onChange={e => setRegenEngine(e.target.value as 'paid' | 'comfyui')} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }}>
+            <option value="paid">付费 API</option>
+            <option value="comfyui">ComfyUI 工作流</option>
+          </select>
+          {regenEngine === 'comfyui' && (
+            <select value={regenWorkflow} onChange={e => void onSelectRegenWorkflow(e.target.value)} onFocus={() => void ensureRegenWorkflows()} style={{ flex: 1, minWidth: 120, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }}>
+              <option value="">选择首尾帧生视频工作流…</option>
+              {regenWorkflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          )}
+        </div>
+        {regenEngine === 'comfyui' && regenImgKeys.length > 0 && (
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', fontSize: 10, color: 'var(--theme-muted)' }}>
+            <span>首帧字段</span>
+            <select value={firstKey} onChange={e => setFirstKey(e.target.value)} style={{ flex: 1, minWidth: 100, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }}>
+              {regenImgKeys.map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
+            <span>尾帧字段</span>
+            <select value={lastKey} onChange={e => setLastKey(e.target.value)} style={{ flex: 1, minWidth: 100, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }}>
+              {regenImgKeys.map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </div>
+        )}
+        {regenEngine === 'comfyui' && regenWorkflow && regenImgKeys.length === 0 && (
+          <div style={{ fontSize: 9, color: 'var(--theme-warning)', marginBottom: 4 }}>未识别到该工作流的图片输入字段，请确认工作流已启用图片输入参数。</div>
+        )}
+        <input value={regenPrompt} onChange={e => setRegenPrompt(e.target.value)} placeholder="片段提示词（可手写，或点「AI 分析生成」）" style={{ width: '100%', marginBottom: 4, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 4, fontSize: 10 }} />
+        <input value={originalPrompt} onChange={e => setOriginalPrompt(e.target.value)} placeholder="原视频提示词（可选，AI 分析时结合）" style={{ width: '100%', marginBottom: 4, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 4, fontSize: 10 }} />
+        {regenEngine === 'paid' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, fontSize: 10, color: 'var(--theme-muted)' }}>
+            <span>时长(秒)</span>
+            <input type="number" min={1} max={30} step={1} value={regenDuration} onChange={e => setRegenDuration(Math.max(1, Math.min(30, Number(e.target.value) || 5)))} style={{ width: 56, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }} />
+          </label>
+        )}
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <button className="nodrag" disabled={analyzing || regenerating || splicing} onClick={() => void analyzeClip()}>{analyzing ? 'AI 分析中…' : 'AI 分析生成提示词'}</button>
+          <button className="nodrag" disabled={regenerating || splicing} onClick={() => void regenerate()}>{regenerating ? '重生成中…' : '首尾帧重生成此片段'}</button>
+          {(outputs.regenerated || outputs.clip) && <button className="nodrag" disabled={regenerating || splicing} onClick={() => void spliceBack()}>{splicing ? '替换中…' : '替换回原视频'}</button>}
+        </div>
+      </div>}
+      {outputs.clip && <div className="video-trim-regen">
+        <input value={restylePrompt} onChange={e => setRestylePrompt(e.target.value)} placeholder="修图提示词（如：转成动漫风格 / 保持人物一致）" style={{ width: '100%', marginBottom: 4, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 4, fontSize: 10 }} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, fontSize: 10, color: 'var(--theme-muted)' }}>
+          <span>帧率</span>
+          <input type="number" min={1} max={12} step={1} value={restyleFps} onChange={e => setRestyleFps(Math.max(1, Math.min(12, Number(e.target.value) || 4)))} style={{ width: 48, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }} />
+          <span>fps（越高越精细、越慢）</span>
+        </label>
+        <button className="nodrag" disabled={restyling || regenerating || splicing} onClick={() => void restyleFrames()}>{restyling ? '抽帧修图中…' : '抽帧修图重合成（逐帧风格化）'}</button>
+      </div>}
     </div>
   </NodeShell>;
 });
@@ -361,9 +634,21 @@ export const LocalWorkflowNode = memo((p: NodeProps) => {
   const activeServerId = useSettingsStore(s => s.activeServerId);
   const meta = React.useMemo(() => parseWorkflowParams(cfg.workflowJson), [cfg.workflowJson]);
   const ports = React.useMemo(() => workflowPorts(cfg.workflowJson), [cfg.workflowJson]);
+  // 控制面板备注过的参数 → 节点端口显示备注名（text 端口按字段顺序对应 paramNotes）
+  const notes = (cfg.paramNotes || {}) as Record<string, string>;
+  const posParams = React.useMemo(() => parseWorkflowParams(cfg.workflowJson).filter((p: any) => /^text$/i.test(p.field) || (/prompt/i.test(p.field) && !/negative/i.test(p.field))), [cfg.workflowJson]);
+  const labeledInputs = React.useMemo(() => {
+    let ti = 0;
+    return ports.inputs.map(port => {
+      if (port.type !== 'text') return port;
+      const note = notes[posParams[ti]?.key];
+      ti += 1;
+      return note ? { ...port, label: note } : port;
+    });
+  }, [ports.inputs, notes, posParams]);
   const origin = originTag(servers, d.serverId, activeServerId);
   // 绑定端口的节点：NodeShell 已显示端口名（node-server-badge），这里只补「未绑定」提示，避免重复标签
-  return <NodeShell {...p} color="#0ea5e9" inputs={ports.inputs} outputs={ports.outputs}>
+  return <NodeShell {...p} color="#0ea5e9" inputs={labeledInputs} outputs={ports.outputs}>
     {!d.serverId && <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
       <span title="未绑定端口（执行时跟随当前服务器）" style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, color: '#fff', background: origin.color, fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>跟随：{origin.label}</span>
       <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>{meta.length} 参数</span>
@@ -533,8 +818,8 @@ export const AssetNode = memo((p: NodeProps) => {
   const value=(d.outputValues?.[type]??d.outputValues?.url) as string;
   return <NodeShell {...p} icon={type==='video'?<Video size={15}/>:type==='audio'?<Music size={15}/>:type==='text'?<TypeIcon size={15}/>:<ImageIcon size={15}/>} color="#0ea5e9" hasInput={false} outputs={[{id:type,label:type==='text'?'文本':'素材',type}]}>
     <div className="asset-node-type">{type==='image'?'图片':type==='video'?'视频':type==='audio'?'音频':'文字'}素材</div>
-    {type==='image'&&value&&<img loading="lazy" src={value} className="asset-node-media" alt=""/>}
-    {type==='video'&&value&&<video src={value} className="asset-node-media" muted/>}
+    {type==='image'&&value&&<MediaThumb url={value} type="image" className="asset-node-media" style={{ width: '100%', height: 120 }} />}
+    {type==='video'&&value&&<MediaThumb url={value} type="video" className="asset-node-media" style={{ width: '100%', height: 120 }} />}
     {type==='audio'&&value&&<audio src={value} controls style={{width:'100%'}}/>}
     {type==='text'&&<div className="asset-node-text">{value||'空文本'}</div>}
     <div className="asset-node-hint">从右侧端口连接到工作流</div>
@@ -571,24 +856,22 @@ export const UploadNode = memo((p: NodeProps) => {
       const serverBase=getApiBase(p.data.serverId as string | undefined);
       for(let i=0;i<files.length;i++){
         const file=files[i];
-        let url=''; let filename=file.name;
+        let url=''; let filename=file.name; let remoteUrl='';
+        // 始终先保存本地副本到素材目录（file:// 永久有效，切服务器/重装不丢），再尝试上传服务器
+        const b64=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>{const raw=String(reader.result);if(file.type.startsWith('image/')){void downsampleImage(raw).then(resolve);}else{resolve(raw);}};reader.readAsDataURL(file);});
+        try{
+          const saved=await (window as any).electronAPI?.saveLocalFile?.({b64,filename,dir:useSettingsStore.getState().assetSavePath||undefined});
+          if(saved?.url){url=saved.url;}
+        }catch{/* 保存失败回退 base64 */}
+        if(!url)url=b64;
         if(serverBase){
           try{
             const name=await uploadFile(file);
-            url=`${getApiBase(p.data.serverId as string | undefined)}/api/comfy/view?filename=${encodeURIComponent(name)}&type=input`;
-            filename=name;
-          }catch{ url=''; }
+            remoteUrl=`${getApiBase(p.data.serverId as string | undefined)}/api/comfy/view?filename=${encodeURIComponent(name)}&type=input`;
+            if(!filename || filename===file.name) filename=name;
+          }catch{/* 服务器上传失败：本地副本仍可用 */}
         }
-        if(!url){
-          // 本地模式：优先保存到本地素材目录（file:// 永久有效、记住路径，下次打开可加载），失败才回退 base64
-          const b64=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>{const raw=String(reader.result);if(file.type.startsWith('image/')){void downsampleImage(raw).then(resolve);}else{resolve(raw);}};reader.readAsDataURL(file);});
-          try{
-            const saved=await (window as any).electronAPI?.saveLocalFile?.({b64,filename,dir:useSettingsStore.getState().assetSavePath||undefined});
-            if(saved?.url){url=saved.url;}
-          }catch{/* 保存失败回退 base64 */}
-          if(!url)url=b64;
-        }
-        results.push({type:mediaTypeForFile(file),url,filename});
+        results.push({type:mediaTypeForFile(file),url,remoteUrl,filename});
         store.updateNodeData(p.id,{progress:Math.round((i+1)/files.length*100),content:`正在读取 ${i+1}/${files.length}`});
         setUploadProgress(Math.round((i+1)/files.length*100));
       }
@@ -825,6 +1108,12 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
       {!isAudio && !is3d && <div style={{fontSize:9,color:'var(--theme-muted)',marginTop:3}}>{isBailian && isVideo ? `输出规格：${resolution}P · ${ratio}（官方 resolution / ratio）` : `输出分辨率：${Number(cfg.width)||1024} × ${Number(cfg.height)||1024}`}</div>}
       {!isAudio && !is3d && <div style={{display:'flex',gap:5,marginTop:5,fontSize:10,color:'var(--theme-text-2)',alignItems:'center'}}><label>种子 <input className="nodrag" type="number" min="-1" value={Number.isFinite(Number(cfg.seed)) ? Number(cfg.seed) : -1} onChange={e=>update(p.id,{seed:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /></label><label>变体 <input className="nodrag" type="number" min="1" max="8" value={Number(cfg.variants)||1} onChange={e=>update(p.id,{variants:Math.max(1,Math.min(8,Number(e.target.value)))})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} title="一次生成 N 个变体（提示词中可用 {a|b|c}）" /></label>{isVideo && <label>时长 <input className="nodrag" type="number" min="1" max="60" value={Number(cfg.duration)||5} onChange={e=>update(p.id,{duration:Number(e.target.value)})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> 秒</label>}{isVideo && isBailian && <label>分辨率 <select className="nodrag" value={resolution} onChange={e=>update(p.id,{resolution:Number(e.target.value)})} style={{width:68,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,fontSize:10}}>{videoResolutionOptions.map(value=><option key={value} value={value}>{value}P</option>)}</select></label>}</div>}
       {isVideo && <div style={{marginTop:5,fontSize:10,color:'var(--theme-text-2)'}}>帧率 <input className="nodrag" type="number" min="1" max="120" value={Number(cfg.frameRate)||24} onChange={e=>update(p.id,{frameRate:Number(e.target.value)})} style={{width:48,margin:'0 4px',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> fps</div>}
+      {isVideo && <div style={{display:'flex',gap:4,marginTop:5,alignItems:'center',fontSize:10,color:'var(--theme-text-2)'}}>
+        <span>运镜</span>
+        <select className="nodrag" value={String(cfg.cameraMotion || '')} onChange={e=>update(p.id,{cameraMotion:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,padding:3,fontSize:10}}>
+          {CAMERA_MOTIONS.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
+        </select>
+      </div>}
   </NodeShell>
       {styleModal && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setStyleModal(false)}>
@@ -985,6 +1274,212 @@ export const ImageCropNode = memo((p: NodeProps) => {
   </NodeShell>;
 });
 
+/* === Inpaint 局部重绘：涂抹蒙版 → 图生图/ComfyUI inpaint 工作流 === */
+export const InpaintNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const update = useCanvasStore(s => s.setNodeConfig);
+  const inputImage = String(d.inputValues?.image || d.config?.sourceImage || '');
+  const [brushSize, setBrushSize] = useState(Number(d.config?.brushSize) || 24);
+  const [engine, setEngine] = useState<'paid' | 'comfyui'>('paid');
+  const [workflow, setWorkflow] = useState('');
+  const [workflows, setWorkflows] = useState<Array<{ id: string; name: string }>>([]);
+  const [generating, setGenerating] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const drawingRef = useRef(false);
+  const lastPosRef = useRef<{ x: number; y: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const prompt = String(d.config?.prompt || '');
+
+  const initCanvas = () => {
+    const img = imgRef.current, canvas = canvasRef.current;
+    if (!img || !canvas) return;
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (ctx) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+  };
+  const pointFromEvent = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current; if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * canvas.width / Math.max(1, rect.width), y: (e.clientY - rect.top) * canvas.height / Math.max(1, rect.height) };
+  };
+  const drawDot = (x: number, y: number) => {
+    const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, brushSize, 0, Math.PI * 2); ctx.fill();
+  };
+  const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // 阻止冒泡到 React Flow（节点拖动/画布拖拽），并阻止默认行为（图片拖拽/文本选择）
+    e.stopPropagation(); e.preventDefault(); drawingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId);
+    const pt = pointFromEvent(e); if (pt) { drawDot(pt.x, pt.y); lastPosRef.current = pt; }
+  };
+  const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    if (!drawingRef.current) return;
+    const pt = pointFromEvent(e); const ctx = canvasRef.current?.getContext('2d');
+    if (pt && lastPosRef.current && ctx) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = brushSize * 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+      lastPosRef.current = pt;
+    }
+  };
+  const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => { e.stopPropagation(); drawingRef.current = false; lastPosRef.current = null; };
+  const ensureWorkflows = async () => { if (workflows.length) return; try { const list = await fetchWorkflows(); setWorkflows(list.map(w => ({ id: w.id, name: w.name || w.id }))); } catch { /* 忽略 */ } };
+  const toDataUrl = async (url: string): Promise<string> => {
+    if (url.startsWith('data:')) return url;
+    try { const r = await (window as any).electronAPI?.loadMediaB64?.({ url }); if (r?.b64) return `data:${r.mime || 'image/png'};base64,${r.b64}`; } catch { /* 忽略 */ }
+    return url;
+  };
+  const run = async () => {
+    const canvas = canvasRef.current, img = imgRef.current;
+    if (!canvas || !img || !inputImage) { message.warning('请先导入图片'); return; }
+    const maskDataUrl = canvas.toDataURL('image/png');
+    const imageDataUrl = await toDataUrl(inputImage);
+    const ptext = prompt.trim() || '修复涂抹区域，与周围画面自然融合';
+    setGenerating(true);
+    try {
+      let url = '';
+      if (engine === 'comfyui') {
+        if (!workflow) throw new Error('请选择 ComfyUI 局部重绘(inpaint)工作流');
+        const wf = await fetchWorkflowConfig(workflow).catch(() => null);
+        const input: Record<string, unknown> = {};
+        const keys = Object.keys(wf?.api_config?.enabledParams || {}).filter(k => wf?.api_config?.enabledParams?.[k]);
+        const textKey = keys.find(k => { const [n, f] = k.split(':'); return typeof wf?.workflow_template?.[n]?.inputs?.[f] === 'string'; }) || keys[0];
+        if (textKey) input[textKey] = ptext;
+        const imgKeys = keys.filter(k => { const [n, f] = k.split(':'); const cls = String(wf?.workflow_template?.[n]?.class_type || '').toLowerCase(); return cls.includes('loadimage') || /image|img|reference/i.test(f); });
+        const maskKeys = keys.filter(k => { const [n, f] = k.split(':'); const cls = String(wf?.workflow_template?.[n]?.class_type || '').toLowerCase(); return /mask/i.test(f) || cls.includes('mask'); });
+        if (!imgKeys.length) throw new Error('未识别到该工作流的图片输入字段');
+        const st = useSettingsStore.getState(); const base = getApiBase(st.activeServerId || st.servers[0]?.id) || ''; const sid = st.activeServerId || st.servers[0]?.id;
+        input[imgKeys[0]] = await uploadImageToComfy(base, imageDataUrl);
+        if (maskKeys.length && maskKeys[0]) input[maskKeys[0]] = await uploadImageToComfy(base, maskDataUrl);
+        else if (imgKeys.length > 1 && imgKeys[1]) input[imgKeys[1]] = await uploadImageToComfy(base, maskDataUrl);
+        const resp = await generate({ workflow_id: workflow, input_values: input }, sid);
+        const result = await pollResult(resp.prompt_id, undefined, 3000, undefined, undefined, sid);
+        url = result.data?.[0]?.url || '';
+        if (url) url = await cachePaidMedia(url, 'image');
+      } else {
+        const paid = useSettingsStore.getState();
+        const providerDef = (getPaidProvidersForCapability('image-to-image') || []).find(ad => paid.paidApiProviders?.[ad.id]?.apiKey);
+        const provider = providerDef?.id || ''; const profile = provider ? paid.paidApiProviders?.[provider] : undefined;
+        if (!provider || !profile?.apiKey) throw new Error('请先配置支持图生图的付费 API 厂商');
+        const model = profile.selectedModel || (profile.models || [])[0] || '';
+        if (!model) throw new Error('请选择图片模型');
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-image', imageUrl: imageDataUrl, prompt: `${ptext}（只修改白色蒙版覆盖的区域，其余区域保持完全不变）` });
+        if (!result.url) throw new Error('接口未返回结果');
+        url = await cachePaidMedia(result.url, 'image');
+      }
+      if (!url) throw new Error('未返回结果');
+      useCanvasStore.getState().updateNodeData(p.id, { resultUrl: url, outputValues: { image: url }, results: [{ type: 'image', url }], status: 'success', error: undefined });
+      useCanvasStore.getState().propagateData(p.id, 'image', url);
+      addGenerationHistory({ id: 'inpaint-' + Date.now(), nodeId: p.id, nodeName: String(d.label || '局部重绘'), nodeType: 'inpaint', params: { prompt: ptext }, resultUrl: url, results: [{ type: 'image', url }], status: 'success', timestamp: Date.now() });
+      autoSaveToAssets(url, [{ type: 'image', url }], String(d.label || '局部重绘'));
+      message.success('局部重绘完成');
+    } catch (e: any) { useCanvasStore.getState().updateNodeData(p.id, { error: e?.message || '失败', status: 'error' }); }
+    finally { setGenerating(false); }
+  };
+  const chooseImage = () => fileInputRef.current?.click();
+  const onChooseImage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; if (!file) return;
+    if (!file.type.startsWith('image/')) { message.error('请选择图片文件'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = String(reader.result); const img = new Image();
+      img.onload = () => { const MAX = 2048; const s = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight)); if (s >= 1) { update(p.id, { sourceImage: raw }); return; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s); const cx = c.getContext('2d'); if (!cx) { update(p.id, { sourceImage: raw }); return; } cx.drawImage(img, 0, 0, c.width, c.height); update(p.id, { sourceImage: c.toDataURL('image/jpeg', 0.92) }); };
+      img.src = raw;
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+
+  return <NodeShell {...p} color="#22d3ee" inputs={[{ id: 'image', label: '输入图片', type: 'image' }, { id: 'prompt', label: '重绘指令', type: 'text' }]} outputs={[{ id: 'image', label: '结果图片', type: 'image' }]} resizable>
+    <div className="nodrag" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#22d3ee', marginBottom: 4 }}>
+      <span style={{ flex: 1 }}>局部重绘（涂抹要修改的区域）</span>
+      <button onClick={chooseImage} style={{ border: '1px solid rgba(34,211,238,.55)', background: 'rgba(34,211,238,.14)', color: '#22d3ee', borderRadius: 4, fontSize: 9, padding: '2px 6px', cursor: 'pointer' }}>选择图片</button>
+      <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onChooseImage} />
+    </div>
+    {inputImage ? <>
+      <img ref={imgRef} src={inputImage} alt="" style={{ display: 'none' }} onLoad={initCanvas} />
+      <div className="nodrag" style={{ position: 'relative', width: 'fit-content', maxWidth: '100%', margin: '0 auto', borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(34,211,238,.35)', marginBottom: 5 }}>
+        <img src={inputImage} alt="" draggable={false} style={{ display: 'block', maxWidth: '100%', maxHeight: 260, width: 'auto', height: 'auto' }} />
+        <canvas ref={canvasRef} className="nodrag nopan" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.55, cursor: 'crosshair', touchAction: 'none' }} />
+      </div>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, fontSize: 10, color: 'var(--theme-muted)' }}>
+        <span>画笔</span>
+        <input type="range" min={4} max={120} value={brushSize} onChange={e => { setBrushSize(Number(e.target.value)); update(p.id, { brushSize: Number(e.target.value) }); }} style={{ flex: 1 }} />
+        <span>{brushSize}px</span>
+        <button className="nodrag" onClick={initCanvas} style={{ border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-2)', borderRadius: 4, fontSize: 9, padding: '2px 6px', cursor: 'pointer' }}>清除</button>
+      </div>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+        <select value={engine} onChange={e => setEngine(e.target.value as 'paid' | 'comfyui')} style={{ background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 3, fontSize: 10 }}>
+          <option value="paid">付费 API</option>
+          <option value="comfyui">ComfyUI 工作流</option>
+        </select>
+        {engine === 'comfyui' && <select value={workflow} onChange={e => setWorkflow(e.target.value)} onFocus={() => void ensureWorkflows()} style={{ flex: 1, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 3, fontSize: 10 }}><option value="">选 inpaint 工作流…</option>{workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select>}
+      </div>
+      <input className="nodrag" value={prompt} onChange={e => update(p.id, { prompt: e.target.value })} placeholder="重绘指令（如：把头发改成金色）" style={{ width: '100%', marginBottom: 4, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 4, fontSize: 10 }} />
+      <button className="nodrag" disabled={generating} onClick={() => void run()} style={{ fontSize: 10, padding: '3px 12px', borderRadius: 4, border: '1px solid #22d3ee', background: 'rgba(34,211,238,.2)', color: '#22d3ee', cursor: 'pointer' }}>{generating ? '生成中…' : '执行局部重绘'}</button>
+      {d.resultUrl && <img src={d.resultUrl} alt="结果" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', display: 'block', marginTop: 6, objectFit: 'contain' }} />}
+    </> : <div style={{ fontSize: 9, color: 'var(--theme-muted)', padding: 8, textAlign: 'center' }}>点击「选择图片」导入，或从左侧连接图片到输入端口</div>}
+  </NodeShell>;
+});
+
+export const InterpolateNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const update = useCanvasStore(s => s.setNodeConfig);
+  const input = String(d.inputValues?.video || d.inputValues?.url || d.config?.videoUrl || d.config?.assetUrl || d.resultUrl || '');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [interpolating, setInterpolating] = useState(false);
+  const [fps, setFps] = useState(Number(d.config?.fps) || 60);
+  const download = (url: string, name: string) => { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); };
+  const chooseVideo = () => fileInputRef.current?.click();
+  const onChooseVideo = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('video/')) { useCanvasStore.getState().updateNodeData(p.id, { status: 'error', error: '请选择视频文件' }); return; }
+    try {
+      const api = (window as any).electronAPI;
+      if (api?.saveLocalAsset) {
+        const saved = await api.saveLocalAsset({ name: file.name, folder: 'interpolate', data: await file.arrayBuffer() });
+        update(p.id, { videoUrl: saved.url, videoPath: saved.path, videoName: file.name });
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => update(p.id, { videoUrl: String(reader.result), videoName: file.name });
+        reader.readAsDataURL(file);
+      }
+    } catch (error) { useCanvasStore.getState().updateNodeData(p.id, { status: 'error', error: error instanceof Error ? error.message : '视频读取失败' }); }
+    event.target.value = '';
+  };
+  const run = async () => {
+    if (!input) { message.warning('请先连接或选择视频'); return; }
+    const api = (window as any).electronAPI;
+    if (!api?.ffmpegInterpolate) throw new Error('请使用 Electron 桌面版执行补帧');
+    setInterpolating(true);
+    try {
+      const result = await api.ffmpegInterpolate({ input, fps });
+      useCanvasStore.getState().updateNodeData(p.id, { outputValues: { video: result.url }, results: [{ type: 'video', url: result.url, filename: 'interpolated.mp4' }], resultUrl: result.url, status: 'success', error: undefined });
+      useCanvasStore.getState().propagateData(p.id, 'video', result.url);
+      addGenerationHistory({ id: 'interpolate-' + Date.now(), nodeId: p.id, nodeName: String(d.label || '视频补帧'), nodeType: 'interpolate', params: { fps }, resultUrl: result.url, results: [{ type: 'video', url: result.url }], status: 'success', timestamp: Date.now() });
+      message.success(`补帧完成 · ${result.fps} FPS`);
+    } catch (e: any) {
+      useCanvasStore.getState().updateNodeData(p.id, { error: e?.message || '补帧失败', status: 'error' });
+    } finally { setInterpolating(false); }
+  };
+  return <NodeShell {...p} color="#34d399" inputs={[{ id: 'video', label: '输入视频', type: 'video' }]} outputs={[{ id: 'video', label: '补帧视频', type: 'video' }]} resizable>
+    <div className="nodrag" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#34d399', marginBottom: 4 }}>
+      <span style={{ flex: 1 }}>视频补帧（本地 minterpolate 插值）</span>
+      <button onClick={chooseVideo} style={{ border: '1px solid rgba(52,211,153,.55)', background: 'rgba(52,211,153,.14)', color: '#34d399', borderRadius: 4, fontSize: 9, padding: '2px 6px', cursor: 'pointer' }}>选择视频</button>
+      <input ref={fileInputRef} type="file" accept="video/*,.mp4,.mov,.mkv,.avi,.webm" hidden onChange={onChooseVideo} />
+    </div>
+    {input ? <video src={input} controls playsInline className="video-trim-preview" style={{ maxHeight: 160, width: '100%', borderRadius: 6, marginBottom: 5 }} /> : <div style={{ fontSize: 9, color: 'var(--theme-muted)', padding: 8, textAlign: 'center' }}>连接视频、拖入素材，或点击「选择视频」</div>}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 5, fontSize: 10, color: 'var(--theme-muted)' }}>
+      <span>补帧到</span>
+      <input type="number" min={24} max={120} step={1} value={fps} onChange={e => { const v = Math.max(24, Math.min(120, Number(e.target.value) || 60)); setFps(v); update(p.id, { fps: v }); }} style={{ width: 52, background: 'var(--theme-input)', color: 'var(--theme-text)', border: '1px solid var(--theme-border)', borderRadius: 4, padding: 2, fontSize: 10 }} />
+      <span>fps（无需模型）</span>
+    </div>
+    <button className="nodrag" disabled={interpolating || !input} onClick={() => void run()} style={{ fontSize: 10, padding: '3px 12px', borderRadius: 4, border: '1px solid #34d399', background: 'rgba(52,211,153,.2)', color: '#34d399', cursor: 'pointer' }}>{interpolating ? '补帧中…' : '开始补帧（视频更丝滑）'}</button>
+    {d.resultUrl && <video src={d.resultUrl} controls playsInline style={{ maxHeight: 160, width: '100%', borderRadius: 6, display: 'block', marginTop: 6 }} />}
+  </NodeShell>;
+});
+
 export const ImageGenerationNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
   const w=(d.config?.width as number)||768, h=(d.config?.height as number)||1136;
@@ -1020,17 +1515,45 @@ export const VideoGenerationNode = memo((p: NodeProps) => {
   </NodeShell>;
 });
 
+/* === 视频封面预览：默认显示首帧封面（不自动播放、省资源），点击后播放完整视频 === */
+export const VideoCoverPreview: React.FC<{ url: string; filename?: string; className?: string }> = ({ url, filename, className }) => {
+  const [playing, setPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // 切换 URL 时重置为封面态
+  useEffect(() => { setPlaying(false); }, [url]);
+  useEffect(() => {
+    if (playing && videoRef.current) { videoRef.current.play().catch(() => undefined); }
+  }, [playing]);
+  if (playing) {
+    return <video ref={videoRef} src={url} controls autoPlay className={className || 'preview-main'} style={{ width: '100%', maxHeight: '100%', borderRadius: 7, background: '#000' }} onEnded={() => setPlaying(false)} />;
+  }
+  return (
+    <div className={className || 'preview-main'} onClick={e => { e.stopPropagation(); setPlaying(true); }}
+      style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 120, cursor: 'pointer', background: '#070910', borderRadius: 7, overflow: 'hidden' }}>
+      <video src={`${url}#t=0.1`} muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', width: 48, height: 48, borderRadius: '50%', background: 'rgba(0,0,0,.55)', border: '2px solid rgba(255,255,255,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, color: '#fff', backdropFilter: 'blur(4px)' }}>▶</div>
+      <div style={{ position: 'absolute', left: 6, top: 6, fontSize: 10, color: '#fff', background: 'rgba(0,0,0,.5)', borderRadius: 4, padding: '1px 6px' }}>{filename ? filename.split('/').pop()?.split('\\').pop() : '视频'}</div>
+    </div>
+  );
+};
+
 /* === Preview === */
 export const PreviewNode = memo((p: NodeProps) => {
   const d = p.data as unknown as CanvasNodeData;
   const [selected, setSelected] = useState(0);
   const [grid, setGrid] = useState(false);
+  const [stageOpen, setStageOpen] = useState(false);
   const updateStyle=useCanvasStore(u=>u.updateNodeStyle);
   const mediaRef=useRef<HTMLImageElement|HTMLVideoElement|null>(null);
   const raw=(d.inputValues?.results||d.results||[]) as Array<{type:string;url:string;filename?:string}>;
   const fallbackUrl=(d.inputValues?.image||d.inputValues?.video||d.inputValues?.audio||d.inputValues?.text||d.inputValues?.media||d.inputValues?.input||d.inputValues?.url) as string;
   const fallbackType=d.inputValues?.video?'video':d.inputValues?.audio?'audio':d.inputValues?.text?'text':mediaKind(String(fallbackUrl||''));
-  const results=raw.length?raw:(fallbackUrl?[{type:fallbackType,url:fallbackUrl}]:[]);
+  // 结果类型按 URL 扩展名兜底修正：历史/上游可能把视频标成 image（导致视频预览不了、只能下载）
+  const fixResultType = (r: { type: string; url: string; filename?: string }): { type: string; url: string; filename?: string } => {
+    if (!/\.(mp4|webm|mov|mkv|avi|m4v)(?:[?#]|$)/i.test(String(r.url).split('?')[0])) return r;
+    return r.type === 'video' ? r : { ...r, type: 'video' };
+  };
+  const results=(raw.length?raw:[...((fallbackUrl?[{type:fallbackType,url:fallbackUrl}]:[]))]).map(fixResultType);
   const index=Math.min(selected,Math.max(0,results.length-1)); const current=results[index];
   useEffect(()=>{if(selected>=results.length)setSelected(0)},[results.length,selected]);
   useEffect(()=>{
@@ -1070,20 +1593,22 @@ export const PreviewNode = memo((p: NodeProps) => {
   return <NodeShell {...p} color="#22c55e" hasInput={false} inputs={[{id:'media',label:'图片/视频/结果',type:'media'}]} outputs={resultOutputs} hasOutput resizable>
     <div className="preview-content">
       {current && <button className="preview-download nodrag" onClick={download}>↓ 下载</button>}
+      {current?.type === '3d' && <button className="preview-mode nodrag" onClick={e => { e.stopPropagation(); setStageOpen(true); }}>🎬 导演台</button>}
+      {stageOpen && current?.type === '3d' && <DirectorStage3D url={current.url} onClose={() => setStageOpen(false)} />}
       {results.length > 1 && <button className="preview-mode nodrag" onClick={e => { e.stopPropagation(); setGrid(g => !g); }}>{grid ? '单图' : '网格对比'}</button>}
       {!current && !grid ? <div className="preview-empty">连接生成或素材节点以预览</div>
         : grid ? (
           <div className="preview-grid">
             {results.map((item, i) => item.type === 'image'
-              ? <img key={`${item.url}-${i}`} src={item.url} className="preview-grid__img" alt={item.filename || ''} onClick={e => { e.stopPropagation(); setSelected(i); setGrid(false); }} title={item.filename || `结果 ${i + 1}`} />
+              ? <MediaThumb key={`${item.url}-${i}`} url={item.url} type="image" className="preview-grid__img" onPreview={e => { e?.stopPropagation(); setSelected(i); setGrid(false); }} />
               : <div key={`${item.url}-${i}`} className="preview-grid__item">{item.type === 'video' ? '▶ 视频' : item.type === 'audio' ? '♪ 音频' : item.type === '3d' ? '🧊 3D' : 'T 文本'} {i + 1}</div>)}
           </div>
-        ) : current.type === 'video' ? <video ref={element => { mediaRef.current = element; }} src={current.url} controls className="preview-main" />
+        ) : current.type === 'video' ? <VideoCoverPreview url={current.url} filename={current.filename} />
           : current.type === 'audio' ? <audio src={current.url} controls style={{ width: '100%' }} />
           : current.type === 'text' ? <div className="preview-text">{current.url}</div>
           : current.type === '3d' ? <ModelViewer url={current.url} />
           : <img ref={element => { mediaRef.current = element; }} src={current.url} className="preview-main" alt={current.filename || ''} />}
-      {results.length>0&&<div className="preview-thumbs">{results.map((item,i)=><div className="preview-thumb-port" key={`${item.url}-${i}`}><button className={`${i===index?'is-active ':''}nodrag`} onClick={e=>{e.stopPropagation();setSelected(i)}}>{item.type==='image'?<img loading="lazy" src={item.url} alt=""/>:<span>{item.type==='video'?'▶':item.type==='audio'?'♪':item.type==='3d'?'🧊':'T'} {i+1}</span>}</button><span className="preview-thumb-label">结果 {i+1}</span><Handle id={`result-${i}`} type="source" position={Position.Right} title={`连接第 ${i+1} 个结果`} style={{background:portColor(item.type),right:-6,bottom:3,top:'auto',border:'2px solid var(--theme-border)',zIndex:10}}/></div>)}</div>}
+      {results.length>0&&<div className="preview-thumbs">{results.map((item,i)=><div className="preview-thumb-port" key={`${item.url}-${i}`}><button className={`${i===index?'is-active ':''}nodrag`} onClick={e=>{e.stopPropagation();setSelected(i)}}>{i===index && (item.type==='image'||item.type==='video')?<MediaThumb url={item.url} type={item.type} style={{width:'100%',height:'100%'}}/>:<span style={{fontSize:16}}>{item.type==='video'?'▶':item.type==='audio'?'♪':item.type==='3d'?'🧊':item.type==='text'?'T':String(i+1)}</span>}</button><span className="preview-thumb-label">结果 {i+1}</span><Handle id={`result-${i}`} type="source" position={Position.Right} title={`连接第 ${i+1} 个结果`} style={{background:portColor(item.type),right:-6,bottom:3,top:'auto',border:'2px solid var(--theme-border)',zIndex:10}}/></div>)}</div>}
     </div>
   </NodeShell>;
 });
@@ -1109,6 +1634,15 @@ export const GenericNode = memo((p: NodeProps) => {
   const id = p.id;
   const isApiNode = d.nodeType === 'apiNode';
   const apiLabel = (d.config?._apiLabel as string) || d.label;
+  // 实时预览：订阅 ComfyUI WebSocket 的 preview 图，匹配当前节点的 promptId
+  const [previewUrl, setPreviewUrl] = useState('');
+  useEffect(() => {
+    if (!isApiNode) return;
+    const off = comfyWS.onPreview((data) => {
+      if (data.promptId && data.promptId === d.promptId) setPreviewUrl(data.url);
+    });
+    return off;
+  }, [isApiNode, d.promptId]);
 
   if (!meta && !isApiNode) return <NodeShell {...p} color="#666" hasInput={false} hasOutput={false}><div style={{color:'#888',fontSize:12}}>Unknown: {d.nodeType}</div></NodeShell>;
 
@@ -1160,6 +1694,12 @@ export const GenericNode = memo((p: NodeProps) => {
           <div style={{height:'100%',width:`${Math.min(d.progress,100)}%`,background:'linear-gradient(90deg,#6366f1,#22c55e)',borderRadius:2,transition:'width 0.3s'}}/>
         </div>
         <span style={{fontSize:9,color:'#888'}}>{Math.min(d.progress||0,100)}%</span>
+      </div>
+    )}
+    {isApiNode && d.status === 'running' && previewUrl && (
+      <div style={{ margin: '4px 0' }}>
+        <div style={{ fontSize: 9, color: '#888', marginBottom: 2 }}>实时预览</div>
+        <img src={previewUrl} alt="preview" style={{ width: '100%', maxHeight: 160, objectFit: 'contain', borderRadius: 6, background: '#000' }} />
       </div>
     )}
     {d.status==='success'&&<div className="result-ready">结果已就绪，请连接到预览或下一个工作流</div>}

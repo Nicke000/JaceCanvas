@@ -1,4 +1,5 @@
 import { db } from '@/utils';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 export interface GenerationHistoryItem {
   id: string;
@@ -45,6 +46,8 @@ export async function loadAssetsAsync(): Promise<AssetEntry[]> {
 
 export function autoSaveToAssets(resultUrl: string | undefined, results: Array<{ url: string; type: string; filename?: string }> | undefined, nodeName: string) {
   try {
+    // 关闭「自动保存生成素材」时，结果不记入资产库（仅保留在画布与历史中）
+    if (useSettingsStore.getState().assetAutoSave === false) return;
     const list = JSON.parse(localStorage.getItem(ASSETS_KEY) || '[]') as AssetEntry[];
     const seen = new Set(list.map(x => x.url));
     const add = (url: string, type: string, name?: string) => { if (!url || seen.has(url)) return; if (url.startsWith('data:') && url.length > 8000000) return; // 超大 base64 不自动入资产库（手动收藏或保留在画布）

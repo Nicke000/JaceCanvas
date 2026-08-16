@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, MarkerType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { Lightbox, type LightboxItem } from '@/components/Lightbox';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 // 稳定 props（避免每次 render 新建对象引用导致 ReactFlow 重渲染）
@@ -27,7 +28,9 @@ export const Canvas: React.FC = () => {
   const rfRef = useRef<ReactFlowInstance<AppNode, Edge> | null>(null);
   const lastClickPos = useRef<{ x: number; y: number } | null>(null);
   const nodes = useCanvasStore(s => s.nodes);
-  const visibleNodes = useMemo(() => nodes.filter(n => !n.data.hidden).map(n => ({ ...n, draggable: n.data.locked ? false : undefined })) as AppNode[], [nodes]);
+  // 性能优化：只过滤 hidden（不 map 展开新对象），React Flow 对未变化的节点引用做浅比较跳过重渲染；
+  // locked 节点的不可拖由 onNodesChange 拦截 + CSS cursor 处理，避免每次 nodes 变化都展开全部节点
+  const visibleNodes = useMemo(() => nodes.filter(n => !n.data.hidden) as AppNode[], [nodes]);
   const hiddenList = useMemo(() => nodes.filter(n => n.data.hidden), [nodes]);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   // ===== 批量语义操作 =====
@@ -119,6 +122,7 @@ export const Canvas: React.FC = () => {
   const removeBookmark = (id: string) => persistBookmarks(bookmarks.filter(b => b.id !== id));
   const [selectedCount, setSelectedCount] = useState(0);
   const [selectedHasFrame, setSelectedHasFrame] = useState(false);
+  const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
   const [searchAnchor, setSearchAnchor] = useState<{ x: number; y: number; flow: { x: number; y: number } } | null>(null);
   const [gpuInfo, setGpuInfo] = useState<{name:string;mem:string;usage:string}|null>(null);
   const baseUrl = useSettingsStore(s => s.baseUrl);
@@ -195,6 +199,14 @@ export const Canvas: React.FC = () => {
     const store = useCanvasStore.getState();
     setSelectedHasFrame(sel.some(s => store.nodes.find(n => n.id === s.id)?.type === 'frame'));
   }, [setSelectedNodeId]);
+  const onNodeDoubleClick = (_e: React.MouseEvent, node: AppNode) => {
+    const d = node.data as any;
+    const url = d?.resultUrl || d?.outputValues?.image || d?.outputValues?.video || d?.outputValues?.url || d?.results?.[0]?.url || '';
+    if (!url) return;
+    const r0 = d?.results?.[0] || {};
+    const type = r0.type || (/video|\.(mp4|mov|webm|mkv|avi)(?:[?#]|$)/i.test(String(url)) ? 'video' : /audio|\.(mp3|wav|m4a|ogg)(?:[?#]|$)/i.test(String(url)) ? 'audio' : 'image');
+    setLightbox({ url: String(url), type, name: d?.label || '' });
+  };
   const onPaneClick = useCallback((e?: React.MouseEvent) => {
     setSelectedNodeId(null);
     setSearchAnchor(null);
@@ -241,8 +253,18 @@ export const Canvas: React.FC = () => {
       const pos = rfRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
       addNode('textInput', { x: (pos?.x || 0) - 110, y: (pos?.y || 0) - 30 }, { label: '提示词', config: { text } });
     };
+    // 导演台「发送到画布」：把素材加到当前视野中心
+    const addAsset = (event: Event) => {
+      const d = (event as CustomEvent).detail as { type?: 'image' | 'video'; url?: string; name?: string } | undefined;
+      const type = d?.type || 'image';
+      const url = d?.url;
+      if (!url) return;
+      const pos = rfRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+      addNode('asset', { x: (pos?.x || 0) - 110, y: (pos?.y || 0) - 30 }, { label: '导演台素材', config: { assetType: type }, outputValues: { [type]: url, url }, resultUrl: url });
+    };
     window.addEventListener('ai-canvas-add-text-node', addText);
-    return () => window.removeEventListener('ai-canvas-add-text-node', addText);
+    window.addEventListener('ai-canvas-add-asset', addAsset);
+    return () => { window.removeEventListener('ai-canvas-add-text-node', addText); window.removeEventListener('ai-canvas-add-asset', addAsset); };
   }, [addNode]);
   const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; }, []);
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -392,21 +414,28 @@ export const Canvas: React.FC = () => {
     const toggleMiniMap = () => setShowMiniMap(value => !value);
     const autoLayout = () => handleAutoLayout();
     const snapshot = () => handleSnapshot('png', 2);
-    const snapshotSvg = () => handleSnapshot('svg', 1);
     const pasteAtClick = () => { const p = lastClickPos.current; useCanvasStore.getState().pasteNodesAt(p?.x || 300, p?.y || 200); };
+    // 右键菜单「添加节点」：把屏幕坐标转成画布流坐标后弹出搜索面板（与双击空白行为一致）
+    const openSearch = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as { x?: number; y?: number } | undefined;
+      if (d && rfRef.current) {
+        const flow = rfRef.current.screenToFlowPosition({ x: d.x ?? 0, y: d.y ?? 0 });
+        setSearchAnchor({ x: d.x ?? 0, y: d.y ?? 0, flow });
+      }
+    };
     window.addEventListener('ai-canvas-paste-clipboard', pasteAtClick);
     window.addEventListener('ai-canvas-toggle-grid', toggleGrid);
     window.addEventListener('ai-canvas-toggle-minimap', toggleMiniMap);
     window.addEventListener('ai-canvas-auto-layout', autoLayout);
     window.addEventListener('ai-canvas-snapshot', snapshot);
-    window.addEventListener('ai-canvas-snapshot-svg', snapshotSvg);
+    window.addEventListener('ai-canvas-open-search', openSearch);
     return () => {
       window.removeEventListener('ai-canvas-paste-clipboard', pasteAtClick);
       window.removeEventListener('ai-canvas-toggle-grid', toggleGrid);
       window.removeEventListener('ai-canvas-toggle-minimap', toggleMiniMap);
       window.removeEventListener('ai-canvas-auto-layout', autoLayout);
       window.removeEventListener('ai-canvas-snapshot', snapshot);
-      window.removeEventListener('ai-canvas-snapshot-svg', snapshotSvg);
+      window.removeEventListener('ai-canvas-open-search', openSearch);
     };
   }, [handleAutoLayout, handleSnapshot]);
 
@@ -488,7 +517,7 @@ export const Canvas: React.FC = () => {
         </div>
       )}
       <ReactFlow nodes={visibleNodes} edges={visibleEdges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} edgeTypes={edgeTypes}
-        onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes}
+        onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onNodeDoubleClick={onNodeDoubleClick} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes} snapToGrid snapGrid={[20, 20]}
         fitView fitViewOptions={{ maxZoom: 1 }} minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} selectionKeyCode="Control" multiSelectionKeyCode="Shift" selectionMode={SelectionMode.Partial}
         connectionLineType={ConnectionLineType.Bezier} connectionRadius={48} onlyRenderVisibleElements
         defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}>
@@ -508,6 +537,7 @@ export const Canvas: React.FC = () => {
           <Tooltip title="画布书签 / 多区域跳转"><Button size="small" icon={<PushpinOutlined />} style={{ position: 'absolute', right: 12, bottom: 300, zIndex: 5 }} /></Tooltip>
         </Popover>
       </ReactFlow>
+      <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
       <CommandPalette />
       <NodeSearchPanel anchor={searchAnchor} onClose={() => setSearchAnchor(null)} />
     </div>

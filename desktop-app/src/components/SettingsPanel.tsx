@@ -361,6 +361,34 @@ export const SettingsButton: React.FC = () => {
     finally { setTestingBailian(false); }
   };
 
+  const [assetFolder, setAssetFolder] = useState('');
+  const [assetDefaultFolder, setAssetDefaultFolder] = useState('');
+  useEffect(() => { void (window as any).electronAPI?.getAssetSettings?.().then((r: any) => { if (r) { setAssetFolder(r.currentFolder || ''); setAssetDefaultFolder(r.defaultFolder || ''); } }).catch(() => undefined); }, [open]);
+  const chooseAssetFolder = async () => {
+    try {
+      const r = await (window as any).electronAPI?.chooseAssetFolder?.();
+      if (r?.canceled || !r?.folder) return;
+      const doSet = async (move: boolean) => {
+        try {
+          const res = await (window as any).electronAPI?.setAssetFolder?.({ folder: r.folder, moveExisting: move });
+          if (res?.ok === false) { message.error(res?.message || '切换失败'); return; }
+          setAssetFolder(r.folder);
+          // 同步到 store，下次打开设置面板时显示最新地址（避免又读回默认目录）
+          useSettingsStore.getState().setAssets({ assetSavePath: r.folder });
+          if (move && res?.moved) message.success(`素材文件夹已切换，已迁移 ${res.moved} 个文件`);
+          else if (move && !res?.moved) message.warning('已切换文件夹，但未迁移到文件（可能源目录为空或迁移失败）');
+          else message.success('素材文件夹已切换');
+        } catch (e: any) {
+          message.error('切换失败：' + String(e?.message || e));
+        }
+      };
+      if (assetFolder && assetFolder !== r.folder && (assetFolder === assetDefaultFolder || assetFolder.startsWith('file:///') === false)) {
+        // 提示是否迁移旧文件
+        const content = <div><p>已选择新文件夹：{r.folder}</p><p style={{ color: 'var(--theme-muted)', fontSize: 12 }}>要把原文件夹中的素材一并移动到新文件夹吗？（推荐移动，避免旧素材找不到）</p></div>;
+        Modal.confirm({ title: '切换素材文件夹', content, okText: '移动文件', cancelText: '不移动', onOk: () => void doSet(true), onCancel: () => void doSet(false) });
+      } else void doSet(false);
+    } catch (e: any) { message.error(String(e?.message || e)); }
+  };
   const save = async (values: any, section: SettingTab = activeTab) => {
     const store = useSettingsStore.getState();
     if (section === 'connection') {
@@ -381,7 +409,7 @@ export const SettingsButton: React.FC = () => {
     if (section === 'assets') {
       store.setAssets({
         assetAutoSave: Boolean(values.assetAutoSave),
-        assetSavePath: String(values.assetSavePath || ''),
+        assetSavePath: assetFolder || String(values.assetSavePath || ''),
         assetRetentionDays: Math.max(1, Number(values.assetRetentionDays) || 7),
         assetMaxSizeGB: Number(values.assetMaxSizeGB) || 0,
         showFailedHistory: Boolean(values.showFailedHistory),
@@ -519,7 +547,7 @@ export const SettingsButton: React.FC = () => {
             </div>}
             {activeTab === 'chat' && <div className="settings-tab-content">
               <h3 className="settings-tab-title">聊天 AI 设置</h3>
-              <div className="settings-section-hint">聊天节点和全页面聊天窗口统一使用此 API 配置。</div>
+              <div className="settings-section-hint">聊天节点、全页面聊天窗口，以及<b>杰斯3D导演台的 AI 运镜 / AI 摆姿势</b>，统一使用此 API 配置。</div>
               <div className="settings-form-grid">
                 <Form.Item name="chatProvider" label="聊天 AI 提供商"><Select options={providerOptions} /></Form.Item>
               <Form.Item name="chatModel" label="聊天 AI 模型"><Select showSearch allowClear placeholder="先拉取模型" options={(fetchedChatModels.length ? fetchedChatModels : settings.chatModels).map(model => ({label:model,value:model}))} /></Form.Item>
@@ -596,7 +624,13 @@ export const SettingsButton: React.FC = () => {
                 <Form.Item name="assetAutoSave" label="自动保存生成素材" valuePropName="checked" extra="生成的图片/视频结果自动落盘到本地，关闭后仅保留在画布与历史中"><Switch /></Form.Item>
                 <Form.Item name="showFailedHistory" label="生成历史显示失败记录" valuePropName="checked" extra="默认隐藏执行失败的记录，勾选后可见"><Switch /></Form.Item>
               </div>
-              <Form.Item name="assetSavePath" label="素材保存路径（留空 = 应用数据目录）" extra="上传节点与自动保存的素材会写入此目录；切换应用后仍可通过记住的路径加载"><Input placeholder="例如 D:\\JaceCanvasAssets" /></Form.Item>
+              <Form.Item label="素材自动保存文件夹" extra="生成结果、上传的本地文件、画布引用的文件都会自动复制保存到这里；切换应用/重装后仍可加载，不会丢失">
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input value={assetFolder} placeholder="点击右侧选择文件夹" readOnly style={{ color: 'var(--theme-text-2)', fontSize: 11 }} />
+                  <Button onClick={() => void chooseAssetFolder()}>选择文件夹…</Button>
+                </Space.Compact>
+                {assetFolder && <div style={{ fontSize: 10, color: 'var(--theme-muted)', marginTop: 4 }}>当前保存到：{assetFolder}（默认：{assetDefaultFolder}）</div>}
+              </Form.Item>
               <div className="settings-form-grid">
                 <Form.Item name="assetRetentionDays" label="自动清理天数（天）" extra="超过该天数的缓存文件自动删除"><InputNumber min={1} max={365} style={{ width: '100%' }} /></Form.Item>
                 <Form.Item name="assetMaxSizeGB" label="缓存大小上限（GB）" extra="超过该大小后从最旧文件开始清理（0 = 不限制）"><InputNumber min={0} max={500} step={1} style={{ width: '100%' }} /></Form.Item>

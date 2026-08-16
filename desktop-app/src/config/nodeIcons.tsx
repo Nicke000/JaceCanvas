@@ -59,6 +59,8 @@ export const NODE_ICONS: Record<NodeComponentType, LucideIcon> = {
   chatNode: MessageSquare,
   videoTrim: Scissors,
   imageCrop: Crop,
+  inpaint: Wand2,
+  interpolate: Gauge,
   paidTextToImage: ImagePlus,
   paidImageToImage: Repeat,
   paidTextToVideo: Projector,

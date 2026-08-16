@@ -1,15 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Button, ColorPicker, Divider, Popover, Space, Tooltip } from 'antd';
 import { BgColorsOutlined, CheckOutlined } from '@ant-design/icons';
 import { useThemeStore } from '@/stores/themeStore';
 
 export const ThemeSelector: React.FC = () => {
   const [open, setOpen] = useState(false);
-  useEffect(() => {
-    const show = () => setOpen(true);
-    window.addEventListener('ai-canvas-open-theme', show);
-    return () => window.removeEventListener('ai-canvas-open-theme', show);
-  }, []);
   const { themes, themeId, custom, setTheme, setCustom, resetCustom } = useThemeStore();
   const colorFields = [
     ['bg', '画布背景'], ['surface', '顶部/卡片'], ['panel', '侧栏/节点'], ['input', '输入框'],

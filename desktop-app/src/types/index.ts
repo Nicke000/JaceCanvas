@@ -12,7 +12,7 @@ export type NodeComponentType =
   | 'uploadNode' | 'downloadNode'
   | 'apiNode'  // 通用API节点（17个工作流）
   | 'localWorkflow'  // 本地导入的 ComfyUI 工作流 JSON 节点
-  | 'chatNode' | 'videoTrim' | 'imageCrop'
+  | 'chatNode' | 'videoTrim' | 'imageCrop' | 'inpaint' | 'interpolate'
   | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage';
 
 /* ========== IO 定义 ========== */
@@ -54,7 +54,7 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
   },
   asset: {
     inputs: [],
-    outputs: [{ name: 'output', label: '素材', type: 'image' }],
+    outputs: [{ name: 'image', label: '素材', type: 'image' }],
     params: {},
   },
   imageGeneration: {
@@ -167,6 +167,8 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
   storyboardRender: { inputs: [{ name: 'script', label: '分镜JSON', type: 'text' }], outputs: [{ name: 'result', label: '结果', type: 'text' }], params: { provider: '', model: '', variants: 1, useEnglish: true, generateVideo: false, videoModel: '' } },
   timelineRender: { inputs: [{ name: 'results', label: '分镜结果', type: 'image' }], outputs: [{ name: 'video', label: '成片视频', type: 'video' }], params: {} },
   imageCrop: { inputs: [{ name: 'image', label: '输入图片', type: 'image', required: true }], outputs: [{ name: 'image', label: '裁切后图片', type: 'image' }], params: { x: 0, y: 0, width: 512, height: 512, aspectRatio: '1:1' } },
+  inpaint: { inputs: [{ name: 'image', label: '输入图片', type: 'image', required: true }, { name: 'prompt', label: '重绘指令', type: 'text' }], outputs: [{ name: 'image', label: '结果图片', type: 'image' }], params: { prompt: '', brushSize: 24 } },
+  interpolate: { inputs: [{ name: 'video', label: '输入视频', type: 'video', required: true }], outputs: [{ name: 'video', label: '补帧视频', type: 'video' }], params: { fps: 60 } },
   paidTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
   paidImageToImage: { inputs: [{ name: 'image', label: '参考图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', aspectRatio: '1:1', width: 1024, height: 1024, model: '' } },
   paidTextToVideo: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },

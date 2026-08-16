@@ -1,4 +1,4 @@
-# GitHub Release 发布计划（v4.6.8）
+# GitHub Release 发布计划（v4.7.1）
 
 ## Repository description
 
@@ -10,9 +10,9 @@
 
 ## Release 资产（三版本）
 
-1. `JaceCanvas-4.6.8-pure-install.exe` — 纯安装版（应用本体）
-2. `JaceCanvas-4.6.8-install-with-opensource.exe` — 安装版 + 内置完整开源（resources/opensource）
-3. `JaceCanvas-4.6.8-opensource.zip` — 纯开源源码包（不含 node_modules）
+1. `JaceCanvas Setup 4.7.1-pure.exe` — 纯安装版（应用本体）
+2. `JaceCanvas Setup 4.7.1.exe` — 安装版 + 内置完整开源（resources/opensource）
+3. `JaceCanvas-4.7.1-opensource.zip` — 纯开源源码包（不含 node_modules）
 
 ## Release 前检查清单
 
@@ -20,7 +20,7 @@
 - [ ] 不提交 release/dist/node_modules/opensource-resource/日志/数据库
 - [ ] 无真实域名、IP、Token、API Key
 - [ ] 无 Video2X 残留（本地 assets/video2x 已移除）
-- [ ] `npm run build:web` 通过；`npm run lint:tokens` 通过
+- [ ] `npx tsc --noEmit`、`npm run build:web` 与 `npm run lint:tokens` 通过
 - [ ] 安装包 SHA256 校验和随 Release 发布
 - [ ] 干净 Windows（无 Node.js）安装测试通过
 - [ ] 文档（README / 安装说明 / 开源使用说明 / THIRD_PARTY_NOTICES）与当前版本一致

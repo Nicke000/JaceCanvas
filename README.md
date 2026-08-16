@@ -27,6 +27,11 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 | 🌐 **多服务器** | 顶栏一键切换，每台服务器独立节点库/缓存/健康状态 |
 | 📦 **三版本发布** | 纯开源 zip / 纯安装版 / 安装+内置开源版 |
 | 🛡️ **可靠** | 自动保存 + 版本快照 + 崩溃恢复 + 崩溃日志 |
+| 🗂️ **素材管理** | 自动保存生成素材到本地、自定义保存路径、按天数/大小自动清理、历史默认隐藏失败记录 |
+| ⭐ **提示词库** | 顶部收藏常用提示词：置顶/排序/改名/删除，一键发送到画布 |
+| 🎨 **多主题** | 13 套主题（9 深色 + 4 亮色：明亮白/暖白纸/薄荷青/蜜桃粉），容器全面适配 |
+| ⚡ **性能优化** | GPU 轮询/进度回调节流、连线默认边常量、历史懒加载、拖线磁吸（48px） |
+| 🔌 **负面提示词端口** | ComfyUI 工作流导入自动拆分正面/负面提示词两个输入口 |
 
 ---
 
@@ -48,16 +53,15 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 | 版本 | 内容 | 适合 |
 |------|------|------|
-| **纯安装版** `JaceCanvas Setup 4.6.9-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
-| **安装+内置开源** `JaceCanvas Setup 4.6.9.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
-| **纯开源** `JaceCanvas-4.6.9-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
+| **纯安装版** `JaceCanvas Setup 4.7.1-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
+| **安装+内置开源** `JaceCanvas Setup 4.7.1.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
+| **纯开源** `JaceCanvas-4.7.1-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
 ### 下载渠道
 
 - **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/5W1UlxGpbdd8LN0MgGLB7yQ>
-- **夸克网盘：** <https://pan.quark.cn/s/d92b688d5502?pwd=KEJp>（提取码 `KEJp`）
 - **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>
 
 ---
@@ -79,7 +83,7 @@ npm install
 ```batch
 cd desktop-app
 npm run build:web     # Vite 构建前端 → dist/
-npm run build         # electron-builder → release-v4.6.8/（内置 opensource，方案 B）
+npm run build         # electron-builder → release-v4.7.1/（内置 opensource，方案 B）
 ```
 
 - `npm run build` 会先自动生成 `opensource-resource`（完整源码 + node_modules）并作为 `resources/opensource` 打进安装包，安装版用户可用 DevAgent 改码。
@@ -126,6 +130,13 @@ npm run build         # electron-builder → release-v4.6.8/（内置 opensource
 - 一键生成：自动串联全流程
 - **分镜 AI 独立配置**：步骤 1 的「分镜 AI 设置」使用独立 API（与聊天 AI 完全隔离，互不清空）；未配置时回退「设置 → 提示词 AI」，再回退聊天 AI
 - 配音使用 MiniMax（设置 → 付费 API 配置）
+- **角色卡**：名字 + 外貌描述 + 参考图，分镜生成自动注入对应角色（人物一致）
+- **三轨混音**：对白 + 每镜音效 + 全局 BGM（FFmpeg amix，BGM 自动压低音量）
+- **套路模板库**：霸总逆袭/穿越重生/带货种草/悬疑反转/都市情感/古风虐恋，一键填充剧本
+- **变体矩阵**：每镜可生成 1-4 个变体，确认时缩略图对比挑选
+- **数字人口播**：成片对口型（ComfyUI lipsync 工作流），支持下载/替换成片
+- **主控/非主控分开**：图片/视频/音频各自可选生成服务器；视频支持首图 / 首尾图生视频
+- **分镜衔接**：自动带上上一镜尾帧提示词 + 上一镜图作参考，镜头更连贯
 
 ---
 
@@ -167,7 +178,7 @@ desktop-app/
 ├── scripts/                 # 构建与打包脚本（prepare-opensource 等）
 ├── assets/                  # 图标、素材
 ├── config/                  # 提示词配置（.example.json 为开源模板）
-└── release-v4.6.8/          # 打包输出
+└── release-v4.7.1/          # 打包输出
 ```
 
 ---
@@ -196,7 +207,33 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📝 更新日志
 
-最新版本：**v4.6.9**。更新内容见 GitHub Releases。
+### v4.7.1（最新）
+- **导演台（3D 白模）大升级**：模型复制、无人机式 FPV 运镜录制（鼠标转向 + 键盘移动）、录制运镜同时采样模型/骨骼、关键帧删除后时间轴自动归一化、运镜速度/灯光/关键帧/机位退出持久化
+- **视频与媒体**：视频拖入画布不再被识别成封面图片（按 URL 扩展名修正类型）、视频缩略图封面显示优化
+- **付费 API**：补齐百炼 qwen-image-3.0/3.0-pro/2.0-pro、wan2.7 多图参考/视频编辑、happyhorse 1.1 系列等最新模型
+- **素材持久化**：修复素材保存目录切换（跨盘迁移、显示刷新）、素材不再误存 48h 缓存目录
+- **ComfyUI 直连端口**：修复 403/400 错误掩码、图片上传走主进程、带冒号子节点 id 的参数识别与提示词字段识别
+- **打包**：修复安装包桌面快捷方式图标与窗口图标不一致（ICO 损坏项剔除）
+
+### v4.6.9（已并入 v4.7.1）
+- **短剧工作室大升级**：角色卡管理、BGM/音效三轨混音、套路模板库、变体矩阵、数字人口播（对口型）、主控/非主控服务器分开、首图/首尾图生视频、分镜衔接上下文统一、退出不丢失（自动保存工作区）
+- **素材持久化**：设置 → 素材管理（自动保存/保存路径/清理天数/大小上限）、上传节点落盘本地 file://、历史默认隐藏失败记录
+- **UI/交互**：顶部提示词库、拖出自动生成预览/对比节点、连接磁吸、宽高常用尺寸快捷、执行列表点画布自动收起、历史卡片布局修复
+- **主题**：新增暖白纸/薄荷青/蜜桃粉 3 个亮色主题，容器与节点全面 token 化（硬编码色 181→144）
+- **付费 API 修复**：OpenAI b64_json、Stability 双前缀、Runway 域名与任务端点、MiniMax 图像分支/域名、Google Gemini 图片格式
+- **聊天修复**：Ollama 流式兼容、Anthropic 图片附件、DevAgent 独立厂商解析、deep 模式超时放宽
+- **画布修复**：预览节点可连下游（多图/任意媒体）、负面提示词独立端口、主控性能优先 perfUrl、节点下载统一、启动恢复不丢项目、ConfigPanel 崩溃修复
+- **可靠性**：修复卸载保存回滚、项目 id 不同步、弹窗打开时误删画布、素材 0 值被覆盖等 60+ 项
+
+最新版本：**v4.7.1**。更新内容见 GitHub Releases。
+
+---
+
+## 👥 贡献者
+
+- [Nicke000](https://github.com/Nicke000)（原作者与维护者）
+- [DeepSeek](https://www.deepseek.com)（AI 开发助手，参与本版功能开发与测试）
+- [OpenAI](https://openai.com)（AI 开发助手，参与代码整理、文档维护与发布准备）
 
 ---
 

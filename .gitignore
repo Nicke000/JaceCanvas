@@ -3,12 +3,17 @@ node_modules/
 dist/
 release/
 release-*/
-desktop-app/server/
+opensource-resource/
+opensource-staging/
+runtime-verify-*/
+*.pid
+*.exit
 server/dist/
 
 # Local runtime data
 server/data/
 desktop-app/data/
+desktop-app/server/data/
 *.db
 *.sqlite
 *.sqlite3

@@ -233,6 +233,7 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 - [Nicke000](https://github.com/Nicke000)（原作者与维护者）
 - [DeepSeek](https://www.deepseek.com)（AI 开发助手，参与本版功能开发与测试）
+- [OpenAI](https://openai.com)（AI 开发助手，参与代码整理、文档维护与发布准备）
 
 ---
 

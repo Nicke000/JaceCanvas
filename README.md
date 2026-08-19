@@ -1,15 +1,38 @@
-# JaceCanvas - AI 创意画布桌面应用
+<p align="center">
+  <img src="assets/jacecanvas-icon.png" width="120" alt="JaceCanvas Logo" />
+</p>
 
-> AI 无限画布 + 动态工作流节点的 Windows 桌面应用（Electron + React 19 + @xyflow/react）。
-> 图像 / 视频 / 音频 / 3D 生成、短剧工作流、聊天助手、AI 改码，一站集成。
+<h1 align="center">JaceCanvas - AI 创意画布桌面应用</h1>
 
-<p>
+<p align="center">
+  AI 无限画布 + 动态工作流节点的 Windows 桌面应用（Electron + React 19 + @xyflow/react）。
+  <br/>
+  图像 / 视频 / 音频 / 3D 生成、短剧工作流、聊天助手、AI 改码，一站集成。
+</p>
+
+<p align="center">
+  <a href="https://jacecomfyui.xyz"><img src="https://img.shields.io/badge/官网-https%3A%2F%2Fjacecomfyui.xyz-2ea44f?logo=internet" alt="官方网站"></a>
   <a href="https://github.com/Nicke000/JaceCanvas"><img src="https://img.shields.io/badge/Source-GitHub-181717?logo=github" alt="GitHub 源码"></a>
   <a href="mailto:mikesill701@gmail.com"><img src="https://img.shields.io/badge/Email-Contact-EA4335?logo=gmail&logoColor=white" alt="邮件联系"></a>
   <a href="https://www.facebook.com/share/1C2aPnT9N3/?mibextid=wwXIfr"><img src="https://img.shields.io/badge/Facebook-Contact-1877F2?logo=facebook&logoColor=white" alt="Facebook 联系我们"></a>
 </p>
 
 JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不同账号节点数量、名称、参数、模型可以完全不同），也支持本地 ComfyUI、多个厂商付费 API（文生图 / 图生图 / 文生视频 / 图生视频 / 配音等）以及纯本地生成。
+
+> 🌐 **官方网站：<https://jacecomfyui.xyz>** —— 应用介绍、版本下载与更新信息。
+
+---
+
+## 📸 界面展示
+
+<p align="center">
+  <img src="images/workflow.png" alt="工作流界面" width="45%" />
+  <img src="images/mockup.png" alt="3D 白模导演台" width="45%" />
+</p>
+
+<p align="center">
+  <img src="images/canvas.png" alt="全画布总览" width="45%" />
+</p>
 
 ---
 

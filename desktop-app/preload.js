@@ -40,6 +40,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 获取应用信息
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   createUpdateBackup: () => ipcRenderer.invoke('create-update-backup'),
+  checkAppUpdate: () => ipcRenderer.invoke('app-update-check'),
+  downloadAppUpdate: () => ipcRenderer.invoke('app-update-download'),
+  installAppUpdate: () => ipcRenderer.invoke('app-update-install'),
+  getAppUpdateState: () => ipcRenderer.invoke('app-update-state'),
+  onAppUpdateState: (callback) => { const listener = (_event, state) => callback(state); ipcRenderer.on('app-update-state', listener); return () => ipcRenderer.removeListener('app-update-state', listener); },
   chooseProjectFolder: () => ipcRenderer.invoke('choose-project-folder'),
   saveProjectFile: (payload) => ipcRenderer.invoke('save-project-file', payload),
   openProjectFile: () => ipcRenderer.invoke('open-project-file'),

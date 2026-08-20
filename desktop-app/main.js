@@ -13,6 +13,7 @@ const path = require("path");
 const { spawn, execFileSync } = require("child_process");
 const fs = require("fs");
 const { pathToFileURL, fileURLToPath } = require("url");
+const { autoUpdater } = require("electron-updater");
 
 function loadRuntimeSettings() {
   try {
@@ -68,6 +69,7 @@ let mainWindow = null;
 let serverProcess = null;
 let isQuitting = false;
 let crashCount = Number(loadRuntimeSettings().crashCount) || 0;
+let updateState = { status: "idle", version: "", percent: 0, message: "" };
 const MAX_CRASH_RECOVERY = 3;
 
 // ===== 崩溃/错误日志（写 userData/logs/error.log，1MB 轮转） =====
@@ -409,6 +411,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  configureAutoUpdater();
 
   // 生成结果缓存：启动清理一次，之后每 6 小时清理超过 48 小时未保存的文件
   try { const rs = loadRuntimeSettings(); cleanupGeneratedCache(Number(rs.assetRetentionDays || 7) * 86400000, Number(rs.assetMaxSizeGB || 0) * 1073741824); } catch { /* 忽略 */ }
@@ -437,10 +440,30 @@ app.on("window-all-closed", () => { isQuitting = true; stopServer(); app.quit();
 app.on("before-quit", () => { isQuitting = true; stopServer(); crashCount = 0; persistCrashCount(); logCrash({ source: "main", type: "app-quit" }); });
 app.on("quit", () => { stopServer(); });
 
+function publishUpdateState(next) {
+  updateState = { ...updateState, ...next };
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("app-update-state", updateState);
+}
+function configureAutoUpdater() {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on("checking-for-update", () => publishUpdateState({ status: "checking", message: "正在检查更新" }));
+  autoUpdater.on("update-available", info => publishUpdateState({ status: "available", version: info.version, percent: 0, message: `发现新版本 ${info.version}` }));
+  autoUpdater.on("update-not-available", () => publishUpdateState({ status: "latest", percent: 100, message: "当前已是最新版本" }));
+  autoUpdater.on("download-progress", progress => publishUpdateState({ status: "downloading", version: updateState.version, percent: Math.round(progress.percent), message: `正在下载更新 ${Math.round(progress.percent)}%` }));
+  autoUpdater.on("update-downloaded", info => publishUpdateState({ status: "downloaded", version: info.version, percent: 100, message: "更新已下载，重启后安装" }));
+  autoUpdater.on("error", error => publishUpdateState({ status: "error", message: error?.message || "更新失败" }));
+}
+
 // ============================================================
 // 📡 IPC 通信
 // ============================================================
 ipcMain.handle("get-server-port", () => SERVER_PORT);
+ipcMain.handle("app-update-check", async () => { if (!app.isPackaged) return { status: "error", message: "开发模式不执行安装包更新检查" }; await autoUpdater.checkForUpdates(); return updateState; });
+ipcMain.handle("app-update-download", async () => { await autoUpdater.downloadUpdate(); return updateState; });
+ipcMain.handle("app-update-install", () => { if (updateState.status !== "downloaded") return false; isQuitting = true; autoUpdater.quitAndInstall(false, true); return true; });
+ipcMain.handle("app-update-state", () => updateState);
 
 ipcMain.handle("get-app-info", () => ({
   name: APP_NAME,

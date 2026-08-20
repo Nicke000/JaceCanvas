@@ -11,7 +11,7 @@ import { getPaidModelsForCapability, getSupportedPaidCapabilities, PAID_CAPABILI
 import { DEFAULT_STORYBOARD_SYSTEM_PROMPT } from '@/services/storyboard.service';
 import { SYSTEM_PROMPTS } from '@/services/promptOptimizer.service';
 import { APP_VERSION } from '@/config/appVersion';
-import { checkForAppUpdate, openUpdateDownload, type UpdateCheckResult } from '@/services/appUpdate.service';
+import { checkForAppUpdate, downloadAppUpdate, installAppUpdate, listenForAppUpdate, type AppUpdateState } from '@/services/appUpdate.service';
 import { PaidApiSettings } from '@/components/PaidApiSettings';
 import { LogTab } from './LogTab';
 import { AppearanceSettings } from '@/components/AppearanceSettings';
@@ -114,7 +114,7 @@ export const SettingsButton: React.FC = () => {
   const [paidTestResult, setPaidTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [activeTab, setActiveTab] = useState<SettingTab>('connection');
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [updateResult, setUpdateResult] = useState<AppUpdateState | null>(null);
   const [form] = Form.useForm();
   const settings = useSettingsStore();
   const paidApiProvider = Form.useWatch('paidApiProvider', form);
@@ -392,14 +392,24 @@ export const SettingsButton: React.FC = () => {
       } else void doSet(false);
     } catch (e: any) { message.error(String(e?.message || e)); }
   };
+  useEffect(() => listenForAppUpdate(state => setUpdateResult(state)), []);
   const checkUpdate = async () => {
     setCheckingUpdate(true);
     const result = await checkForAppUpdate();
     setUpdateResult(result);
     setCheckingUpdate(false);
-    if (result.status === 'available') message.success(`发现新版本 ${result.update.version}`);
+    if (result.status === 'available') message.success(`发现新版本 ${result.version || ''}`);
     else if (result.status === 'latest') message.success('当前已是最新版本');
-    else message.warning(`检查更新失败：${result.message}`);
+    else if (result.status === 'error') message.warning(`检查更新失败：${result.message}`);
+  };
+  const startUpdateDownload = async () => {
+    const backup = await (window as any).electronAPI?.createUpdateBackup?.();
+    if (backup && !backup.ok) { message.error(`更新前备份失败：${backup.message || '未知错误'}`); return; }
+    setUpdateResult(await downloadAppUpdate());
+  };
+  const installUpdate = async () => {
+    if (await installAppUpdate()) message.info('应用即将重启并安装更新');
+    else message.warning('更新尚未下载完成');
   };
   const save = async (values: any, section: SettingTab = activeTab) => {
     const store = useSettingsStore.getState();
@@ -666,12 +676,13 @@ export const SettingsButton: React.FC = () => {
                 <Button size="small" icon={<ReloadOutlined />} loading={checkingUpdate} onClick={() => void checkUpdate()}>检查更新</Button>
               </div>
               {updateResult?.status === 'available' && <div className="settings-status settings-status--ok" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span>发现新版本 {updateResult.update.version}{updateResult.update.publishedAt ? `（${updateResult.update.publishedAt}）` : ''}</span>
-                <Button size="small" type="primary" onClick={() => void (async () => { const backup = await (window as any).electronAPI?.createUpdateBackup?.(); if (backup?.ok) message.success('更新前数据已备份'); else if (backup) message.warning(`数据备份失败：${backup.message}`); openUpdateDownload(updateResult.update.downloadUrl); })()}>备份并前往下载更新</Button>
-                {updateResult.update.releaseNotes && <span style={{ width: '100%', fontSize: 11 }}>{updateResult.update.releaseNotes}</span>}
+                <span>发现新版本 {updateResult.version}</span>
+                <Button size="small" type="primary" onClick={() => void startUpdateDownload()}>备份并下载更新</Button>
               </div>}
+              {updateResult?.status === 'downloading' && <div className="settings-section-hint" style={{ marginBottom: 12 }}>正在下载更新：{updateResult.percent || 0}%</div>}
+              {updateResult?.status === 'downloaded' && <div className="settings-status settings-status--ok" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}><span>更新已下载完成，重启后安装。</span><Button size="small" type="primary" onClick={() => void installUpdate()}>立即重启更新</Button></div>}
               {updateResult?.status === 'latest' && <div className="settings-section-hint" style={{ marginBottom: 12 }}>当前已是最新版本。</div>}
-              {updateResult?.status === 'error' && <div className="settings-status settings-status--error" style={{ marginBottom: 12 }}>检查更新失败：{updateResult.message}</div>}
+              {updateResult?.status === 'error' && <div className="settings-status settings-status--error" style={{ marginBottom: 12 }}>更新失败：{updateResult.message}</div>}
               <div className="settings-about__info">
                 <p>JaceCanvas 是一个 AI 驱动的创意画布工具，用于图像生成、视频生成、数字人、音频等多种 AI 创作场景。</p>
                 <div className="settings-contact-row">

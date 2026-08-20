@@ -25,6 +25,7 @@
     "cors": "^2.8.5",
     "dexie": "^4.0.11",
     "dexie-react-hooks": "^1.1.7",
+    "electron-updater": "^6.6.2",
     "express": "^4.21.0",
     "lucide-react": "^0.469.0",
     "react": "19.0.0",
@@ -40,6 +41,12 @@
       "output": "release-v4.7.2"
     },
     "compression": "store",
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://jacecomfyui.xyz/releases/"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

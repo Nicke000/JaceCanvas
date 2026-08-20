@@ -34,7 +34,7 @@ SHA-256：
 - [ ] 源码不含个人配置（`config/prompt-settings.json` 不提交，只提交 `.example.json`）。
 - [ ] 不提交 `release/`、`dist/`、`node_modules/`、`opensource-resource/`、日志或数据库。
 - [ ] 无 Token、API Key、密码、私有 IP 或个人信息。
-- [x] `npx tsc --noEmit` 与 `npm run build:web` 通过。
+- [ ] `npx tsc --noEmit` 与 `npm run build:web` 通过。依赖未安装时先执行 `npm ci`。
 - [x] 安装包 SHA-256 已生成。
 - [ ] 网站下载链接和 `latest.json` 已通过 HTTPS 验证。
 - [ ] GitHub Release 附件上传完成（如需镜像 GitHub 发布）。

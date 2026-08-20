@@ -5,7 +5,6 @@ import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/r
 import type { NodeProps } from '@xyflow/react';
 import type { CanvasNodeData } from '@/types';
 import { useCanvasStore, cachePaidMedia } from '@/stores/canvasStore';
-import { downsampleImage } from '@/utils/imageUtils';
 import { downloadMedia } from '@/utils/downloadMedia';
 import { getApiBase, uploadFile, type ResultItem, fetchWorkflows, fetchWorkflowConfig, generate, pollResult, uploadImageToComfy } from '@/services/comfyui.service';
 import { comfyWS } from '@/services/comfyui-ws.service';
@@ -806,7 +805,7 @@ export const CompareNode = memo((p:NodeProps)=>{
       <div className="compare-grid"><div><b>处理前</b>{media(original,'原始素材',originalRef)}</div><div><b>处理后</b>{media(processed,'处理后素材',processedRef)}{processed && <div className="nodrag" style={{ display: 'flex', gap: 4, marginTop: 4, justifyContent: 'center' }}>
         {maskOnlyImage && <Button size="small" style={{ fontSize: 10 }} onClick={() => setMaskMode(true)}>蒙版对比</Button>}
         <Button size="small" style={{ fontSize: 10 }} onClick={() => autoSaveToAssets(processed, [{ type: mediaKind(processed), url: processed }], '对比结果')}>保存到资产库</Button>
-        <Button size="small" style={{ fontSize: 10 }} onClick={() => window.open(processed, '_blank')}>下载</Button>
+        <Button size="small" style={{ fontSize: 10 }} onClick={() => void downloadMedia(processed, `compare.${mediaKind(processed) === 'video' ? 'mp4' : mediaKind(processed) === 'audio' ? 'mp3' : 'png'}`, mediaKind(processed))}>下载</Button>
       </div>}</div></div>
     )}
   </NodeShell>;
@@ -923,7 +922,7 @@ export const UploadNode = memo((p: NodeProps) => {
         <button disabled={uploading} onClick={e=>{e.stopPropagation();choose(true)}}>选择文件夹</button>
       </div>
     </div>
-    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview" title="双击查看原文件" onDoubleClick={e=>{e.stopPropagation();setLightbox({url:item.url,type:item.type,name:item.filename||`文件 ${index+1}`});}}>{item.type==='video'?<MediaThumb url={item.url} type="video" className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<MediaThumb url={item.url} type="image" className="upload-node-media"/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
+    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview" title="点击或双击查看原文件" onClick={e=>{e.stopPropagation();setLightbox({url:item.url,type:item.type,name:item.filename||`文件 ${index+1}`});}} onDoubleClick={e=>{e.stopPropagation();setLightbox({url:item.url,type:item.type,name:item.filename||`文件 ${index+1}`});}}>{item.type==='video'?<MediaThumb url={item.url} type="video" className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<MediaThumb url={item.url} type="image" className="upload-node-media"/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
     <Lightbox item={lightbox} onClose={()=>setLightbox(null)}/>
     {results.length>0&&<div className="upload-node-summary">
       <span>{results.length} 个文件</span>

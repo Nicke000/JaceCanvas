@@ -587,7 +587,20 @@ export const useCanvasStore = create<Store>((set, get) => ({
       let workflow_id = '';
       const input_values: Record<string, unknown> = {};
 
-      if (nt === 'imageCrop' || nt === 'videoTrim' || nt === 'reroute' || nt === 'note' || nt === 'frame') {
+      if (nt === 'interpolate') {
+        const input = String(node.data.inputValues?.video || node.data.inputValues?.url || config.videoUrl || config.assetUrl || node.data.resultUrl || '');
+        if (!input) throw new Error('请先连接或选择视频');
+        const fps = Math.max(24, Math.min(120, Number(config.fps) || 60));
+        const result = await (window as any).electronAPI?.ffmpegInterpolate?.({ input, fps });
+        if (!result?.url) throw new Error('补帧失败，请确认 Electron 桌面版和 FFmpeg 可用');
+        const results = [{ type: 'video' as const, url: result.url, filename: 'interpolated.mp4' }];
+        get().updateNodeData(id, { outputValues: { video: result.url, results }, results, resultUrl: result.url, status: 'success', progress: 100, content: `补帧完成 · ${result.fps || fps} FPS`, generationDurationMs: Date.now() - startedAt });
+        get().propagateData(id, 'video', result.url);
+        get().propagateData(id, 'results', results);
+        addGenerationHistory({ id: `interpolate-${id}-${Date.now()}`, nodeId: id, nodeName: node.data.label || '视频补帧', nodeType: 'interpolate', params: { fps }, resultUrl: result.url, results, status: 'success', timestamp: Date.now() });
+        runningControllers.delete(id);
+        return true;
+      } else if (nt === 'imageCrop' || nt === 'videoTrim' || nt === 'reroute' || nt === 'note' || nt === 'frame') {
         // 本地工具节点：无后端执行步骤，直接标记完成
         get().updateNodeData(id, { status: 'success', progress: 100, content: '本地节点（无执行步骤）' });
         runningControllers.delete(id); // 提前返回前清理 AbortController（防任务计数泄漏）

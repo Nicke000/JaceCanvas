@@ -1,6 +1,6 @@
 {
   "name": "ai-canvas-desktop",
-  "version": "4.7.1",
+  "version": "4.7.2",
   "private": true,
   "description": "JaceCanvas - AI canvas application",
   "main": "main.js",
@@ -37,7 +37,7 @@
     "appId": "com.jacecanvas.desktop",
     "productName": "JaceCanvas",
     "directories": {
-      "output": "release-v4.7.1"
+      "output": "release-v4.7.2"
     },
     "compression": "store",
     "files": [

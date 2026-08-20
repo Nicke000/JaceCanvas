@@ -519,7 +519,7 @@ export const Canvas: React.FC = () => {
       <ReactFlow nodes={visibleNodes} edges={visibleEdges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} edgeTypes={edgeTypes}
         onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onNodeDoubleClick={onNodeDoubleClick} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes} snapToGrid snapGrid={[20, 20]}
         fitView fitViewOptions={{ maxZoom: 1 }} minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} selectionKeyCode="Control" multiSelectionKeyCode="Shift" selectionMode={SelectionMode.Partial}
-        connectionLineType={ConnectionLineType.Bezier} connectionRadius={48} onlyRenderVisibleElements
+        connectionLineType={ConnectionLineType.Bezier} connectionRadius={48}
         defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}>
         {showGrid && <Background variant={gridVariant} gap={20} size={1} color="var(--theme-grid)" />}
         <Controls position="top-right" showFitView showZoom showInteractive={false} />

@@ -76,15 +76,14 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 | 版本 | 内容 | 适合 |
 |------|------|------|
-| **纯安装版** `JaceCanvas Setup 4.7.1-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
-| **安装+内置开源** `JaceCanvas Setup 4.7.1.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
-| **纯开源** `JaceCanvas-4.7.1-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
+| **安装+内置开源** `JaceCanvas Setup 4.7.2.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
+| **纯开源** | 完整源码（不含 node_modules） | 开发者二次开发 |
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
 ### 下载渠道
 
-- **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/5W1UlxGpbdd8LN0MgGLB7yQ>
+- **官网直接下载：** <https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.2.exe>
 - **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>
 
 ---
@@ -106,7 +105,7 @@ npm install
 ```batch
 cd desktop-app
 npm run build:web     # Vite 构建前端 → dist/
-npm run build         # electron-builder → release-v4.7.1/（内置 opensource，方案 B）
+npm run build         # electron-builder → release-v4.7.2/（内置 opensource，方案 B）
 ```
 
 - `npm run build` 会先自动生成 `opensource-resource`（完整源码 + node_modules）并作为 `resources/opensource` 打进安装包，安装版用户可用 DevAgent 改码。
@@ -201,7 +200,7 @@ desktop-app/
 ├── scripts/                 # 构建与打包脚本（prepare-opensource 等）
 ├── assets/                  # 图标、素材
 ├── config/                  # 提示词配置（.example.json 为开源模板）
-└── release-v4.7.1/          # 打包输出
+└── release-v4.7.2/          # 打包输出
 ```
 
 ---
@@ -230,7 +229,14 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📝 更新日志
 
-### v4.7.1（最新）
+### v4.7.2（最新）
+- 修复画布节点离开视口后停止或重置的问题。
+- 缩略图仅用于展示，放大、下载和下游传输使用原图。
+- 修复上传节点多文件预览始终打开第一张的问题。
+- 上传、裁切、局部重绘和聊天附件不再隐式降采样原图。
+- 设置/关于增加检查更新，更新前可备份用户数据。
+
+### v4.7.1
 - **导演台（3D 白模）大升级**：模型复制、无人机式 FPV 运镜录制（鼠标转向 + 键盘移动）、录制运镜同时采样模型/骨骼、关键帧删除后时间轴自动归一化、运镜速度/灯光/关键帧/机位退出持久化
 - **视频与媒体**：视频拖入画布不再被识别成封面图片（按 URL 扩展名修正类型）、视频缩略图封面显示优化
 - **付费 API**：补齐百炼 qwen-image-3.0/3.0-pro/2.0-pro、wan2.7 多图参考/视频编辑、happyhorse 1.1 系列等最新模型
@@ -248,7 +254,7 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 - **画布修复**：预览节点可连下游（多图/任意媒体）、负面提示词独立端口、主控性能优先 perfUrl、节点下载统一、启动恢复不丢项目、ConfigPanel 崩溃修复
 - **可靠性**：修复卸载保存回滚、项目 id 不同步、弹窗打开时误删画布、素材 0 值被覆盖等 60+ 项
 
-最新版本：**v4.7.1**。更新内容见 GitHub Releases。
+最新版本：**v4.7.2**。更新内容见 GitHub Releases。
 
 ---
 

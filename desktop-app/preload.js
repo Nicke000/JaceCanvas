@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 获取应用信息
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+  createUpdateBackup: () => ipcRenderer.invoke('create-update-backup'),
   chooseProjectFolder: () => ipcRenderer.invoke('choose-project-folder'),
   saveProjectFile: (payload) => ipcRenderer.invoke('save-project-file', payload),
   openProjectFile: () => ipcRenderer.invoke('open-project-file'),

@@ -452,6 +452,20 @@ ipcMain.handle("get-app-info", () => ({
   arch: process.arch,
 }));
 
+// 更新安装包不会写入 userData，但在跳转下载前创建可恢复副本，覆盖本地配置、Dexie 数据库、历史和素材。
+ipcMain.handle("create-update-backup", () => {
+  const source = app.getPath("userData");
+  const backupRoot = path.join(app.getPath("appData"), "JaceCanvas-backups");
+  const target = path.join(backupRoot, `before-update-${app.getVersion()}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+  try {
+    fs.mkdirSync(backupRoot, { recursive: true });
+    fs.cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
+    return { ok: true, path: target };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 ipcMain.handle("choose-project-folder", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { title: "选择项目保存文件夹", properties: ["openDirectory", "createDirectory"] });
   return result.canceled ? null : result.filePaths[0];

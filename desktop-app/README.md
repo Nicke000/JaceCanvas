@@ -53,15 +53,14 @@ JaceCanvas 的工作流节点由你配置的**主控平台**动态提供（不�
 
 | 版本 | 内容 | 适合 |
 |------|------|------|
-| **纯安装版** `JaceCanvas Setup 4.7.1-pure.exe` | 应用本体（无内置源码） | 普通用户，体积小 |
-| **安装+内置开源** `JaceCanvas Setup 4.7.1.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
-| **纯开源** `JaceCanvas-4.7.1-opensource.zip` | 完整源码（不含 node_modules） | 开发者二次开发 |
+| **安装+内置开源** `JaceCanvas Setup 4.7.2.exe` | 应用 + `resources/opensource` 完整源码（含 node_modules） | 需要应用内 DevAgent 改码的用户 |
+| **纯开源** | 完整源码（不含 node_modules） | 开发者二次开发 |
 
 安装版均为向导式安装（可选安装目录）。**安装版数据目录独立**（`%APPDATA%\JaceCanvas`），与开发版互不干扰，重装不残留旧数据；如需回到全新状态，设置 → 关于 →「清空所有本地数据」。
 
 ### 下载渠道
 
-- **百度网盘（推荐，国内速度快）：** <https://pan.baidu.com/s/5W1UlxGpbdd8LN0MgGLB7yQ>
+- **官网直接下载：** <https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.2.exe>
 - **GitHub Releases：** <https://github.com/Nicke000/JaceCanvas/releases>
 
 ---

@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 const dst = path.join(root, 'opensource-resource');
-const SKIP = new Set(['node_modules', 'dist', '.git', '.vite', 'opensource-resource', 'release-v4.6.8', 'release-v4.7.1', 'release-pure-install', 'dist-installer', 'node_modules.cache', '.reasonix']);
+const SKIP = new Set(['node_modules', 'dist', '.git', '.vite', 'opensource-resource', 'release-v4.6.8', 'release-v4.7.1', 'release-v4.7.2', 'release-pure-install', 'dist-installer', 'node_modules.cache', '.reasonix']);
 
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });

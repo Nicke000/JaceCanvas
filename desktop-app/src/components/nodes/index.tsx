@@ -12,6 +12,7 @@ import { comfyWS } from '@/services/comfyui-ws.service';
 import { mediaFilesFromDrop, mediaTypeForFile } from '@/utils/fileDrop';
 import { PromptActions } from '@/components/PromptActions';
 import { MediaThumb } from '@/components/MediaThumb';
+import { Lightbox, type LightboxItem } from '@/components/Lightbox';
 import { CINEMATOGRAPHY_EFFECTS, EFFECT_GROUPS, formatEffects } from '@/config/cinematographyKnowledge';
 import { optimizePrompt } from '@/services/promptOptimizer.service';
 import { message, Modal, Input, Button } from 'antd';
@@ -832,6 +833,7 @@ export const UploadNode = memo((p: NodeProps) => {
   const [dragging,setDragging]=useState(false);
   const [uploading,setUploading]=useState(false);
   const [uploadProgress,setUploadProgress]=useState(0);
+  const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
   const publish=useCallback((results:ResultItem[])=>{
     if(!results.length)return;
     const outputValues:Record<string,unknown>={results,files:results,url:results[0].url,filename:results[0].filename};
@@ -858,7 +860,8 @@ export const UploadNode = memo((p: NodeProps) => {
         const file=files[i];
         let url=''; let filename=file.name; let remoteUrl='';
         // 始终先保存本地副本到素材目录（file:// 永久有效，切服务器/重装不丢），再尝试上传服务器
-        const b64=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>{const raw=String(reader.result);if(file.type.startsWith('image/')){void downsampleImage(raw).then(resolve);}else{resolve(raw);}};reader.readAsDataURL(file);});
+        // 原图用于落盘、预览、下载和下游传输；缩略图只由 MediaThumb 在展示层生成。
+        const b64=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.readAsDataURL(file);});
         try{
           const saved=await (window as any).electronAPI?.saveLocalFile?.({b64,filename,dir:useSettingsStore.getState().assetSavePath||undefined});
           if(saved?.url){url=saved.url;}
@@ -920,7 +923,8 @@ export const UploadNode = memo((p: NodeProps) => {
         <button disabled={uploading} onClick={e=>{e.stopPropagation();choose(true)}}>选择文件夹</button>
       </div>
     </div>
-    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview">{item.type==='video'?<video src={item.url} controls className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<img loading="lazy" src={item.url} className="upload-node-media" alt={item.filename||''}/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
+    {results.length>0&&<div className="upload-node-files nodrag">{results.map((item,index)=><div className="upload-node-file" key={`${item.url}-${index}`}><div className="upload-node-file-preview" title="双击查看原文件" onDoubleClick={e=>{e.stopPropagation();setLightbox({url:item.url,type:item.type,name:item.filename||`文件 ${index+1}`});}}>{item.type==='video'?<MediaThumb url={item.url} type="video" className="upload-node-media nodrag"/>:item.type==='audio'?<audio src={item.url} controls className="nodrag" style={{width:'100%'}}/>:<MediaThumb url={item.url} type="image" className="upload-node-media"/>}</div><div className="upload-node-file-footer"><span title={item.filename||''}>{index+1}. {item.filename||'未命名文件'}</span><button className="upload-node-remove nodrag" onClick={e=>{e.stopPropagation();removeFile(index)}} disabled={uploading}>删除</button></div></div>)}</div>}
+    <Lightbox item={lightbox} onClose={()=>setLightbox(null)}/>
     {results.length>0&&<div className="upload-node-summary">
       <span>{results.length} 个文件</span>
       <span>{results.filter(r=>r.type==='image').length} 图 · {results.filter(r=>r.type==='video').length} 视频</span>
@@ -1207,23 +1211,7 @@ export const ImageCropNode = memo((p: NodeProps) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) { useCanvasStore.getState().updateNodeData(p.id, { status: 'error', error: '请选择图片文件' }); return; }
     const reader = new FileReader();
-    reader.onload = () => {
-      const raw = String(reader.result);
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 2560;  // 超过 2560px 降采样（屏幕显示/生成输入足够，防多图内存崩溃）
-        const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
-        if (scale >= 1) { update(p.id, { sourceImage: raw, sourceName: file.name }); return; }
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.naturalWidth * scale);
-        canvas.height = Math.round(img.naturalHeight * scale);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { update(p.id, { sourceImage: raw, sourceName: file.name }); return; }
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        update(p.id, { sourceImage: canvas.toDataURL('image/jpeg', 0.92), sourceName: file.name });
-      };
-      img.src = raw;
-    };
+    reader.onload = () => update(p.id, { sourceImage: String(reader.result), sourceName: file.name });
     reader.readAsDataURL(file);
     event.target.value = '';
   };
@@ -1381,11 +1369,7 @@ export const InpaintNode = memo((p: NodeProps) => {
     const file = event.target.files?.[0]; if (!file) return;
     if (!file.type.startsWith('image/')) { message.error('请选择图片文件'); return; }
     const reader = new FileReader();
-    reader.onload = () => {
-      const raw = String(reader.result); const img = new Image();
-      img.onload = () => { const MAX = 2048; const s = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight)); if (s >= 1) { update(p.id, { sourceImage: raw }); return; } const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s); const cx = c.getContext('2d'); if (!cx) { update(p.id, { sourceImage: raw }); return; } cx.drawImage(img, 0, 0, c.width, c.height); update(p.id, { sourceImage: c.toDataURL('image/jpeg', 0.92) }); };
-      img.src = raw;
-    };
+    reader.onload = () => update(p.id, { sourceImage: String(reader.result) });
     reader.readAsDataURL(file);
     event.target.value = '';
   };
@@ -1543,6 +1527,7 @@ export const PreviewNode = memo((p: NodeProps) => {
   const [selected, setSelected] = useState(0);
   const [grid, setGrid] = useState(false);
   const [stageOpen, setStageOpen] = useState(false);
+  const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
   const updateStyle=useCanvasStore(u=>u.updateNodeStyle);
   const mediaRef=useRef<HTMLImageElement|HTMLVideoElement|null>(null);
   const raw=(d.inputValues?.results||d.results||[]) as Array<{type:string;url:string;filename?:string}>;
@@ -1600,7 +1585,7 @@ export const PreviewNode = memo((p: NodeProps) => {
         : grid ? (
           <div className="preview-grid">
             {results.map((item, i) => item.type === 'image'
-              ? <MediaThumb key={`${item.url}-${i}`} url={item.url} type="image" className="preview-grid__img" onPreview={e => { e?.stopPropagation(); setSelected(i); setGrid(false); }} />
+              ? <MediaThumb key={`${item.url}-${i}`} url={item.url} type="image" className="preview-grid__img" onPreview={e => { e?.stopPropagation(); setLightbox({ url: item.url, type: 'image', name: item.filename || `结果 ${i + 1}` }); }} />
               : <div key={`${item.url}-${i}`} className="preview-grid__item">{item.type === 'video' ? '▶ 视频' : item.type === 'audio' ? '♪ 音频' : item.type === '3d' ? '🧊 3D' : 'T 文本'} {i + 1}</div>)}
           </div>
         ) : current.type === 'video' ? <VideoCoverPreview url={current.url} filename={current.filename} />
@@ -1610,6 +1595,7 @@ export const PreviewNode = memo((p: NodeProps) => {
           : <img ref={element => { mediaRef.current = element; }} src={current.url} className="preview-main" alt={current.filename || ''} />}
       {results.length>0&&<div className="preview-thumbs">{results.map((item,i)=><div className="preview-thumb-port" key={`${item.url}-${i}`}><button className={`${i===index?'is-active ':''}nodrag`} onClick={e=>{e.stopPropagation();setSelected(i)}}>{i===index && (item.type==='image'||item.type==='video')?<MediaThumb url={item.url} type={item.type} style={{width:'100%',height:'100%'}}/>:<span style={{fontSize:16}}>{item.type==='video'?'▶':item.type==='audio'?'♪':item.type==='3d'?'🧊':item.type==='text'?'T':String(i+1)}</span>}</button><span className="preview-thumb-label">结果 {i+1}</span><Handle id={`result-${i}`} type="source" position={Position.Right} title={`连接第 ${i+1} 个结果`} style={{background:portColor(item.type),right:-6,bottom:3,top:'auto',border:'2px solid var(--theme-border)',zIndex:10}}/></div>)}</div>}
     </div>
+    <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
   </NodeShell>;
 });
 

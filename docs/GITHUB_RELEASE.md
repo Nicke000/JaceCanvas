@@ -10,7 +10,7 @@
 
 ## Release 资产
 
-1. `JaceCanvas Setup 4.7.3.exe` — 安装版 + 内置完整开源（`resources/opensource`）。
+1. GitHub Release 资产：`JaceCanvas-Setup-4.7.3.exe` + `JaceCanvas-Setup-4.7.3.exe.blockmap`（连字符命名）。
 2. 官网直链：`https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.3.exe`（连字符命名）。
 3. 应用内更新清单：`https://jacecomfyui.xyz/releases/latest.json`。
 
@@ -23,8 +23,11 @@ ADAFECC838B3EB586F9610B741FE5F5128E5AB3E39C17F665F044BEC52E03A69
 ## 4.7.3 变更
 
 - 新增 **RunningHub 标准模型 API**（官方合同驱动）：图生图 / 文生图 / 视频 / 3D / 音频节点、多图顺序槽位、动态可选输出、端口类型自动配色与状态；本地图片先上传再提交（Bearer 鉴权、数组字段固化）。
-- 新增 **AI Chat Skills**：用户自建 Skills 文件夹，聊天时先读取索引、再按需加载匹配的 SKILL.md；Skill 只作知识参考，最终只输出纯提示词（可加一句说明）。
+- 新增 **运行中心**：性能页签稳定打开，容器打开状态不依赖队列/历史两个旧布尔值。
+- **3D 导演台**：模型复制、无人机式 FPV 运镜录制、关键帧时间轴自动归一化、运镜速度/灯光/关键帧/机位退出持久化。
+- 新增 **AI Chat Skills**：用户自建 Skills 文件夹，聊天时先读取索引、再按需加载匹配的 SKILL.md；Skill 只作知识参考。
 - 聊天体验优化：关闭 Skills 即恢复普通问答；资产/历史/画布/本地图片都能作为视觉附件发送；区分超时、网络、HTTP 与空正文错误并使用可读提示；修复「声明流式但返回 JSON 时的重复请求」以提速。
+- 视频与媒体：视频拖入画布按 URL 扩展名修正类型；素材持久化与保存目录切换修复；ComfyUI 直连端口错误掩码与图片上传主进程修复；安装包 ICO 图标修复。
 - 新增 **官网**本地源码（`website`，独立部署、不入源码仓库）：全新风格、深/浅两主题、服务器 `/image/` 轮播、下载/更新地址与软件内置一致。
 - 后端：RunningHub 不可用模型在节点库置灰（`-official` 全球端标记），不删除 registry 数据。
 

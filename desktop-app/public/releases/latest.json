@@ -1,6 +1,6 @@
 {
-  "version": "v4.7.2",
-  "downloadUrl": "https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.2.exe",
-  "releaseNotes": "修复画布节点离开视口停止、原图预览/下载、上传节点多文件切换，并保留原图下游传输。",
-  "sha256": "FCA260CFF1710CF0F1E51D9D594FF1BAD5B175C3A28C8E9404EFA4A9D5B04031"
+  "version": "v4.7.3",
+  "downloadUrl": "https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.3.exe",
+  "releaseNotes": "新增 RunningHub 标准模型 API、AI Chat Skills、运行中心、3D 导演台升级与聊天体验优化；修复素材持久化、ComfyUI 直连端口与打包图标。",
+  "sha256": "ADAFECC838B3EB586F9610B741FE5F5128E5AB3E39C17F665F044BEC52E03A69"
 }

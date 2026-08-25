@@ -47,7 +47,7 @@ const thinkingModeOptions = [
   { label: '深度思考', value: 'deep' },
 ];
 
-type SettingTab = 'connection' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'assets' | 'appearance' | 'log' | 'about';
+type SettingTab = 'connection' | 'runninghub' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'assets' | 'appearance' | 'log' | 'about';
 export const SettingsButton: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -117,6 +117,7 @@ export const SettingsButton: React.FC = () => {
   const [updateResult, setUpdateResult] = useState<AppUpdateState | null>(null);
   const [form] = Form.useForm();
   const settings = useSettingsStore();
+  const setRunningHub = useSettingsStore(s => s.setRunningHub);
   const paidApiProvider = Form.useWatch('paidApiProvider', form);
   const [unsaved, setUnsaved] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -365,8 +366,13 @@ export const SettingsButton: React.FC = () => {
   };
 
   const [assetFolder, setAssetFolder] = useState('');
+  const [skillsFolder, setSkillsFolder] = useState('');
+  const [skills, setSkills] = useState<Array<{ relative: string; name: string; content: string }>>([]);
+  const skillUploadRef = React.useRef<HTMLInputElement>(null);
   const [assetDefaultFolder, setAssetDefaultFolder] = useState('');
   useEffect(() => { void (window as any).electronAPI?.getAssetSettings?.().then((r: any) => { if (r) { setAssetFolder(r.currentFolder || ''); setAssetDefaultFolder(r.defaultFolder || ''); } }).catch(() => undefined); }, [open]);
+  const refreshSkills = async (folder = skillsFolder || settings.skillsFolder) => { const result = await (window as any).electronAPI?.getSkillsSettings?.(folder); if (result) { setSkillsFolder(result.folder || ''); setSkills(Array.isArray(result.items) ? result.items : []); } };
+  useEffect(() => { if (open) void refreshSkills(); }, [open]);
   const chooseAssetFolder = async () => {
     try {
       const r = await (window as any).electronAPI?.chooseAssetFolder?.();
@@ -439,8 +445,19 @@ export const SettingsButton: React.FC = () => {
       void (window as any).electronAPI?.updateRuntimeSettings?.({ assetRetentionDays: Math.max(1, Number(values.assetRetentionDays) || 7), assetMaxSizeGB: Number(values.assetMaxSizeGB) || 0 });
       message.success('素材设置已保存');
     }
+    if (section === 'runninghub') {
+      setRunningHub({
+        enabled: Boolean(values.runningHub?.enabled),
+        baseUrl: String(values.runningHub?.baseUrl || 'https://www.runninghub.cn/openapi/v2').replace(/\/+$/, ''),
+        apiKey: String(values.runningHub?.apiKey || ''),
+        executionMode: values.runningHub?.executionMode === 'standard-model' ? 'standard-model' : 'comfy-workflow',
+        defaultWorkflowId: String(values.runningHub?.defaultWorkflowId || ''),
+        defaultEndpoint: String(values.runningHub?.defaultEndpoint || 'text-to-image'),
+      });
+      message.success('RunningHub 设置已保存');
+    }
     if (section === 'chat') {
-      store.setChat({ chatProvider: values.chatProvider, chatBaseUrl: values.chatBaseUrl || '', chatApiKey: values.chatApiKey || '', chatModel: values.chatModel || '', chatModels: fetchedChatModels.length ? fetchedChatModels : store.chatModels, chatSystemPrompt: values.chatSystemPrompt || '', chatThinkingMode: values.chatThinkingMode || 'auto' });
+      store.setChat({ chatProvider: values.chatProvider, chatBaseUrl: values.chatBaseUrl || '', chatApiKey: values.chatApiKey || '', chatModel: values.chatModel || '', chatModels: fetchedChatModels.length ? fetchedChatModels : store.chatModels, chatSystemPrompt: values.chatSystemPrompt || '', chatThinkingMode: values.chatThinkingMode || 'auto', skillsEnabled: Boolean(values.skillsEnabled), skillsFolder: String(values.skillsFolder || skillsFolder || '') });
       message.success('聊天 AI 设置已保存');
     }
     if (section === 'devagent') {
@@ -475,7 +492,10 @@ export const SettingsButton: React.FC = () => {
           <div className={'settings-sidebar-item ' + (activeTab === 'connection' ? 'active' : '')} onClick={() => setActiveTab('connection')}>
             <LinkOutlined /> <span>连接设置</span>
           </div>
-          <div className={'settings-sidebar-item ' + (activeTab === 'chat' ? 'active' : '')} onClick={() => setActiveTab('chat')}>
+          <div className={'settings-sidebar-item ' + (activeTab === 'runninghub' ? 'active' : '')} onClick={() => setActiveTab('runninghub')}>
+             <ApiOutlined /> <span>RunningHub</span>
+           </div>
+           <div className={'settings-sidebar-item ' + (activeTab === 'chat' ? 'active' : '')} onClick={() => setActiveTab('chat')}>
             <RobotOutlined /> <span>聊天 AI</span>
           </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'devagent' ? 'active' : '')} onClick={() => setActiveTab('devagent')}>
@@ -567,7 +587,20 @@ export const SettingsButton: React.FC = () => {
                 </Form>
               </Modal>
             </div>}
-            {activeTab === 'chat' && <div className="settings-tab-content">
+            {activeTab === 'runninghub' && <div className="settings-tab-content runninghub-settings">
+               <h3 className="settings-tab-title">RunningHub 独立接入</h3>
+               <div className="settings-section-hint">RunningHub 节点库与现有 ComfyUI、主控和付费 API 分开管理。当前先保存连接和工作流默认值，API 执行适配将在后续阶段启用。</div>
+               <Form.Item name={['runningHub', 'enabled']} label="启用 RunningHub 节点库" valuePropName="checked"><Switch /></Form.Item>
+               <Form.Item name={['runningHub', 'baseUrl']} label="API 地址"><Input placeholder="https://www.runninghub.cn/openapi/v2" /></Form.Item>
+               <Form.Item name={['runningHub', 'apiKey']} label="RunningHub API Key"><Input.Password placeholder="仅保存在本机设置中，不写入画布节点" /></Form.Item>
+               <div className="settings-form-grid">
+                 <Form.Item name={['runningHub', 'executionMode']} label="默认执行模式"><Select options={[{ value: 'comfy-workflow', label: 'ComfyUI 工作流' }, { value: 'standard-model', label: '标准模型 API' }]} /></Form.Item>
+                 <Form.Item name={['runningHub', 'defaultEndpoint']} label="默认模型端点"><Input placeholder="text-to-image" /></Form.Item>
+               </div>
+               <Form.Item name={['runningHub', 'defaultWorkflowId']} label="默认工作流 ID"><Input placeholder="可留空，节点内单独选择" /></Form.Item>
+               <Space wrap style={{ marginTop: 8 }}><Button type="primary" onClick={() => void form.validateFields().then(values => save(values, 'runninghub'))}>保存 RunningHub 设置</Button><Button onClick={() => { window.dispatchEvent(new Event('ai-canvas-open-node-library')); setOpen(false); }}>打开 RunningHub 节点库</Button></Space>
+             </div>}
+             {activeTab === 'chat' && <div className="settings-tab-content">
               <h3 className="settings-tab-title">聊天 AI 设置</h3>
               <div className="settings-section-hint">聊天节点、全页面聊天窗口，以及<b>杰斯3D导演台的 AI 运镜 / AI 摆姿势</b>，统一使用此 API 配置。</div>
               <div className="settings-form-grid">
@@ -578,6 +611,12 @@ export const SettingsButton: React.FC = () => {
               <Form.Item name="chatApiKey" label="聊天 AI API 密钥"><Input.Password /></Form.Item>
               <Form.Item name="chatSystemPrompt" label="聊天系统提示词"><Input.TextArea rows={3} /></Form.Item>
               <Form.Item name="chatThinkingMode" label="思考模式（部分模型支持）"><Select options={thinkingModeOptions} /></Form.Item>
+               <Divider orientation="left">Skills</Divider>
+               <Form.Item name="skillsEnabled" label="默认使用 Skills" valuePropName="checked" extra="AI 聊天页面开启 Skills 后，会在用户需求前自动注入“根据用户需求，选择使用文件夹内合适的skills。”并提供当前 Skills 内容。"><Switch /></Form.Item>
+               <Form.Item name="skillsFolder" label="Skills 文件夹" extra="建议文件夹名同时表达 Skills 名称和用途，例如 image-prompt-图像提示词、storyboard-分镜规划、runninghub-参数整理，便于 AI 先从名称和用途索引中找到合适的 Skill。"><Input value={skillsFolder} readOnly placeholder="默认使用应用数据目录的 skills 文件夹" addonAfter={<Button type="link" size="small" onClick={async () => { const selected = await (window as any).electronAPI?.chooseSkillsFolder?.(); if (selected?.folder) { setSkillsFolder(selected.folder); form.setFieldValue('skillsFolder', selected.folder); await refreshSkills(selected.folder); } }}>更换</Button>} /></Form.Item>
+               <Space wrap style={{ marginBottom: 8 }}><Button icon={<FolderOpenOutlined />} onClick={() => void (window as any).electronAPI?.openSkillsFolder?.(skillsFolder || form.getFieldValue('skillsFolder'))}>打开文件夹</Button><Button icon={<ReloadOutlined />} onClick={() => void refreshSkills(form.getFieldValue('skillsFolder'))}>刷新</Button><Button onClick={() => skillUploadRef.current?.click()}>上传 / 替换 SKILL.md</Button></Space>
+               <input ref={skillUploadRef} type="file" accept=".md,text/markdown,text/plain" hidden onChange={async event => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; const content = await file.text(); const relative = `${file.name.replace(/\.md$/i, '')}/SKILL.md`; await (window as any).electronAPI?.saveSkillFile?.({ folder: skillsFolder || form.getFieldValue('skillsFolder'), relative, content }); await refreshSkills(); message.success('Skill 已上传'); }} />
+               <div className="skills-manager">{skills.length ? skills.map(skill => <div key={skill.relative}><span title={skill.relative}>{skill.relative}</span><Space size={4}><Button size="small" onClick={() => Modal.info({ title: skill.relative, width: 720, content: <Input.TextArea readOnly value={skill.content} autoSize={{ minRows: 12, maxRows: 24 }} /> })}>查看</Button><Button size="small" danger onClick={async () => { await (window as any).electronAPI?.deleteSkillFile?.({ folder: skillsFolder || form.getFieldValue('skillsFolder'), relative: skill.relative }); await refreshSkills(); }}>删除</Button></Space></div>) : <div className="settings-section-hint">当前文件夹没有 SKILL.md。每个 Skill 请放在独立子文件夹中，例如 `my-skill/SKILL.md`。</div>}</div>
               <Space wrap style={{ marginTop: 8 }}>
                 <Button onClick={fetchChatModels} loading={fetchingChat}>拉取模型</Button>
                 <Button onClick={testChatConnection} loading={testingChat} icon={<ApiOutlined />}>测试连接</Button>

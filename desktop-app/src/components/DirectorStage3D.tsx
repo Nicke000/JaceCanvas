@@ -32,7 +32,8 @@ type Motion = {
 const boneSemantic = (name: string): string => {
   if (!name) return '';
   const n = name.toLowerCase();
-  const side = /\bleft\b|(^|[_.\s])l($|[_.\s])|^l_|_l$/i.test(n) ? '左' : /\bright\b|(^|[_.\s])r($|[_.\s])|^r_|_r$/i.test(n) ? '右' : '';
+  const compact = n.replace(/[_.\s-]/g, '');
+  const side = compact.includes('left') || compact.startsWith('l') ? '左' : compact.includes('right') || compact.startsWith('r') ? '右' : '';
   let part = '';
   if (/pelvis|hips|\bhip\b/i.test(n)) part = '髋部';
   else if (/chest/i.test(n)) part = '胸';
@@ -52,6 +53,11 @@ const boneSemantic = (name: string): string => {
   else if (/wing/i.test(n)) part = '翅';
   else if (/root|master|control|ik|target|pole/i.test(n)) part = '控制';
   return side + part;
+};
+
+const boneSemanticKey = (name: string): string => {
+  const label = boneSemantic(name);
+  return label || name.toLowerCase().replace(/[^a-z0-9]/g, '');
 };
 
 // 物体库预设
@@ -114,6 +120,142 @@ type Keyframe = {
   camera?: { pos: [number, number, number]; target: [number, number, number] };
 };
 
+type MotionPath = {
+  targetId: string;
+  points: Array<[number, number, number]>;
+  duration: number;
+  startTime: number;
+  endTime: number;
+  speed: number;
+  loop: boolean;
+  closed: boolean;
+  smooth: boolean;
+  autoOrient: boolean;
+  turnSmoothing: number;
+  gait: 'none' | 'walk' | 'run';
+  gaitAmount: number;
+};
+
+type FootPlant = { position: THREE.Vector3; last: THREE.Vector3 };
+
+function blendKeyframes(a: Keyframe, b: Keyframe, t: number, time: number): Keyframe {
+  const objects: Keyframe['objects'] = {};
+  const bones: Keyframe['bones'] = {};
+  const objectIds = new Set([...Object.keys(a.objects), ...Object.keys(b.objects)]);
+  objectIds.forEach(id => {
+    const x = a.objects[id] || b.objects[id], y = b.objects[id] || a.objects[id];
+    objects[id] = { pos: x.pos.map((v, i) => v + (y.pos[i] - v) * t) as [number, number, number], rot: x.rot.map((v, i) => v + (y.rot[i] - v) * t) as [number, number, number], scale: x.scale.map((v, i) => v + (y.scale[i] - v) * t) as [number, number, number] };
+  });
+  const boneKeys = new Set([...Object.keys(a.bones), ...Object.keys(b.bones)]);
+  boneKeys.forEach(id => { const x = a.bones[id] || b.bones[id], y = b.bones[id] || a.bones[id]; bones[id] = x.map((v, i) => v + (y[i] - v) * t) as [number, number, number]; });
+  return { time, objects, bones, camera: a.camera && b.camera ? { pos: a.camera.pos.map((v, i) => v + (b.camera!.pos[i] - v) * t) as [number, number, number], target: a.camera.target.map((v, i) => v + (b.camera!.target[i] - v) * t) as [number, number, number] } : (t < 0.5 ? a.camera : b.camera) };
+}
+
+function sampleMotionPath(path: MotionPath, progress: number) {
+  if (path.points.length < 2) return { position: path.points[0] ?? [0, 0, 0] as [number, number, number], tangent: [0, 0, 1] as [number, number, number] };
+  const count = path.closed ? path.points.length : path.points.length - 1;
+  const t = path.closed ? ((progress % 1) + 1) % 1 : Math.max(0, Math.min(1, progress));
+  const scaled = t * count;
+  const index = Math.min(count - 1, Math.floor(scaled));
+  const amount = scaled - index;
+  const next = (index + 1) % path.points.length;
+  if (!path.smooth || path.points.length < 3) {
+    const position = path.points[index].map((v, axis) => v + (path.points[next][axis] - v) * amount) as [number, number, number];
+    const tangent = path.points[next].map((v, axis) => v - path.points[index][axis]) as [number, number, number];
+    return { position, tangent };
+  }
+  const p0 = path.points[path.closed ? (index - 1 + path.points.length) % path.points.length : Math.max(0, index - 1)];
+  const p1 = path.points[index], p2 = path.points[next];
+  const p3 = path.points[path.closed ? (index + 2) % path.points.length : Math.min(path.points.length - 1, index + 2)];
+  const curve = (axis: number) => 0.5 * ((2 * p1[axis]) + (-p0[axis] + p2[axis]) * amount + (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * amount ** 2 + (-p0[axis] + 3 * p1[axis] - 3 * p2[axis] + p3[axis]) * amount ** 3);
+  const derivative = (axis: number) => 0.5 * ((-p0[axis] + p2[axis]) + 2 * (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * amount + 3 * (-p0[axis] + 3 * p1[axis] - 3 * p2[axis] + p3[axis]) * amount ** 2);
+  return { position: [curve(0), curve(1), curve(2)] as [number, number, number], tangent: [derivative(0), derivative(1), derivative(2)] as [number, number, number] };
+}
+
+function characterHeight(object: SceneObj): number {
+  const box = new THREE.Box3().setFromObject(object.root);
+  return Math.max(0.1, box.max.y - box.min.y);
+}
+
+function applyFootPlant(object: SceneObj, amount = 0.75) {
+  if (!object.bones || amount <= 0) return;
+  const footNames = (object.boneNames || []).filter(name => /foot|ankle|toe/i.test(name));
+  let lowest = Infinity;
+  for (const name of footNames) {
+    const bone = object.bones[object.boneNames?.indexOf(name) ?? -1];
+    if (!bone) continue;
+    const world = new THREE.Vector3(); bone.getWorldPosition(world);
+    lowest = Math.min(lowest, world.y);
+  }
+  if (Number.isFinite(lowest) && lowest < 0.02) object.root.position.y = Math.max(object.root.position.y, object.root.position.y + Math.min(0.02, (0.02 - lowest) * amount));
+}
+
+function applyProceduralGait(object: SceneObj, path: MotionPath, elapsed: number) {
+  if (!object.bones || path.gait === 'none') return;
+  const byName = new Map<string, THREE.Bone>();
+  object.bones.forEach((bone, index) => byName.set(object.boneNames?.[index] || bone.name, bone));
+  const findBone = (semantic: string) => {
+    const exact = byName.get(semantic);
+    if (exact) return exact;
+    for (const [name, bone] of byName) if (boneSemantic(name) === semantic || boneSemanticKey(name) === semantic) return bone;
+    return undefined;
+  };
+  const amount = Math.max(0, Math.min(1, path.gaitAmount));
+  const running = path.gait === 'run';
+  const frequency = (running ? 3.1 : 1.8) * Math.max(0.35, Math.min(3, path.speed));
+  const cycle = 1 / frequency;
+  const phase = ((elapsed % cycle + cycle) % cycle) / cycle * Math.PI * 2;
+  const swing = Math.sin(phase) * (running ? 0.72 : 0.48) * amount;
+  const swingOpposite = Math.sin(phase + Math.PI) * (running ? 0.72 : 0.48) * amount;
+  const arm = Math.sin(phase + Math.PI) * (running ? 0.62 : 0.42) * amount;
+  const armOpposite = Math.sin(phase) * (running ? 0.62 : 0.42) * amount;
+  const previous = (bone: THREE.Bone, axis: 'x' | 'z') => Number((bone.userData as any)[`directorGait${axis.toUpperCase()}`] || 0);
+  const setX = (name: string, value: number) => { const bone = findBone(name); if (bone) { bone.rotation.x -= previous(bone, 'x'); bone.rotation.x += value; (bone.userData as any).directorGaitX = value; } };
+  const setZ = (name: string, value: number) => { const bone = findBone(name); if (bone) { bone.rotation.z -= previous(bone, 'z'); bone.rotation.z += value; (bone.userData as any).directorGaitZ = value; } };
+  setX('LeftUpperLeg', swing); setX('RightUpperLeg', swingOpposite);
+  setX('LeftLowerLeg', Math.max(0, -swing) * (running ? 0.65 : 0.45) * amount);
+  setX('RightLowerLeg', Math.max(0, -swingOpposite) * (running ? 0.65 : 0.45) * amount);
+  setX('LeftUpperArm', arm); setX('RightUpperArm', armOpposite);
+  setX('LeftLowerArm', -arm * 0.35); setX('RightLowerArm', -armOpposite * 0.35);
+  setZ('Hips', Math.sin(phase * 2) * (running ? 0.045 : 0.025) * amount);
+  setX('Spine', running ? -0.08 * amount : -0.025 * amount);
+  setX('Chest', running ? -0.06 * amount : -0.015 * amount);
+}
+
+function clearProceduralGait(object: SceneObj) {
+  object.bones?.forEach(bone => {
+    const data = bone.userData as any;
+    const gaitX = Number(data.directorGaitX || 0);
+    const gaitZ = Number(data.directorGaitZ || 0);
+    if (gaitX) bone.rotation.x -= gaitX;
+    if (gaitZ) bone.rotation.z -= gaitZ;
+    data.directorGaitX = 0;
+    data.directorGaitZ = 0;
+  });
+}
+
+function applyMotionPath(object: SceneObj, path: MotionPath, elapsed: number) {
+  const activeDuration = Math.max(0.1, path.endTime - path.startTime);
+  if (elapsed < path.startTime) return;
+  const local = elapsed - path.startTime;
+  const rawProgress = local / activeDuration;
+  const progress = path.loop ? rawProgress % 1 : Math.min(1, rawProgress);
+  const current = sampleMotionPath(path, progress);
+  const ahead = sampleMotionPath(path, progress + 0.025);
+  object.root.position.set(current.position[0], current.position[1], current.position[2]);
+  if (path.autoOrient && path.points.length > 1) {
+    const tx = ahead.tangent[0] * 0.7 + current.tangent[0] * 0.3;
+    const tz = ahead.tangent[2] * 0.7 + current.tangent[2] * 0.3;
+    if (Math.hypot(tx, tz) > 0.0001) {
+      const yaw = Math.atan2(tx, tz);
+      const delta = Math.atan2(Math.sin(yaw - object.root.rotation.y), Math.cos(yaw - object.root.rotation.y));
+      object.root.rotation.y += delta * Math.max(0.15, Math.min(1, path.turnSmoothing));
+    }
+  }
+  applyProceduralGait(object, path, elapsed);
+  // Foot planting is intentionally omitted during timeline sampling: applying a world-space correction on every frame accumulates drift and corrupts both preview and recording.
+}
+
 const MAT = { white: 0xffffff, gray: 0x9aa0a6, wire: 0x88ccff };
 
 // 新物体默认随机彩色（避免默认浅灰蓝看起来像白色）
@@ -161,6 +303,16 @@ async function cropToRatio(dataUrl: string, ratio: string): Promise<string> {
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
   });
+}
+
+function ratioDimensions(width: number, height: number, ratio: string): { width: number; height: number } {
+  if (ratio === 'free') return { width: Math.max(2, Math.round(width)), height: Math.max(2, Math.round(height)) };
+  const parts = ratio.split(':').map(Number);
+  const target = parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : width / Math.max(1, height);
+  const longEdge = target === 1 ? 1080 : 1280;
+  const rawWidth = target >= 1 ? longEdge : longEdge * target;
+  const rawHeight = target >= 1 ? longEdge / target : longEdge;
+  return { width: Math.max(2, Math.round(rawWidth / 2) * 2), height: Math.max(2, Math.round(rawHeight / 2) * 2) };
 }
 
 // —— 程序化几何体 ——
@@ -355,6 +507,7 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const selectedIdRef = useRef<string>('');
   const motionRef = useRef<Motion | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingOutputSizeRef = useRef<{ width: number; height: number } | null>(null);
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
   const pointerRef = useRef<THREE.Vector2>(new THREE.Vector2());
 
@@ -362,6 +515,7 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   // 顶栏展开区：光影/运镜速度面板 + 素材小窗
   const [showTopPanel, setShowTopPanel] = useState(false);
   const [showAssetsPanel, setShowAssetsPanel] = useState(false);
+  const [showModelLibrary, setShowModelLibrary] = useState(false);
   const [gizmoMode, setGizmoMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
   const [gizmoEnabled, setGizmoEnabled] = useState(true);
   const [viewMode, setViewMode] = useState<'free' | 'character'>('free');
@@ -380,6 +534,8 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const [loaded, setLoaded] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [recording, setRecording] = useState(false);
+  const recordingRef = useRef(false);
+  useEffect(() => { recordingRef.current = recording; }, [recording]);
   const [recordedUrl, setRecordedUrl] = useState('');
   // 最近一次截图/录制的成品（用于「发送到画布」）
   const [lastMedia, setLastMedia] = useState<{ type: 'image' | 'video'; url: string; name: string } | null>(null);
@@ -404,13 +560,91 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const [collapsedBones, setCollapsedBones] = useState<Record<string, boolean>>({});
   // 关键帧时间轴
   const [keyframes, setKeyframes] = useState<Keyframe[]>([]);
+  const [motionPaths, setMotionPaths] = useState<MotionPath[]>([]);
+  const historyRef = useRef<Array<{ keyframes: Keyframe[]; motionPaths: MotionPath[] }>>([]);
+  const historyIndexRef = useRef(-1);
+  const historyReadyRef = useRef(false);
+  const historySkipRef = useRef(false);
+  type ActionClip = { id: string; name: string; keyframes: Keyframe[]; duration: number; createdAt: number; sourceTargetId?: string; sourceBoneSemantics?: Record<string, string>; customBoneMap?: Record<string, string>; sourceHeight?: number; };
+  const [actionClips, setActionClips] = useState<ActionClip[]>([]);
+  const [clipIncludeCamera, setClipIncludeCamera] = useState(false);
+  const [clipLoopCount, setClipLoopCount] = useState(1);
+  const [clipBlendSeconds, setClipBlendSeconds] = useState(0.15);
+  const [previewClipId, setPreviewClipId] = useState('');
+  const [retargetScale, setRetargetScale] = useState(true);
+  const [editingClipMapId, setEditingClipMapId] = useState('');
+  const [clipMapDraft, setClipMapDraft] = useState('');
+  useEffect(() => { try { setActionClips(JSON.parse(localStorage.getItem('director3d-action-clips') || '[]')); } catch { /* ignore */ } }, []);
+  useEffect(() => { try { localStorage.setItem('director3d-action-clips', JSON.stringify(actionClips)); } catch { /* ignore */ } }, [actionClips]);
+  const timelineClipboardRef = useRef<{ kind: 'keyframes' | 'path'; keyframes?: Keyframe[]; path?: MotionPath } | null>(null);
+  useEffect(() => {
+    const snapshot = { keyframes: JSON.parse(JSON.stringify(keyframes)) as Keyframe[], motionPaths: JSON.parse(JSON.stringify(motionPaths)) as MotionPath[] };
+    if (!historyReadyRef.current) {
+      historyRef.current = [snapshot]; historyIndexRef.current = 0; historyReadyRef.current = true; return;
+    }
+    if (historySkipRef.current) { historySkipRef.current = false; return; }
+    const current = historyRef.current[historyIndexRef.current];
+    if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
+    historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(snapshot).slice(-50);
+    historyIndexRef.current = historyRef.current.length - 1;
+  }, [keyframes, motionPaths]);
+  const motionPathsRef = useRef<MotionPath[]>([]);
+  useEffect(() => { motionPathsRef.current = motionPaths; }, [motionPaths]);
+  const [pathEditMode, setPathEditMode] = useState(false);
+  const [activePathTargetId, setActivePathTargetId] = useState('');
+  const pathEditModeRef = useRef(false);
+  const activePathTargetRef = useRef('');
+  const pathVisualGroupRef = useRef<THREE.Group | null>(null);
+  const pathDragRef = useRef<{ index: number } | null>(null);
+  useEffect(() => { pathEditModeRef.current = pathEditMode; }, [pathEditMode]);
+  useEffect(() => { activePathTargetRef.current = activePathTargetId; }, [activePathTargetId]);
+  useEffect(() => {
+    const group = pathVisualGroupRef.current;
+    if (!group) return;
+    while (group.children.length) {
+      const child = group.children.pop();
+      if (child) { child.traverse(node => { const mesh = node as THREE.Mesh; mesh.geometry?.dispose(); if (Array.isArray(mesh.material)) mesh.material.forEach(m => m.dispose()); else (mesh.material as THREE.Material)?.dispose(); }); }
+    }
+    group.visible = !recording && pathEditMode;
+    if (!group.visible) return;
+    motionPaths.forEach(path => {
+      if (!path.points.length) return;
+      const active = path.targetId === activePathTargetId;
+      const color = active ? 0xf59e0b : 0x60a5fa;
+      const points = path.points.map(point => new THREE.Vector3(point[0], 0.025, point[2]));
+      if (path.closed && points.length > 1) points.push(points[0].clone());
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color, transparent: true, opacity: active ? 0.95 : 0.4 })));
+      path.points.forEach((point, index) => {
+        const marker = new THREE.Mesh(new THREE.SphereGeometry(active ? 0.085 : 0.055, 12, 8), new THREE.MeshBasicMaterial({ color }));
+        marker.position.set(point[0], 0.06, point[2]);
+        marker.userData = { pathTargetId: path.targetId, pathIndex: index };
+        marker.visible = active || pathEditMode;
+        group.add(marker);
+      });
+    });
+    return () => { /* next render disposes the temporary path helpers */ };
+  }, [motionPaths, pathEditMode, activePathTargetId, recording]);
   const [playing, setPlaying] = useState(false);
   const [playTime, setPlayTime] = useState(0);
+  const [viewportRatio, setViewportRatio] = useState<number | null>(null);
+  const layoutDragRef = useRef<{ originY: number; originRatio: number } | null>(null);
+  const layoutDragFrameRef = useRef<number | null>(null);
+  const pendingViewportRatioRef = useRef<number | null>(null);
+  const humanoidTrackCount = objects.filter(item => item.kind === 'humanoid').length;
+  const autoViewportRatio = Math.max(0.34, Math.min(0.58, 0.56 - Math.max(0, humanoidTrackCount - 1) * 0.035));
+  const effectiveViewportRatio = viewportRatio ?? autoViewportRatio;
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  const [snapToFrames, setSnapToFrames] = useState(true);
+  const timelineScrubRef = useRef(false);
+  const keyframeDragRef = useRef<{ index: number; originX: number; originTime: number } | null>(null);
   const [fps, setFps] = useState(30);
+  const timelineDragRef = useRef<{ targetId: string; mode: 'move' | 'start' | 'end'; originX: number; start: number; end: number } | null>(null);
+  const timelineDuration = Math.max(4, keyframes[keyframes.length - 1]?.time || 0, ...motionPaths.map(path => path.endTime || path.duration || 0));
   const [currentKf, setCurrentKf] = useState(-1);
   // 时间线范围选择（框选裁切）
   const [rangeSel, setRangeSel] = useState<{ start: number; end: number } | null>(null);
   const rangeDragRef = useRef<{ dragging: boolean; start: number } | null>(null);
+  const rangeMoveRef = useRef<{ originX: number; times: number[] } | null>(null);
   // 机位（镜头）
   const [cameraShots, setCameraShots] = useState<CameraShot[]>([]);
   const cameraShotsRef = useRef<CameraShot[]>([]);
@@ -454,14 +688,15 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
         if (saved.lightPos && typeof saved.lightPos.x === 'number') setLightPos(saved.lightPos);
         if (typeof saved.fps === 'number') setFps(saved.fps);
         if (Array.isArray(saved.keyframes)) setKeyframes(saved.keyframes);
+        if (Array.isArray(saved.motionPaths)) setMotionPaths(saved.motionPaths.map((path: Partial<MotionPath>) => { const startTime = Number.isFinite(path.startTime) ? Number(path.startTime) : 0; const duration = Math.max(0.1, Number(path.duration) || 4); return { gait: 'walk', gaitAmount: 1, startTime, endTime: Number.isFinite(path.endTime) ? Number(path.endTime) : startTime + duration, ...path }; }) as MotionPath[]);
         if (Array.isArray(saved.cameraShots)) setCameraShots(saved.cameraShots);
       }
     } catch { /* ignore */ }
   }, []);
   useEffect(() => {
-    try { localStorage.setItem('director3d-prefs', JSON.stringify({ camSpeed, rotateSpeed, zoomSpeed, lightKey, lightAmb, bgColor, lightPos, fps, keyframes, cameraShots })); } catch { /* ignore */ }
-  }, [camSpeed, rotateSpeed, zoomSpeed, lightKey, lightAmb, bgColor, lightPos, fps, keyframes, cameraShots]);
-  const playStateRef = useRef<{ kfs: Keyframe[]; start: number; idx: number } | null>(null);
+    try { localStorage.setItem('director3d-prefs', JSON.stringify({ camSpeed, rotateSpeed, zoomSpeed, lightKey, lightAmb, bgColor, lightPos, fps, keyframes, motionPaths, cameraShots })); } catch { /* ignore */ }
+  }, [camSpeed, rotateSpeed, zoomSpeed, lightKey, lightAmb, bgColor, lightPos, fps, keyframes, motionPaths, cameraShots]);
+  const playStateRef = useRef<{ kfs: Keyframe[]; start: number; idx: number; total?: number } | null>(null);
 
   const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
 
@@ -498,6 +733,7 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const newScene = useCallback(() => {
     clearAllObjects();
     setCameraShots([]);
+    setMotionPaths([]);
     setKeyframes([]);
     setRangeSel(null);
     setCurrentKf(-1);
@@ -608,21 +844,37 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     if (groundRef.current) groundRef.current.material = materialMode === 'wireframe' ? new THREE.MeshBasicMaterial({ color: 0x2a3140, wireframe: true }) : new THREE.MeshStandardMaterial({ color: 0xe8edf2, roughness: 0.9 });
   }, [materialMode]);
 
-  // 相机预设
+  // 相机预设：默认围绕选中对象，避免每次搭镜头都回到世界原点。
   const setView = useCallback((preset: string) => {
     const camera = cameraRef.current, controls = controlsRef.current;
     if (!camera || !controls) return;
-    const target = new THREE.Vector3(0, 0.8, 0);
+    const selected = objectsRef.current.find(o => o.id === selectedIdRef.current);
+    const target = new THREE.Vector3();
+    if (selected) new THREE.Box3().setFromObject(selected.root).getCenter(target);
+    else target.set(0, 0.8, 0);
     const dist = preset === 'closeup' ? 1.6 : preset === 'top' ? 5 : 4.2;
     let pos: THREE.Vector3;
-    if (preset === 'front') pos = new THREE.Vector3(0, 0.9, dist);
-    else if (preset === 'back') pos = new THREE.Vector3(0, 0.9, -dist);
-    else if (preset === 'left') pos = new THREE.Vector3(-dist, 0.9, 0);
-    else if (preset === 'right') pos = new THREE.Vector3(dist, 0.9, 0);
-    else if (preset === 'top') pos = new THREE.Vector3(0, dist, 0.001);
-    else if (preset === 'closeup') pos = new THREE.Vector3(0, 1.1, dist);
-    else pos = new THREE.Vector3(dist * 0.6, dist * 0.45, dist * 0.75);
+    if (preset === 'front') pos = target.clone().add(new THREE.Vector3(0, 0.1, -dist));
+    else if (preset === 'back') pos = target.clone().add(new THREE.Vector3(0, 0.1, dist));
+    else if (preset === 'left') pos = target.clone().add(new THREE.Vector3(-dist, 0.1, 0));
+    else if (preset === 'right') pos = target.clone().add(new THREE.Vector3(dist, 0.1, 0));
+    else if (preset === 'top') pos = target.clone().add(new THREE.Vector3(0, dist, 0.001));
+    else if (preset === 'closeup') pos = target.clone().add(new THREE.Vector3(0, 0.15, -dist));
+    else pos = target.clone().add(new THREE.Vector3(dist * 0.6, dist * 0.45, dist * 0.75));
     camera.position.copy(pos); controls.target.copy(target); controls.update();
+  }, []);
+
+  const focusSelected = useCallback(() => {
+    const selected = objectsRef.current.find(o => o.id === selectedIdRef.current);
+    const camera = cameraRef.current, controls = controlsRef.current;
+    if (!selected || !camera || !controls) { message.info('请先选择场景对象'); return; }
+    const box = new THREE.Box3().setFromObject(selected.root);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const radius = Math.max(size.length() * 0.65, 1.2);
+    const direction = camera.position.clone().sub(controls.target).normalize();
+    camera.position.copy(center).add(direction.multiplyScalar(radius));
+    controls.target.copy(center); controls.update();
   }, []);
 
   const easeInOut = (t: number) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -918,11 +1170,261 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
 
   const playKeyframes = useCallback(() => {
     if (keyframes.length < 2) { message.info('至少 2 个关键帧才能播放动画'); return; }
-    playStateRef.current = { kfs: keyframes, start: performance.now(), idx: 0 };
+    const total = Math.max(0.001, timelineDuration);
+    playStateRef.current = { kfs: keyframes, start: performance.now(), idx: 0, total };
     setPlaying(true);
-  }, [keyframes]);
+  }, [keyframes, timelineDuration]);
 
-  const stopPlay = useCallback(() => { playStateRef.current = null; setPlaying(false); }, []);
+  const selectedHumanoid = objects.find(item => item.kind === 'humanoid');
+  const previewPath = useCallback(() => {
+    const path = motionPaths.find(item => item.targetId === (selectedId || selectedHumanoid?.id));
+    if (!path) { message.info('请先选择人物并创建路径'); return; }
+    const target = objectsRef.current.find(object => object.id === path.targetId);
+    if (!target) { message.warning('路径对应的人物不存在'); return; }
+    const base = snapshotKeyframe();
+    const total = Math.max(timelineDuration, path.endTime || path.duration || 0);
+    playStateRef.current = { kfs: [{ ...base, time: 0 }, { ...base, time: total }], start: performance.now(), idx: 0, total };
+    setPlaying(true);
+    message.success(`开始预览${path.gait === 'run' ? '跑步' : path.gait === 'walk' ? '行走' : '路径'}`);
+  }, [motionPaths, selectedId, selectedHumanoid?.id, timelineDuration]);
+
+  const stopPlay = useCallback(() => { playStateRef.current = null; setPlaying(false); setPreviewClipId(''); }, []);
+  const restoreTimelineHistory = useCallback((index: number) => {
+    const entry = historyRef.current[index];
+    if (!entry) return;
+    historyIndexRef.current = index;
+    historySkipRef.current = true;
+    setKeyframes(JSON.parse(JSON.stringify(entry.keyframes)));
+    setMotionPaths(JSON.parse(JSON.stringify(entry.motionPaths)));
+    setCurrentKf(-1);
+  }, []);
+  const undoTimeline = useCallback(() => {
+    if (historyIndexRef.current <= 0) { message.info('没有可撤销的时间线编辑'); return; }
+    restoreTimelineHistory(historyIndexRef.current - 1);
+  }, [restoreTimelineHistory]);
+  const redoTimeline = useCallback(() => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) { message.info('没有可重做的时间线编辑'); return; }
+    restoreTimelineHistory(historyIndexRef.current + 1);
+  }, [restoreTimelineHistory]);
+  const copyTimelineSelection = useCallback(() => {
+    if (rangeSel && keyframes.length) {
+      const s = Math.min(rangeSel.start, rangeSel.end), e = Math.max(rangeSel.start, rangeSel.end);
+      timelineClipboardRef.current = { kind: 'keyframes', keyframes: JSON.parse(JSON.stringify(keyframes.slice(s, e + 1))) };
+      message.success(`已复制 ${e - s + 1} 个关键帧`);
+      return;
+    }
+    if (currentKf >= 0 && keyframes[currentKf]) {
+      timelineClipboardRef.current = { kind: 'keyframes', keyframes: [JSON.parse(JSON.stringify(keyframes[currentKf]))] };
+      message.success('已复制当前关键帧');
+      return;
+    }
+    const path = motionPaths.find(item => item.targetId === (selectedId || selectedHumanoid?.id));
+    if (path) { timelineClipboardRef.current = { kind: 'path', path: JSON.parse(JSON.stringify(path)) }; message.success('已复制当前人物路径'); return; }
+    message.info('请先框选/选中关键帧，或选择一个人物路径');
+  }, [currentKf, keyframes, motionPaths, rangeSel, selectedHumanoid?.id, selectedId]);
+  const saveActionClip = useCallback(() => {
+    if (!rangeSel || keyframes.length < 2) { message.info('请先框选至少两个关键帧'); return; }
+    const s = Math.min(rangeSel.start, rangeSel.end), e = Math.max(rangeSel.start, rangeSel.end);
+    const source = keyframes.slice(s, e + 1).map(kf => ({ ...kf, time: kf.time - keyframes[s].time }));
+    const name = window.prompt('动作片段名称', `动作片段 ${actionClips.length + 1}`)?.trim();
+    if (!name) return;
+    const sourceTargetId = selectedId || selectedHumanoid?.id;
+    const sourceObject = objectsRef.current.find(object => object.id === sourceTargetId);
+    const sourceBoneSemantics: Record<string, string> = {};
+    sourceObject?.boneNames?.forEach(name => { sourceBoneSemantics[name] = boneSemanticKey(name); });
+    setActionClips(prev => [...prev, { id: `clip-${Date.now()}`, name, sourceTargetId, sourceBoneSemantics, sourceHeight: sourceObject ? characterHeight(sourceObject) : undefined, keyframes: JSON.parse(JSON.stringify(source)), duration: source[source.length - 1].time, createdAt: Date.now() }]);
+    message.success(`已保存动作片段「${name}」`);
+  }, [actionClips.length, keyframes, rangeSel]);
+  const remapActionClip = useCallback((clip: ActionClip, targetId: string, includeCamera: boolean) => {
+    if (!clip.sourceTargetId) return { keyframes: clip.keyframes.map(kf => ({ ...kf, camera: includeCamera ? kf.camera : undefined })), unmatched: 0 };
+    const targetObject = objectsRef.current.find(object => object.id === targetId);
+    const targetBySemantic = new Map<string, string>();
+    targetObject?.boneNames?.forEach(name => targetBySemantic.set(boneSemanticKey(name), name));
+    let unmatched = 0;
+    const keyframes = clip.keyframes.map(kf => {
+      const sourceObject = kf.objects[clip.sourceTargetId!];
+      const sourceHeight = clip.sourceHeight || 1;
+      const targetHeight = targetObject ? characterHeight(targetObject) : sourceHeight;
+      const scaleRatio = retargetScale ? Math.max(0.25, Math.min(4, targetHeight / sourceHeight)) : 1;
+      const objects: Keyframe['objects'] = sourceObject ? { [targetId]: { ...sourceObject, pos: [sourceObject.pos[0] * scaleRatio, sourceObject.pos[1] * scaleRatio, sourceObject.pos[2] * scaleRatio] as [number, number, number], scale: sourceObject.scale } } : {};
+      const bones: Keyframe['bones'] = {};
+      Object.entries(kf.bones).forEach(([key, value]) => {
+        const separator = key.indexOf(':');
+        if (separator < 0 || key.slice(0, separator) !== clip.sourceTargetId) return;
+        const sourceName = key.slice(separator + 1);
+        const semantic = clip.sourceBoneSemantics?.[sourceName] || boneSemanticKey(sourceName);
+        const targetName = clip.customBoneMap?.[semantic] || targetBySemantic.get(semantic) || targetObject?.boneNames?.find(name => name === sourceName);
+        if (targetName) bones[`${targetId}:${targetName}`] = value;
+        else unmatched++;
+      });
+      return { time: kf.time, objects, bones, camera: includeCamera ? kf.camera : undefined };
+    });
+    return { keyframes, unmatched };
+  }, [retargetScale]);
+
+  const pasteActionClip = useCallback((clip: ActionClip) => {
+    const targetId = selectedId || selectedHumanoid?.id;
+    const offset = playTime;
+    if (!targetId) { message.info('请先选择目标人物'); return; }
+    if (!clip.sourceTargetId) {
+      const pasted = clip.keyframes.map(kf => ({ ...kf, time: offset + kf.time }));
+      setKeyframes(prev => [...prev, ...pasted].sort((a, b) => a.time - b.time));
+      message.success(`已加入旧版动作片段「${clip.name}」`);
+      return;
+    }
+    const { keyframes: remappedBase, unmatched } = remapActionClip(clip, targetId, clipIncludeCamera);
+    if (unmatched > 0) message.warning(`${unmatched} 个骨骼未找到语义匹配，已跳过`);
+    const sourceDuration = Math.max(0.01, clip.duration);
+    const remapped: Keyframe[] = [];
+    for (let loop = 0; loop < Math.max(1, clipLoopCount); loop++) remapped.push(...remappedBase.map(kf => ({ ...kf, time: offset + loop * sourceDuration + kf.time })));
+    if (clipBlendSeconds > 0 && remapped.length && keyframes.length) {
+      const before = [...keyframes].sort((a, b) => b.time - a.time).find(kf => kf.time <= offset);
+      if (before) {
+        const first = remapped[0];
+        for (let step = 4; step >= 1; step--) remapped.unshift(blendKeyframes(before, first, (5 - step) / 5, Math.max(0, offset - clipBlendSeconds * step / 4)));
+      }
+    }
+    setKeyframes(prev => [...prev, ...remapped].sort((a, b) => a.time - b.time));
+    setSelectedId(targetId);
+    message.success(`动作片段「${clip.name}」已适配到当前人物`);
+  }, [clipBlendSeconds, clipIncludeCamera, clipLoopCount, keyframes, playTime, remapActionClip, selectedHumanoid?.id, selectedId]);
+  const previewActionClip = useCallback((clip: ActionClip) => {
+    const targetId = selectedId || selectedHumanoid?.id;
+    if (!targetId) { message.info('请先选择预览人物'); return; }
+    setPreviewClipId(clip.id);
+    const mapped = remapActionClip(clip, targetId, false);
+    if (mapped.unmatched > 0) message.warning(`${mapped.unmatched} 个骨骼未匹配，预览将跳过`);
+    const preview = mapped.keyframes.map(kf => ({ ...kf, time: kf.time }));
+    playStateRef.current = { kfs: preview, start: performance.now(), idx: 0 };
+    setPlaying(true);
+    message.success(`预览动作片段「${clip.name}」· ${objects.find(object => object.id === targetId)?.name || '当前人物'}，结束后不会写入时间线`);
+  }, [objects, remapActionClip, selectedHumanoid?.id, selectedId]);
+  const editClipMapping = useCallback((clip: ActionClip) => {
+    const current = Object.entries(clip.customBoneMap || {}).map(([semantic, bone]) => `${semantic}=${bone}`).join('\n');
+    const input = window.prompt('自定义骨骼映射（每行：语义=目标骨骼名）', current);
+    if (input == null) return;
+    const customBoneMap: Record<string, string> = {};
+    input.split(/\r?\n/).forEach(line => { const [semantic, ...rest] = line.split('='); if (semantic?.trim() && rest.join('=').trim()) customBoneMap[semantic.trim()] = rest.join('=').trim(); });
+    setActionClips(prev => prev.map(item => item.id === clip.id ? { ...item, customBoneMap } : item));
+    message.success(`已更新「${clip.name}」的自定义骨骼映射（${Object.keys(customBoneMap).length} 项）`);
+  }, []);
+  const deleteActionClip = useCallback((id: string) => setActionClips(prev => prev.filter(clip => clip.id !== id)), []);
+  const pasteTimelineSelection = useCallback(() => {
+    const clip = timelineClipboardRef.current;
+    if (!clip) { message.info('剪贴板为空'); return; }
+    if (clip.kind === 'path' && clip.path) {
+      const targetId = selectedId || selectedHumanoid?.id;
+      if (!targetId) { message.info('请先选择目标人物'); return; }
+      const path = { ...clip.path, targetId, points: clip.path.points.map(point => [...point] as [number, number, number]), startTime: playTime, endTime: playTime + (clip.path.endTime - clip.path.startTime), duration: clip.path.endTime - clip.path.startTime };
+      setMotionPaths(prev => [...prev.filter(item => item.targetId !== targetId), path]);
+      setActivePathTargetId(targetId);
+      message.success('路径已粘贴到当前人物');
+      return;
+    }
+    const source = clip.keyframes || [];
+    if (!source.length) return;
+    const offset = playTime - source[0].time;
+    const pasted = source.map(kf => ({ ...kf, time: Math.max(0, kf.time + offset) }));
+    setKeyframes(prev => [...prev, ...pasted].sort((a, b) => a.time - b.time));
+    message.success(`已粘贴 ${pasted.length} 个关键帧`);
+  }, [playTime, selectedHumanoid?.id, selectedId]);
+  const seekTimeline = useCallback((time: number) => {
+    const next = Math.max(0, Math.min(timelineDuration, time));
+    setPlayTime(next);
+    if (playStateRef.current) playStateRef.current.start = performance.now() - next * 1000 / Math.max(0.01, speedFactorRef.current);
+  }, [timelineDuration]);
+  const scrubTimeline = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    seekTimeline(((event.clientX - rect.left) / rect.width) * timelineDuration / timelineZoom);
+  }, [seekTimeline, timelineDuration, timelineZoom]);
+  const dragKeyframe = useCallback((event: React.PointerEvent, index: number) => {
+    const rect = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
+    if (!rect) return;
+    keyframeDragRef.current = { index, originX: event.clientX, originTime: keyframes[index].time };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }, [keyframes]);
+  const moveKeyframe = useCallback((event: React.PointerEvent) => {
+    const drag = keyframeDragRef.current;
+    const rect = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
+    if (!drag || !rect) return;
+    const delta = ((event.clientX - drag.originX) / rect.width) * timelineDuration / timelineZoom;
+    const raw = Math.max(0, drag.originTime + delta);
+    const time = snapToFrames ? Math.round(raw * fps) / fps : raw;
+    setKeyframes(prev => prev.map((kf, index) => index === drag.index ? { ...kf, time } : kf).sort((a, b) => a.time - b.time));
+  }, [fps, snapToFrames, timelineDuration, timelineZoom]);
+  const endKeyframeDrag = useCallback(() => { keyframeDragRef.current = null; }, []);
+  const beginRangeMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!rangeSel || keyframes.length === 0) return;
+    const s = Math.min(rangeSel.start, rangeSel.end);
+    const e = Math.max(rangeSel.start, rangeSel.end);
+    rangeMoveRef.current = { originX: event.clientX, times: keyframes.slice(s, e + 1).map(kf => kf.time) };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [keyframes, rangeSel]);
+  const moveRange = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = rangeMoveRef.current;
+    if (!drag || !rangeSel) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const rawDelta = ((event.clientX - drag.originX) / rect.width) * timelineDuration / timelineZoom;
+    const minTime = Math.min(...drag.times);
+    const delta = Math.max(-minTime, snapToFrames ? Math.round(rawDelta * fps) / fps : rawDelta);
+    const s = Math.min(rangeSel.start, rangeSel.end), e = Math.max(rangeSel.start, rangeSel.end);
+    setKeyframes(prev => prev.map((kf, index) => index >= s && index <= e ? { ...kf, time: Math.max(0, kf.time + delta) } : kf).sort((a, b) => a.time - b.time));
+  }, [fps, rangeSel, snapToFrames, timelineDuration, timelineZoom]);
+  const endRangeMove = useCallback(() => { rangeMoveRef.current = null; }, []);
+  const selectedPath = motionPaths.find(path => path.targetId === (selectedId || selectedHumanoid?.id));
+  const updateMotionPath = useCallback((patch: Partial<MotionPath>, explicitTargetId?: string) => {
+    const targetId = explicitTargetId || selectedId || selectedHumanoid?.id;
+    if (!targetId) { message.info('请先选择人物或创建一个人物'); return; }
+    setMotionPaths(prev => prev.map(path => path.targetId === targetId ? { ...path, ...patch } : path));
+  }, [selectedId, selectedHumanoid?.id]);
+  const deleteMotionPath = useCallback((targetId?: string) => {
+    const id = targetId || selectedPath?.targetId || selectedId || selectedHumanoid?.id;
+    if (!id) { message.info('请先选择要删除路径的人物'); return; }
+    setMotionPaths(prev => prev.filter(path => path.targetId !== id));
+    if (activePathTargetId === id) setActivePathTargetId('');
+    setPathEditMode(false);
+    if (playing) stopPlay();
+    message.success('路径已删除');
+  }, [activePathTargetId, playing, selectedHumanoid?.id, selectedId, selectedPath?.targetId, stopPlay]);
+  const beginPathTimelineDrag = useCallback((event: React.PointerEvent, path: MotionPath, mode: 'move' | 'start' | 'end') => {
+    const track = (event.currentTarget as HTMLElement).parentElement;
+    if (!track) return;
+    timelineDragRef.current = { targetId: path.targetId, mode, originX: event.clientX, start: path.startTime, end: path.endTime };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }, []);
+  const updatePathTimelineDrag = useCallback((event: React.PointerEvent, path: MotionPath) => {
+    const drag = timelineDragRef.current;
+    const track = (event.currentTarget as HTMLElement).parentElement;
+    if (!drag || !track || drag.targetId !== path.targetId) return;
+    const delta = ((event.clientX - drag.originX) / track.getBoundingClientRect().width) * timelineDuration / timelineZoom;
+    const minLength = 0.2;
+    let start = drag.start, end = drag.end;
+    if (drag.mode === 'move') { start = Math.max(0, drag.start + delta); end = Math.max(start + minLength, drag.end + delta); }
+    if (drag.mode === 'start') start = Math.max(0, Math.min(drag.end - minLength, drag.start + delta));
+    if (drag.mode === 'end') end = Math.max(drag.start + minLength, drag.end + delta);
+    updateMotionPath({ startTime: start, endTime: end, duration: end - start }, path.targetId);
+  }, [timelineDuration, timelineZoom, updateMotionPath]);
+  const endPathTimelineDrag = useCallback(() => { timelineDragRef.current = null; }, []);
+  useEffect(() => {
+    const onTimelineShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z') { event.preventDefault(); if (event.shiftKey) redoTimeline(); else undoTimeline(); }
+      else if (key === 'y') { event.preventDefault(); redoTimeline(); }
+       else if (key === 'c') { event.preventDefault(); copyTimelineSelection(); }
+      else if (key === 'v') { event.preventDefault(); pasteTimelineSelection(); }
+    };
+    window.addEventListener('keydown', onTimelineShortcut);
+    return () => window.removeEventListener('keydown', onTimelineShortcut);
+  }, [copyTimelineSelection, pasteTimelineSelection, redoTimeline, undoTimeline]);
+
+  const ensureMotionPath = useCallback((targetId?: string) => {
+    const id = targetId || selectedId || selectedHumanoid?.id;
+    if (!id) { message.info('请先选择人物'); return; }
+    setMotionPaths(prev => prev.some(path => path.targetId === id) ? prev : [...prev, { targetId: id, points: [[0, 0, 0], [2, 0, 0]], duration: 4, startTime: 0, endTime: 4, speed: 1, loop: true, closed: false, smooth: true, autoOrient: true, turnSmoothing: 0.35, gait: 'walk', gaitAmount: 1 }]);
+  }, [selectedId, selectedHumanoid?.id]);
 
   // 录制关键帧动画成白模视频（K 帧播放 + MediaRecorder）
   const recordKeyframes = useCallback(() => {
@@ -930,9 +1432,19 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     const renderer = rendererRef.current;
     if (!renderer) return;
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
-    const stream = renderer.domElement.captureStream(30);
+    const recordFps = Math.max(24, Math.min(60, fps));
+    const originalSize = renderer.getSize(new THREE.Vector2());
+    const originalAspect = cameraRef.current?.aspect ?? originalSize.x / Math.max(1, originalSize.y);
+    const outputSize = ratioDimensions(originalSize.x, originalSize.y, exportRatioRef.current);
+    recordingOutputSizeRef.current = outputSize;
+    renderer.setSize(outputSize.width, outputSize.height, false);
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.objectFit = 'contain';
+    if (cameraRef.current) { cameraRef.current.aspect = outputSize.width / outputSize.height; cameraRef.current.updateProjectionMatrix(); }
+    const stream = renderer.domElement.captureStream(recordFps);
     const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) || '';
-    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16000000 }) : new MediaRecorder(stream, { videoBitsPerSecond: 16000000 });
+    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: recordFps >= 60 ? 32000000 : 24000000 }) : new MediaRecorder(stream, { videoBitsPerSecond: recordFps >= 60 ? 32000000 : 24000000 });
     recorderRef.current = recorder;
     const chunks: Blob[] = [];
     recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
@@ -946,13 +1458,22 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
         addDirectorAsset({ type: 'video', url, name });
         message.success('白模动画已保存（点「发送到画布」加到画布）');
       })();
+      recordingOutputSizeRef.current = null;
+      renderer.setSize(originalSize.x, originalSize.y, false);
+      renderer.domElement.style.width = '100%';
+      renderer.domElement.style.height = '100%';
+      renderer.domElement.style.objectFit = '';
+      if (cameraRef.current) { cameraRef.current.aspect = originalAspect; cameraRef.current.updateProjectionMatrix(); }
       setRecording(false); recorderRef.current = null;
     };
-    recorder.start(); setRecording(true); setRecordedUrl('');
+    recorder.start(1000 / recordFps);
+    recordingRef.current = true;
+    setRecording(true); setRecordedUrl('');
     playKeyframes();
-    const total = keyframes[keyframes.length - 1].time / speedFactorRef.current;
-    setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); stopPlay(); }, total * 1000 + 600);
-  }, [keyframes, playKeyframes, stopPlay, persistBlob, addDirectorAsset]);
+    setPlayTime(0);
+    const total = timelineDuration / speedFactorRef.current;
+    setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); stopPlay(); }, total * 1000 + 100);
+  }, [keyframes, playKeyframes, stopPlay, persistBlob, addDirectorAsset, fps, timelineDuration]);
 
   // —— 运镜 ——
   const buildMotion = useCallback((kind: 'orbit' | 'dollyIn' | 'dollyOut', opts?: { angle?: number; duration?: number }): Motion | null => {
@@ -975,16 +1496,33 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   }, []);
 
   const startRecording = useCallback(async (kind: 'orbit' | 'dollyIn' | 'dollyOut', opts?: { angle?: number; duration?: number }) => {
+    controlsRef.current?.update();
     const renderer = rendererRef.current;
     if (!renderer) return;
     const motion = buildMotion(kind, opts); if (!motion) return;
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
     // 先启动运镜（即使录制失败，运镜也要动）
-    motionRef.current = motion;
+
     try {
-      const stream = renderer.domElement.captureStream(30);
+      const requestedFps = Math.max(24, Math.min(60, fps));
+     const recordFps = requestedFps === 60 ? 59.94 : requestedFps;
+     const originalSize = renderer.getSize(new THREE.Vector2());
+     const originalAspect = cameraRef.current?.aspect ?? originalSize.x / Math.max(1, originalSize.y);
+     const outputSize = ratioDimensions(originalSize.x, originalSize.y, exportRatioRef.current);
+     recordingOutputSizeRef.current = outputSize;
+     renderer.setSize(outputSize.width, outputSize.height, false);
+     renderer.domElement.style.width = '100%';
+     renderer.domElement.style.height = '100%';
+     renderer.domElement.style.objectFit = 'contain';
+     if (cameraRef.current) { cameraRef.current.aspect = outputSize.width / outputSize.height; cameraRef.current.updateProjectionMatrix(); }
+     const stream = renderer.domElement.captureStream(recordFps);
       const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) || '';
-      const recorder = mime ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16000000 }) : new MediaRecorder(stream, { videoBitsPerSecond: 16000000 });
+      let recorder: MediaRecorder;
+      try {
+        recorder = mime ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: recordFps >= 59 ? 32000000 : 24000000 }) : new MediaRecorder(stream, { videoBitsPerSecond: recordFps >= 59 ? 32000000 : 24000000 });
+      } catch {
+        recorder = new MediaRecorder(stream, { mimeType: 'video/webm', videoBitsPerSecond: 18000000 });
+      }
       recorderRef.current = recorder;
       const chunks: Blob[] = [];
       recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
@@ -998,15 +1536,25 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
           addDirectorAsset({ type: 'video', url, name });
           message.success('白模视频已保存（点「发送到画布」加到画布）');
         })();
-        setRecording(false); recorderRef.current = null;
+        recordingRef.current = false;
+        recordingOutputSizeRef.current = null;
+        renderer.setSize(originalSize.x, originalSize.y, false);
+        renderer.domElement.style.width = '100%';
+        renderer.domElement.style.height = '100%';
+        renderer.domElement.style.objectFit = '';
+        if (cameraRef.current) { cameraRef.current.aspect = originalAspect; cameraRef.current.updateProjectionMatrix(); }
+       setRecording(false); recorderRef.current = null;
       };
-      recorder.start(); setRecording(true); setRecordedUrl('');
-      motion.onDone = () => { setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 150); };
+      recorder.start(1000 / recordFps);
+      setRecording(true); setRecordedUrl('');
+      motion.startTime = performance.now();
+      motionRef.current = motion;
+      motion.onDone = () => { if (recorder.state === 'recording') recorder.stop(); };
     } catch (e: any) {
       console.warn('MediaRecorder 启动失败，仅运镜不录制', e);
       motion.onDone = () => { message.info('运镜完成（当前环境录制不可用）'); };
     }
-  }, [buildMotion, persistBlob, addDirectorAsset]);
+  }, [buildMotion, persistBlob, addDirectorAsset, fps]);
 
   // 发送到画布：通过事件让画布把素材加到当前视野中心
   const sendToCanvas = useCallback((asset?: { type: 'image' | 'video'; url: string; name: string }) => {
@@ -1114,6 +1662,29 @@ ${sceneCtx}
     finally { setAiLoading(false); }
   }, [aiPrompt, startRecording, buildSceneContext]);
 
+  const applyPosePreset = useCallback((preset: 'idle' | 'walk' | 'run' | 'point') => {
+    const obj = objectsRef.current.find(o => o.id === selectedIdRef.current);
+    if (!obj?.bones || obj.kind !== 'humanoid') { message.info('请先选择一个人物'); return; }
+    const values: Record<string, [number, number, number]> = {
+      Hips: preset === 'run' ? [0.08, 0, 0] : [0, 0, 0],
+      Spine: preset === 'run' ? [-0.08, 0, 0] : [0, 0, 0],
+      Chest: preset === 'run' ? [-0.12, 0, 0] : [0, 0, 0],
+      LeftUpperArm: preset === 'idle' ? [0, 0, 0.08] : preset === 'point' ? [0, 0, -1.1] : [preset === 'run' ? -0.9 : -0.45, 0, 0.12],
+      RightUpperArm: preset === 'point' ? [0, 0, 1.1] : preset === 'idle' ? [0, 0, -0.08] : [preset === 'run' ? 0.9 : 0.45, 0, -0.12],
+      LeftLowerArm: preset === 'point' ? [0, 0, -0.15] : [preset === 'run' ? -0.35 : -0.15, 0, 0],
+      RightLowerArm: preset === 'point' ? [0, 0, 0.15] : [preset === 'run' ? 0.35 : 0.15, 0, 0],
+      LeftUpperLeg: preset === 'walk' ? [0.38, 0, 0] : preset === 'run' ? [0.65, 0, 0] : [0, 0, 0],
+      RightUpperLeg: preset === 'walk' ? [-0.38, 0, 0] : preset === 'run' ? [-0.65, 0, 0] : [0, 0, 0],
+      LeftLowerLeg: preset === 'run' ? [-0.55, 0, 0] : [0, 0, 0],
+      RightLowerLeg: preset === 'run' ? [0.55, 0, 0] : [0, 0, 0],
+    };
+    obj.bones.forEach((bone, index) => { const value = values[obj.boneNames?.[index] || bone.name]; if (value) bone.rotation.set(value[0], value[1], value[2]); });
+    const rots: Record<string, [number, number, number]> = {};
+    obj.bones.forEach((bone, index) => { rots[obj.boneNames?.[index] || bone.name] = [bone.rotation.x, bone.rotation.y, bone.rotation.z]; });
+    setBoneRots(rots);
+    message.success(`已应用${preset === 'idle' ? '待机' : preset === 'walk' ? '行走' : preset === 'run' ? '跑步' : '指向'}姿势`);
+  }, []);
+
   const runAiPose = useCallback(async () => {
     const prompt = posePrompt.trim(); if (!prompt) { message.warning('请描述姿势'); return; }
     if (!boneNames.length) { message.warning('请先选中一个人物对象'); return; }
@@ -1194,6 +1765,10 @@ ${boneDetails}
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: 0xe8edf2, roughness: 0.9 }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = -0.005; ground.receiveShadow = true; scene.add(ground);
     groundRef.current = ground;
+    const pathVisualGroup = new THREE.Group();
+    pathVisualGroup.name = 'director-path-controls';
+    scene.add(pathVisualGroup);
+    pathVisualGroupRef.current = pathVisualGroup;
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     camera.position.set(3.2, 2.2, 3.8); cameraRef.current = camera;
@@ -1233,13 +1808,18 @@ ${boneDetails}
         } else { camera.position.lerpVectors(motion.fromPos, motion.toPos, e); controls.target.lerpVectors(motion.fromTarget, motion.toTarget, e); }
         if (t >= 1) { motionRef.current = null; motion.onDone?.(); }
       }
+      // Clear the last procedural offset for every character before sampling this frame.
+      // This must happen even when a character has no keyframe on the current track.
+      for (const object of objectsRef.current) clearProceduralGait(object);
       // 关键帧动画播放
       const ps = playStateRef.current;
       if (ps) {
         const now = performance.now();
-        const total = ps.kfs[ps.kfs.length - 1].time;
-        const t = (((now - ps.start) / 1000) * speedFactorRef.current) % Math.max(0.001, total);
+        const total = Math.max(0.001, ps.total ?? ps.kfs[ps.kfs.length - 1].time);
+        const rawTime = ((now - ps.start) / 1000) * speedFactorRef.current;
+        const t = Math.min(total, Math.max(0, rawTime));
         if (now - lastPlayTimeSync.current > 100) { lastPlayTimeSync.current = now; setPlayTime(t); }
+        if (rawTime >= total) { playStateRef.current = null; setPlaying(false); }
         const kfs = ps.kfs;
         let i = 0;
         while (i < kfs.length - 1 && kfs[i + 1].time <= t) i++;
@@ -1254,9 +1834,15 @@ ${boneDetails}
           o.root.rotation.set(ta.rot[0] + (tb.rot[0] - ta.rot[0]) * e, ta.rot[1] + (tb.rot[1] - ta.rot[1]) * e, ta.rot[2] + (tb.rot[2] - ta.rot[2]) * e);
           o.root.scale.set(ta.scale[0] + (tb.scale[0] - ta.scale[0]) * e, ta.scale[1] + (tb.scale[1] - ta.scale[1]) * e, ta.scale[2] + (tb.scale[2] - ta.scale[2]) * e);
           o.bones?.forEach((bone, bi) => {
-            const ka = a.bones[`${o.id}:${bone.name}`], kb = b.bones[`${o.id}:${bone.name}`];
+            const ka = a.bones[`${o.id}:${bone.name}`] || b.bones[`${o.id}:${bone.name}`];
+            const kb = b.bones[`${o.id}:${bone.name}`] || a.bones[`${o.id}:${bone.name}`];
             if (ka && kb) bone.rotation.set(ka[0] + (kb[0] - ka[0]) * e, ka[1] + (kb[1] - ka[1]) * e, ka[2] + (kb[2] - ka[2]) * e);
           });
+        }
+        // 路径在关键帧根节点插值之后应用；骨骼姿态仍由关键帧驱动。
+        for (const path of motionPathsRef.current) {
+          const target = objectsRef.current.find(object => object.id === path.targetId);
+          if (target) applyMotionPath(target, path, t);
         }
         // 相机轨迹插值（可开关平滑：Catmull-Rom 样条 / 线性）
         if (a.camera && b.camera) {
@@ -1358,11 +1944,51 @@ ${boneDetails}
     };
     animate();
 
-    const onResize = () => { const w = el.clientWidth || 800, h = el.clientHeight || 600; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
+    let lastWidth = 0, lastHeight = 0;
+    const onResize = () => {
+      if (recordingOutputSizeRef.current) return;
+      const w = el.clientWidth || 800, h = el.clientHeight || 600;
+      if (w === lastWidth && h === lastHeight) return;
+      lastWidth = w; lastHeight = h;
+      renderer.setSize(w, h);
+      renderer.domElement.style.width = '100%';
+      renderer.domElement.style.height = '100%';
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
     window.addEventListener('resize', onResize);
+    const resizeObserver = new ResizeObserver(onResize);
+    resizeObserver.observe(el);
 
-    // 点击选中物体
+    const updatePathVisuals = () => {
+      const group = pathVisualGroupRef.current;
+      if (!group) return;
+      while (group.children.length) {
+        const child = group.children.pop();
+        if (child) { child.traverse(node => { const mesh = node as THREE.Mesh; mesh.geometry?.dispose(); if (Array.isArray(mesh.material)) mesh.material.forEach(m => m.dispose()); else (mesh.material as THREE.Material)?.dispose(); }); }
+      }
+      const show = !recordingRef.current && pathEditModeRef.current;
+      group.visible = show;
+      if (!show) return;
+      for (const path of motionPathsRef.current) {
+        if (!path.points.length) continue;
+        const active = path.targetId === activePathTargetRef.current;
+        const color = active ? 0xf59e0b : 0x60a5fa;
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(path.points.map(p => new THREE.Vector3(p[0], 0.025, p[2]))), new THREE.LineBasicMaterial({ color, transparent: true, opacity: active ? 0.95 : 0.45 }));
+        group.add(line);
+        path.points.forEach((point, index) => {
+          const marker = new THREE.Mesh(new THREE.SphereGeometry(active ? 0.085 : 0.055, 12, 8), new THREE.MeshBasicMaterial({ color }));
+          marker.position.set(point[0], 0.06, point[2]);
+          marker.userData = { pathTargetId: path.targetId, pathIndex: index };
+          marker.visible = active || pathEditModeRef.current;
+          group.add(marker);
+        });
+      }
+    };
+
+    // 点击选中物体；路径编辑模式下由专用指针事件处理。
     const onClick = (e: MouseEvent) => {
+      if (pathEditModeRef.current) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointerRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointerRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1383,6 +2009,54 @@ ${boneDetails}
       }
     };
     renderer.domElement.addEventListener('click', onClick);
+    const pathPointAt = (e: MouseEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycasterRef.current.setFromCamera(pointerRef.current, camera);
+      return raycasterRef.current.intersectObject(ground, false)[0]?.point || null;
+    };
+    const onPathPointerDown = (e: MouseEvent) => {
+      if (!pathEditModeRef.current || (e.button !== 0 && e.button !== 2)) return;
+      const group = pathVisualGroupRef.current;
+      if (!group) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycasterRef.current.setFromCamera(pointerRef.current, camera);
+      const marker = raycasterRef.current.intersectObjects(group.children.filter(child => child instanceof THREE.Mesh), false)[0]?.object;
+      if (marker?.userData?.pathTargetId === activePathTargetRef.current) {
+        if (e.button === 2 || e.shiftKey || e.ctrlKey || e.metaKey) {
+          const targetId = String(marker.userData.pathTargetId);
+          const index = Number(marker.userData.pathIndex);
+          setMotionPaths(prev => prev.map(path => path.targetId === targetId ? { ...path, points: path.points.length > 2 ? path.points.filter((_, pointIndex) => pointIndex !== index) : path.points } : path));
+          e.preventDefault();
+          return;
+        }
+        pathDragRef.current = { index: marker.userData.pathIndex };
+        controls.enabled = false;
+        e.preventDefault();
+        return;
+      }
+      const point = pathPointAt(e);
+      const targetId = activePathTargetRef.current;
+      if (!point || !targetId) return;
+      setMotionPaths(prev => prev.map(path => path.targetId === targetId ? { ...path, points: [...path.points, [point.x, 0, point.z]] } : path));
+      e.preventDefault();
+    };
+    const onPathPointerMove = (e: MouseEvent) => {
+      const drag = pathDragRef.current;
+      if (!pathEditModeRef.current || !drag) return;
+      const point = pathPointAt(e);
+      const targetId = activePathTargetRef.current;
+      if (!point || !targetId) return;
+      setMotionPaths(prev => prev.map(path => path.targetId === targetId ? { ...path, points: path.points.map((value, index) => index === drag.index ? [point.x, 0, point.z] : value) } : path));
+    };
+    const onPathPointerUp = () => { if (pathDragRef.current) controls.enabled = true; pathDragRef.current = null; };
+    renderer.domElement.addEventListener('mousedown', onPathPointerDown);
+    renderer.domElement.addEventListener('contextmenu', event => { if (pathEditModeRef.current) event.preventDefault(); });
+    window.addEventListener('mousemove', onPathPointerMove);
+    window.addEventListener('mouseup', onPathPointerUp);
 
     // 人物视角下，鼠标拖动旋转朝向
     const onCharMouseDown = (e: MouseEvent) => { if (viewModeRef.current === 'character') charDragRef.current = { x: e.clientX, y: e.clientY }; };
@@ -1489,7 +2163,11 @@ ${boneDetails}
     return () => {
       disposed = true; cancelAnimationFrame(animationId);
       window.removeEventListener('resize', onResize);
+      resizeObserver.disconnect();
       renderer.domElement.removeEventListener('click', onClick);
+      renderer.domElement.removeEventListener('mousedown', onPathPointerDown);
+      window.removeEventListener('mousemove', onPathPointerMove);
+      window.removeEventListener('mouseup', onPathPointerUp);
       renderer.domElement.removeEventListener('mousedown', onCharMouseDown);
       window.removeEventListener('mousemove', onCharMouseMove);
       window.removeEventListener('mouseup', onCharMouseUp);
@@ -1501,13 +2179,44 @@ ${boneDetails}
     };
   }, [url, addObject, selectObject, setView]);
 
+  const beginLayoutDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const parent = event.currentTarget.parentElement;
+    if (!parent) return;
+    layoutDragRef.current = { originY: event.clientY, originRatio: effectiveViewportRatio };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [effectiveViewportRatio]);
+  const moveLayoutDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = layoutDragRef.current;
+    const parent = event.currentTarget.parentElement;
+    if (!drag || !parent) return;
+    const height = parent.getBoundingClientRect().height;
+    const next = Math.max(0.25, Math.min(0.72, drag.originRatio + (event.clientY - drag.originY) / Math.max(1, height)));
+    pendingViewportRatioRef.current = next;
+    if (layoutDragFrameRef.current === null) {
+      layoutDragFrameRef.current = requestAnimationFrame(() => {
+        layoutDragFrameRef.current = null;
+        const ratio = pendingViewportRatioRef.current;
+        if (ratio !== null) setViewportRatio(ratio);
+      });
+    }
+  }, []);
+  const endLayoutDrag = useCallback(() => {
+    layoutDragRef.current = null;
+    if (layoutDragFrameRef.current !== null) {
+      cancelAnimationFrame(layoutDragFrameRef.current);
+      layoutDragFrameRef.current = null;
+    }
+    if (pendingViewportRatioRef.current !== null) setViewportRatio(pendingViewportRatioRef.current);
+    pendingViewportRatioRef.current = null;
+  }, []);
+
   // 场景对象列表（UI 用）
   const objectList = useMemo(() => objects, [objects]);
 
   return (
     <>
     {createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 3000, background: 'rgba(8,10,16,.95)', display: 'flex', flexDirection: 'column', color: '#fff' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 3000, background: 'rgba(8,10,16,.95)', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, color: '#fff', overflow: 'hidden' }}>
       {/* 顶栏 */}
       <div style={{ borderBottom: '1px solid rgba(255,255,255,.12)', flexShrink: 0, position: 'relative' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', flexWrap: 'wrap' }}>
@@ -1522,7 +2231,13 @@ ${boneDetails}
             </select>
           )}
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.55)' }}>机位:</span>
-          <Button size="small" type="text" icon={<CameraOutlined />} style={{ color: '#fff', fontSize: 11 }} onClick={recordShot}>记录机位</Button>
+          <select defaultValue="" onChange={event => { const action = event.target.value; if (action === 'focus') focusSelected(); else if (action === 'front') setView('front'); else if (action === 'closeup') setView('closeup'); event.currentTarget.value = ''; }} title="选择机位操作" style={{ background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, padding: '3px 6px', fontSize: 11 }}>
+            <option value="">选择机位操作</option>
+            <option value="focus">对焦选中</option>
+            <option value="front">正面</option>
+            <option value="closeup">特写</option>
+          </select>
+           <Button size="small" type="text" icon={<CameraOutlined />} style={{ color: '#fff', fontSize: 11 }} onClick={recordShot}>记录机位</Button>
           {cameraShots.map(s => (
             <span key={s.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, background: 'rgba(99,102,241,.25)', borderRadius: 5, padding: '1px 4px', fontSize: 11 }}>
               <span style={{ cursor: 'pointer', padding: '1px 2px' }} onClick={() => switchShot(s.id)} title="切到该机位">{s.name}</span>
@@ -1571,9 +2286,10 @@ ${boneDetails}
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: `0 0 ${effectiveViewportRatio * 100}%`, minHeight: 180, minWidth: 0, display: 'flex' }}>
         {/* 左侧：物体库 + 对象列表 */}
-        <div style={{ width: 200, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,.1)', padding: 10, overflow: 'auto', background: 'rgba(255,255,255,.03)' }}>
+        <div style={{ width: 212, flexShrink: 0, minHeight: 0, borderRight: '1px solid rgba(255,255,255,.1)', padding: 8, overflow: 'hidden', background: 'rgba(255,255,255,.03)', display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: 'rgba(255,255,255,.8)' }}>场景</div>
           <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
             <input value={sceneName} onChange={e => setSceneName(e.target.value)} placeholder="场景名" style={{ flex: 1, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 4, padding: 3, fontSize: 10 }} />
@@ -1590,7 +2306,8 @@ ${boneDetails}
             </div>
           ))}
           {savedScenes.length === 0 && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.35)', marginBottom: 6 }}>暂无保存的场景（输入名字点保存）</div>}
-          <div style={{ fontSize: 11, fontWeight: 600, margin: '10px 0 6px', color: 'rgba(255,255,255,.8)' }}>物体库</div>
+          <Button size="small" type={showModelLibrary ? 'primary' : 'default'} onClick={() => setShowModelLibrary(value => !value)} style={{ width: '100%', textAlign: 'left' }}>{showModelLibrary ? '收起模型/物体库' : '展开模型/物体库'} <span style={{ float: 'right' }}>{PRESET_LIBRARY.length}</span></Button>
+          {showModelLibrary && <div style={{ maxHeight: '34%', minHeight: 0, overflowY: 'auto', padding: 5, border: '1px solid rgba(255,255,255,.1)', borderRadius: 5, background: 'rgba(0,0,0,.12)' }}><div style={{ fontSize: 11, fontWeight: 600, margin: '2px 0 6px', color: 'rgba(255,255,255,.8)' }}>添加模型 / 物体</div>
           {(['humanoid', 'geometry', 'prop', 'environment'] as PresetKind[]).map(gk => {
             const libItems = PRESET_LIBRARY.filter(p => p.kind === gk);
             if (!libItems.length) return null;
@@ -1604,7 +2321,9 @@ ${boneDetails}
               </div>
             );
           })}
-          <div style={{ fontSize: 11, fontWeight: 600, margin: '12px 0 6px', color: 'rgba(255,255,255,.8)' }}>场景对象</div>
+           </div>}
+           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 3 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, margin: '4px 0 6px', color: 'rgba(255,255,255,.8)' }}>场景对象</div>
           {objectList.length === 0 && <div style={{ fontSize: 10, color: 'rgba(255,255,255,.4)' }}>空场景</div>}
           {(['humanoid', 'geometry', 'prop', 'environment'] as PresetKind[]).map(gk => {
             const gItems = objectList.filter(o => o.kind === gk);
@@ -1629,12 +2348,13 @@ ${boneDetails}
           })}
           <div style={{ fontSize: 10, color: 'rgba(255,255,255,.4)', marginTop: 12, lineHeight: 1.5 }}>点物体选中；右侧面板调位置/旋转/缩放；人物可摆骨骼。</div>
         </div>
+        </div>
 
         {/* 中央：视口 */}
-        <div ref={containerRef} style={{ flex: 1, minWidth: 0, position: 'relative' }} />
+<div ref={containerRef} style={{ flex: 1, minWidth: 0, position: 'relative' }} />
 
         {/* 右侧：选中对象属性面板 */}
-        <div style={{ width: 280, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,.1)', padding: 10, overflow: 'auto', background: 'rgba(255,255,255,.03)' }}>
+        <div style={{ width: 240, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,.1)', padding: 8, overflow: 'auto', background: 'rgba(255,255,255,.03)' }}>
           {!selectedId ? <div style={{ fontSize: 11, color: 'rgba(255,255,255,.4)' }}>未选中对象<br />点视口里的物体或左侧列表选中</div> : (
             <>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 10, color: 'rgba(255,255,255,.6)' }}>
@@ -1701,9 +2421,10 @@ ${boneDetails}
           )}
         </div>
       </div>
+      <div onPointerDown={beginLayoutDrag} onPointerMove={moveLayoutDrag} onPointerUp={endLayoutDrag} onPointerCancel={endLayoutDrag} title="拖动调整 3D 视口与导演区比例" style={{ height: 7, flexShrink: 0, cursor: 'ns-resize', background: 'rgba(96,165,250,.22)', borderTop: '1px solid rgba(96,165,250,.45)', borderBottom: '1px solid rgba(96,165,250,.45)' }} />
 
       {/* 底部：关键帧时间轴 + AI */}
-      <div style={{ borderTop: '1px solid rgba(255,255,255,.1)', padding: '8px 14px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ flex: `0 0 ${Math.max(28, (1 - effectiveViewportRatio) * 100)}%`, minHeight: 190, minWidth: 0, maxHeight: '72%', overflowY: 'auto', overflowX: 'hidden', borderTop: '1px solid rgba(255,255,255,.1)', padding: '8px 14px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6, boxSizing: 'border-box' }}><div style={{ display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px solid rgba(255,255,255,.08)', paddingBottom: 6 }}><span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.8)' }}>导演时间线</span><span style={{ fontSize: 10, color: 'rgba(255,255,255,.45)' }}>时间线 · 角色路径 · 输出与 AI</span></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>导出:</span>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>比例</span>
@@ -1725,6 +2446,11 @@ ${boneDetails}
           <Button size="small" type={camRecording ? 'primary' : 'default'} danger={camRecording} onClick={camRecording ? stopCamRecording : startCamRecording}>{camRecording ? '⏹ 停止运镜' : '⏺ 录制运镜'}</Button>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>关键帧:</span>
           <Button size="small" icon={<PlusOutlined />} onClick={addKeyframe}>记录关键帧</Button>
+           <Button size="small" onClick={undoTimeline}>撤销</Button>
+           <Button size="small" onClick={redoTimeline}>重做</Button>
+           <Button size="small" onClick={copyTimelineSelection}>复制</Button>
+           <Button size="small" onClick={pasteTimelineSelection}>粘贴</Button>
+           <Button size="small" onClick={saveActionClip}>保存片段</Button>
           <Button size="small" onClick={playing ? stopPlay : playKeyframes} disabled={keyframes.length < 2}>{playing ? '暂停' : '播放'}</Button>
           <Button size="small" icon={<VideoCameraOutlined />} onClick={() => void recordKeyframes()} disabled={recording || keyframes.length < 2}>录制动画</Button>
           <Button size="small" onClick={updateKeyframe} disabled={currentKf < 0}>更新关键帧</Button>
@@ -1734,7 +2460,8 @@ ${boneDetails}
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.6)' }}>{speedFactor.toFixed(2)}x</span>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>平滑:</span>
           <Switch size="small" checked={smoothCam} onChange={setSmoothCam} />
-          <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>帧率:</span>
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>吸附帧格:</span><Switch size="small" checked={snapToFrames} onChange={setSnapToFrames} />
+           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>帧率:</span>
           <select value={fps} onChange={e => setFps(Number(e.target.value))} style={{ background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 4, padding: '2px 4px', fontSize: 10 }}>
             {[24, 30, 60].map(f => <option key={f} value={f}>{f} 帧/秒</option>)}
           </select>
@@ -1742,7 +2469,9 @@ ${boneDetails}
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.45)' }}>{camRecording ? '● 录制中…移动相机' : `${keyframes.length} 帧${playing ? ' · 播放中' : ''}（点「录制运镜」录相机轨迹，或摆好姿态点「记录关键帧」）`}</span>
           {recordedUrl && <video src={recordedUrl} controls muted playsInline style={{ height: 36, maxWidth: 160, borderRadius: 4, background: '#000', marginLeft: 'auto' }} />}
         </div>
-        {keyframes.length > 0 && (
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,.08)', borderBottom: '1px solid rgba(255,255,255,.08)' }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.8)' }}>轨道工作区 <span style={{ fontSize: 10, fontWeight: 400, color: 'rgba(255,255,255,.45)' }}>{playTime.toFixed(2)}s / {timelineDuration.toFixed(1)}s</span><span style={{ marginLeft: 'auto', fontWeight: 400 }}>缩放 <input type="range" min={0.5} max={3} step={0.1} value={timelineZoom} onChange={e => setTimelineZoom(Number(e.target.value))} style={{ width: 80, verticalAlign: 'middle' }} /></span></div><div style={{ marginLeft: 92, display: 'flex', justifyContent: 'space-between', color: 'rgba(255,255,255,.35)', fontSize: 9 }}>{Array.from({ length: Math.min(9, Math.ceil(timelineDuration) + 1) }, (_, index) => <span key={`tick-${index}`}>{(index * timelineDuration / Math.min(8, Math.ceil(timelineDuration))).toFixed(1)}s</span>)}</div><div style={{ display: 'grid', gridTemplateColumns: '92px 1fr', gap: 4, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#a78bfa' }}>相机轨道</span><div style={{ height: 18, position: 'relative', overflow: 'hidden', background: 'rgba(167,139,250,.12)', borderRadius: 3 }}>{keyframes.filter(kf => kf.camera).map((kf, index) => <span key={`camera-kf-${index}`} title={`相机关键帧 ${index + 1} · ${kf.time.toFixed(2)}s`} onClick={() => jumpToKeyframe(keyframes.indexOf(kf))} style={{ position: 'absolute', left: `${Math.max(0, Math.min(94, (kf.time / Math.max(0.01, timelineDuration)) * 94))}%`, top: 3, width: 12, height: 12, borderRadius: 2, background: '#a78bfa', cursor: 'pointer' }} />)}{!keyframes.some(kf => kf.camera) && <span style={{ fontSize: 10, color: 'rgba(255,255,255,.35)', paddingLeft: 6 }}>记录关键帧或录制运镜后会出现在这里</span>}</div></div><div style={{ display: 'grid', gridTemplateColumns: '92px 1fr', gap: 4, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#60a5fa' }}>人物轨道</span><div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>{objects.filter(object => object.kind === 'humanoid').map(object => <div key={`actor-track-${object.id}`} style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 4, alignItems: 'center' }}><button onClick={() => setSelectedId(object.id)} style={{ border: 0, background: 'transparent', color: selectedId === object.id ? '#fff' : 'rgba(255,255,255,.55)', textAlign: 'left', fontSize: 10, cursor: 'pointer', padding: 0 }}>{object.name}</button><div style={{ height: 18, position: 'relative', overflow: 'hidden', background: selectedId === object.id ? 'rgba(96,165,250,.2)' : 'rgba(96,165,250,.08)', borderRadius: 3 }}>{keyframes.map((kf, index) => kf.objects[object.id] ? <span key={`track-kf-${object.id}-${index}`} title={`${object.name} 关键帧 ${index + 1} · ${kf.time.toFixed(2)}s`} onClick={() => jumpToKeyframe(index)} style={{ position: 'absolute', left: `${Math.max(0, Math.min(94, (kf.time / Math.max(0.01, timelineDuration)) * 94))}%`, top: 3, width: 12, height: 12, borderRadius: '50%', background: currentKf === index ? '#f59e0b' : '#60a5fa', cursor: 'pointer' }} /> : null)}</div></div>)}{!objects.some(object => object.kind === 'humanoid') && <span style={{ fontSize: 10, color: 'rgba(255,255,255,.35)', paddingLeft: 6 }}>暂无人物</span>}</div></div><div style={{ display: 'grid', gridTemplateColumns: '92px 1fr', gap: 4, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#f59e0b' }}>路径轨道</span><div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>{objects.filter(object => object.kind === 'humanoid').map(object => { const path = motionPaths.find(item => item.targetId === object.id); return <div key={`path-track-${object.id}`} style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 4, alignItems: 'center' }}><button onClick={() => { setSelectedId(object.id); if (path) setActivePathTargetId(object.id); }} style={{ border: 0, background: 'transparent', color: path?.targetId === activePathTargetId ? '#fff' : 'rgba(255,255,255,.55)', textAlign: 'left', fontSize: 10, cursor: 'pointer', padding: 0 }}>{object.name}</button><div style={{ minHeight: 18, background: path?.targetId === activePathTargetId ? 'rgba(245,158,11,.2)' : 'rgba(245,158,11,.08)', borderRadius: 3, padding: '2px 5px' }}>{path ? <div onClick={() => { setActivePathTargetId(path.targetId); setSelectedId(path.targetId); }} style={{ width: '100%' }}><div style={{ position: 'relative', height: 22, width: '100%' }} onPointerMove={event => updatePathTimelineDrag(event, path)} onPointerUp={endPathTimelineDrag}><div style={{ position: 'absolute', left: `${(path.startTime / timelineDuration) * 100}%`, width: `${((path.endTime - path.startTime) / timelineDuration) * 100}%`, top: 2, bottom: 2, borderRadius: 3, background: path.targetId === activePathTargetId ? '#f59e0b' : 'rgba(245,158,11,.55)' }}><span onPointerDown={event => beginPathTimelineDrag(event, path, 'start')} style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 7, cursor: 'ew-resize' }} /><span onPointerDown={event => beginPathTimelineDrag(event, path, 'move')} style={{ position: 'absolute', left: 7, right: 7, top: 0, bottom: 0, cursor: 'grab', paddingLeft: 8, fontSize: 9, color: '#1e293b' }}>{path.gait === 'run' ? '跑步' : path.gait === 'walk' ? '行走' : '路径'} {path.startTime.toFixed(1)}–{path.endTime.toFixed(1)}s</span><span onPointerDown={event => beginPathTimelineDrag(event, path, 'end')} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 7, cursor: 'ew-resize' }} /></div></div></div> : <span style={{ fontSize: 10, color: 'rgba(255,255,255,.3)' }}>未创建路径</span>}</div></div>; })}</div></div></div>
+         <div style={{ position: 'relative', height: 14, marginLeft: 92, background: 'rgba(255,255,255,.04)', cursor: 'ew-resize', touchAction: 'none' }} onPointerDown={event => { timelineScrubRef.current = true; event.currentTarget.setPointerCapture(event.pointerId); scrubTimeline(event); }} onPointerMove={event => { if (timelineScrubRef.current) scrubTimeline(event); }} onPointerUp={() => { timelineScrubRef.current = false; }} onPointerCancel={() => { timelineScrubRef.current = false; }}><div style={{ position: 'absolute', left: `${(playTime / Math.max(0.01, timelineDuration)) * timelineZoom * 100}%`, top: 0, bottom: 0, width: 3, background: '#f87171', cursor: 'ew-resize' }} /></div>
+         {keyframes.length > 0 && (
           <div
             style={{ position: 'relative', height: 26, background: 'rgba(255,255,255,.06)', borderRadius: 4, cursor: 'crosshair' }}
             onMouseDown={e => {
@@ -1762,19 +2491,51 @@ ${boneDetails}
             onMouseUp={() => { if (rangeDragRef.current) rangeDragRef.current.dragging = false; }}
             onMouseLeave={() => { if (rangeDragRef.current) rangeDragRef.current.dragging = false; }}
           >
-            {rangeSel && (
-              <div style={{ position: 'absolute', left: `${(Math.min(rangeSel.start, rangeSel.end) / Math.max(1, keyframes.length - 1)) * 100}%`, width: `${(Math.abs(rangeSel.end - rangeSel.start) / Math.max(1, keyframes.length - 1)) * 100}%`, top: 0, bottom: 0, background: 'rgba(245,158,11,.25)', borderLeft: '1px solid #f59e0b', borderRight: '1px solid #f59e0b', pointerEvents: 'none' }} />
+
+
+         {rangeSel && (
+              <div style={{ position: 'absolute', left: `${(Math.min(rangeSel.start, rangeSel.end) / Math.max(1, keyframes.length - 1)) * 100}%`, width: `${(Math.abs(rangeSel.end - rangeSel.start) / Math.max(1, keyframes.length - 1)) * 100}%`, top: 0, bottom: 0, background: 'rgba(245,158,11,.25)', borderLeft: '1px solid #f59e0b', borderRight: '1px solid #f59e0b', cursor: 'grab', pointerEvents: 'auto', touchAction: 'none' }} onPointerDown={beginRangeMove} onPointerMove={moveRange} onPointerUp={endRangeMove} />
             )}
             {keyframes.map((kf, i) => {
               const total = keyframes[keyframes.length - 1].time || 1;
-              return <span key={i} onMouseDown={e => e.stopPropagation()} onClick={() => jumpToKeyframe(i)} title={`关键帧 ${i + 1}（第 ${Math.round(kf.time * fps)} 帧 / ${kf.time.toFixed(2)}s）· 点击跳转编辑`} style={{ position: 'absolute', left: `${(kf.time / total) * 100}%`, top: '50%', transform: 'translate(-50%,-50%)', width: currentKf === i ? 16 : 12, height: currentKf === i ? 16 : 12, borderRadius: '50%', background: currentKf === i ? '#f59e0b' : '#60a5fa', border: '2px solid #1e293b', cursor: 'pointer', zIndex: 2 }} />;
+              return <span key={`${i}-${kf.time}`} onPointerDown={event => { event.stopPropagation(); dragKeyframe(event, i); }} onPointerMove={moveKeyframe} onPointerUp={endKeyframeDrag} onClick={() => jumpToKeyframe(i)} title={`关键帧 ${i + 1}（第 ${Math.round(kf.time * fps)} 帧 / ${kf.time.toFixed(2)}s）· 拖动调整时间`} style={{ position: 'absolute', left: `${(kf.time / total) * 100}%`, top: '50%', transform: 'translate(-50%,-50%)', width: currentKf === i ? 16 : 12, height: currentKf === i ? 16 : 12, borderRadius: '50%', background: currentKf === i ? '#f59e0b' : '#60a5fa', border: '2px solid #1e293b', cursor: 'grab', zIndex: 2, touchAction: 'none' }} />;
             })}
             {playing && <span style={{ position: 'absolute', left: `${(playTime / (keyframes[keyframes.length - 1].time || 1)) * 100}%`, top: 0, bottom: 0, width: 2, background: '#f87171', transition: 'left .1s linear' }} />}
           </div>
         )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,.08)' }}><div style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.8)' }}>人物轨道编辑 <span style={{ fontSize: 10, color: 'rgba(255,255,255,.45)', fontWeight: 400 }}>（{humanoidTrackCount} 条，可滚动选择）</span></div><div style={{ maxHeight: humanoidTrackCount > 4 ? 132 : 'none', overflowY: humanoidTrackCount > 4 ? 'auto' : 'visible', paddingRight: humanoidTrackCount > 4 ? 4 : 0 }}>{objects.filter(item => item.kind === 'humanoid').map(item => { const path = motionPaths.find(candidate => candidate.targetId === item.id); const active = selectedId === item.id; return <div key={`track-editor-${item.id}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', background: active ? 'rgba(96,165,250,.16)' : 'rgba(255,255,255,.03)', border: `1px solid ${active ? 'rgba(96,165,250,.5)' : 'rgba(255,255,255,.08)'}`, borderRadius: 4 }}><span style={{ width: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10 }}>{item.name}</span><span style={{ flex: 1, color: 'rgba(255,255,255,.42)', fontSize: 10 }}>{path ? `路径 ${path.points.length} 点 · ${(path.endTime - path.startTime).toFixed(1)}s` : '未创建路径'}</span><Button size="small" type={active ? 'primary' : 'default'} onClick={() => selectObject(item.id)}>编辑人物</Button><Button size="small" onClick={() => { setSelectedId(item.id); ensureMotionPath(item.id); setActivePathTargetId(item.id); }}>新建/编辑路径</Button></div>; })}</div></div>
+           <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.8)' }}>动作预设</span><span style={{ fontSize: 10, color: 'rgba(255,255,255,.4)' }}>当前人物</span>
+           <Button size="small" onClick={() => applyPosePreset('idle')}>待机</Button>
+           <Button size="small" onClick={() => applyPosePreset('walk')}>行走</Button>
+           <Button size="small" onClick={() => applyPosePreset('run')}>跑步</Button>
+           <Button size="small" onClick={() => applyPosePreset('point')}>指向</Button>
+           <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.8)', marginLeft: 10 }}>路径编辑</span>
+          <select value={selectedPath?.targetId || ''} onChange={e => { if (e.target.value) setSelectedId(e.target.value); }} style={{ background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 4, padding: '2px 4px', fontSize: 10 }}>
+            <option value="">选择人物</option>
+            {objects.filter(item => item.kind === 'humanoid').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <Button size="small" onClick={() => { ensureMotionPath(); const id = selectedId || selectedHumanoid?.id || ''; if (id) setActivePathTargetId(id); }}>新建路径</Button><Button size="small" danger disabled={!selectedPath} onClick={() => deleteMotionPath()}>删除路径</Button>
+           <Button size="small" type={pathEditMode ? 'primary' : 'default'} onClick={() => { const id = selectedPath?.targetId || selectedId || selectedHumanoid?.id || ''; if (!id) { message.info('请先选择人物并新建路径'); return; } setActivePathTargetId(id); setPathEditMode(value => !value); }}>{pathEditMode ? '完成编辑' : '编辑路径'}</Button>
+           <Button size="small" type={playing ? 'default' : 'primary'} onClick={playing ? stopPlay : previewPath}>{playing ? '停止预览' : '预览路径'}</Button>
+          {selectedPath && <>
+            <label style={{ fontSize: 10 }}>速度 <input type="number" min={0.1} max={10} step={0.1} value={selectedPath.speed} onChange={e => updateMotionPath({ speed: Math.max(0.1, Number(e.target.value) || 0.1) })} style={{ width: 52 }} /></label>
+            <label style={{ fontSize: 10 }}>时长 <input type="number" min={0.1} max={600} step={0.1} value={selectedPath.endTime - selectedPath.startTime} onChange={e => { const duration = Math.max(0.1, Number(e.target.value) || 0.1); updateMotionPath({ duration, endTime: selectedPath.startTime + duration }); }} style={{ width: 52 }} /></label>
+            <label><Switch size="small" checked={selectedPath.loop} onChange={loop => updateMotionPath({ loop })} /> 循环片段</label>
+            <label><Switch size="small" checked={selectedPath.closed} onChange={closed => updateMotionPath({ closed })} /> 闭环</label>
+            <label><Switch size="small" checked={selectedPath.smooth} onChange={smooth => updateMotionPath({ smooth })} /> 平滑</label>
+            <label><Switch size="small" checked={selectedPath.autoOrient} onChange={autoOrient => updateMotionPath({ autoOrient })} /> 朝向</label>
+            <label style={{ fontSize: 10 }}>动作 <select value={selectedPath.gait} onChange={e => updateMotionPath({ gait: e.target.value as MotionPath['gait'] })} style={{ background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 4, fontSize: 10 }}><option value="none">无</option><option value="walk">行走</option><option value="run">跑步</option></select></label>
+            <label style={{ fontSize: 10 }}>幅度 <input type="range" min={0} max={1.5} step={0.05} value={selectedPath.gaitAmount} onChange={e => updateMotionPath({ gaitAmount: Number(e.target.value) })} style={{ width: 55 }} /></label>
+            <label style={{ fontSize: 10 }}>转向 <input type="range" min={0.15} max={1} step={0.05} value={selectedPath.turnSmoothing} onChange={e => updateMotionPath({ turnSmoothing: Number(e.target.value) })} style={{ width: 55 }} /></label>
+            <span style={{ fontSize: 10, color: pathEditMode ? '#fbbf24' : 'rgba(255,255,255,.4)' }}>{pathEditMode ? '在视口地面点击添加点，拖动橙色点调整轨迹' : `${selectedPath.points.length} 个轨迹点`}</span>
+          </>}
+        </div>
         {rangeSel && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: 'rgba(255,255,255,.6)' }}>
-            <span>已框选第 {Math.min(rangeSel.start, rangeSel.end) + 1}~{Math.max(rangeSel.start, rangeSel.end) + 1} 帧（{Math.abs(rangeSel.end - rangeSel.start) + 1} 帧）</span>
+            {actionClips.length > 0 && <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '4px 0', borderTop: '1px solid rgba(255,255,255,.06)' }}><span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.75)' }}>动作片段库</span><label style={{ fontSize: 10 }}>比例 <Switch size="small" checked={retargetScale} onChange={setRetargetScale} /></label><label style={{ fontSize: 10 }}>粘贴 <select value={clipIncludeCamera ? 'both' : 'actor'} onChange={event => setClipIncludeCamera(event.target.value === 'both')} style={{ background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 3, fontSize: 10 }}><option value="actor">仅人物</option><option value="both">人物+相机</option></select></label><label style={{ fontSize: 10 }}>循环 <input type="number" min={1} max={12} value={clipLoopCount} onChange={event => setClipLoopCount(Math.max(1, Math.min(12, Number(event.target.value) || 1)))} style={{ width: 34, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 3, fontSize: 10 }} /></label><label style={{ fontSize: 10 }}>过渡 <input type="number" min={0} max={2} step={0.05} value={clipBlendSeconds} onChange={event => setClipBlendSeconds(Math.max(0, Math.min(2, Number(event.target.value) || 0)))} style={{ width: 42, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 3, fontSize: 10 }} />s</label>{actionClips.map(clip => <span key={clip.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'rgba(52,211,153,.16)', border: '1px solid rgba(52,211,153,.35)', borderRadius: 4, padding: '2px 4px' }}><Button size="small" type={previewClipId === clip.id ? 'primary' : 'text'} onClick={() => previewActionClip(clip)} style={{ color: '#a7f3d0', fontSize: 10, padding: '0 3px' }}>{clip.name} · {objects.find(object => object.id === clip.sourceTargetId)?.name || '旧片段'} · {clip.duration.toFixed(1)}s</Button><Button size="small" type="text" onClick={() => pasteActionClip(clip)} style={{ color: '#fef08a', fontSize: 10, padding: '0 3px' }}>插入</Button><Button size="small" type="text" onClick={() => editClipMapping(clip)} style={{ color: '#93c5fd', fontSize: 10, padding: '0 3px' }}>映射</Button><span onClick={() => deleteActionClip(clip.id)} title="删除片段" style={{ color: '#f87171', cursor: 'pointer', fontSize: 12 }}>×</span></span>)}</div>}
+             <span>已框选第 {Math.min(rangeSel.start, rangeSel.end) + 1}~{Math.max(rangeSel.start, rangeSel.end) + 1} 帧（{Math.abs(rangeSel.end - rangeSel.start) + 1} 帧）</span>
             <Button size="small" danger onClick={deleteRangeKfs}>删除选中段</Button>
             <Button size="small" type="text" onClick={() => setRangeSel(null)}>取消</Button>
           </div>
@@ -1788,6 +2549,7 @@ ${boneDetails}
           <Button size="small" loading={aiLoading} disabled={recording || !aiPrompt.trim()} onClick={() => void runAiMotion()}>运镜</Button>
           <span style={{ fontSize: 10, color: hasChatKey ? 'rgba(255,255,255,.4)' : '#fbbf24' }}>{hasChatKey ? `AI：${chatProvider} / ${chatModel}（设置→AI 可换）` : '⚠ 未配置 AI，请到 设置 → AI 配置 填写 API Key'}</span>
         </div>
+      </div>
       </div>
     </div>,
     document.body

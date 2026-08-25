@@ -2,7 +2,16 @@ import { create } from 'zustand';
 import type { BailianRegion } from '@/services/bailianTextToImage.service';
 import { PAID_PROVIDER_IDS, type PaidProviderId } from '@/config/paidApiAdapters';
 
-export interface ServerProfile { id: string; name: string; baseUrl: string; apiKey: string; type?: 'comfyui' | 'control' | 'custom'; /** 性能检测专用地址（主控服务器：节点用 baseUrl、性能检测用 perfUrl，两链接可不同） */ perfUrl?: string; }
+export interface ServerProfile { id: string; name: string; baseUrl: string; apiKey: string; type?: 'comfyui' | 'control' | 'runninghub' | 'custom'; /** 性能检测专用地址（主控服务器：节点用 baseUrl、性能检测用 perfUrl，两链接可不同） */ perfUrl?: string; }
+
+export interface RunningHubSettings {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  executionMode: 'standard-model' | 'comfy-workflow';
+  defaultWorkflowId: string;
+  defaultEndpoint: string;
+}
 
 export type ProviderType = 'openai' | 'gemini' | 'anthropic' | 'ollama';
 
@@ -79,6 +88,8 @@ export interface ApiSettings {
   chatModels: string[];
   chatSystemPrompt: string;
   chatThinkingMode: 'auto' | 'fast' | 'deep';
+  skillsEnabled: boolean;
+  skillsFolder: string;
   // DevAgent（画布 AI 代码助手）独立 AI 配置——与聊天 AI 分开设置
   dramaAiProvider: ProviderType;
   dramaAiBaseUrl: string;
@@ -109,6 +120,7 @@ export interface ApiSettings {
   paidApiNodes: Record<PaidApiNodeKind, PaidApiNodeSettings>;
   paidApiProviders: Record<PaidProviderId, PaidApiProviderSettings>;
   bailianTextToImage: BailianTextToImageSettings;
+  runningHub: RunningHubSettings;
 }
 
 const EMPTY_PAID_NODE = (): PaidApiNodeSettings => ({ provider: '', apiKey: '', baseUrl: '', models: [], selectedModel: '', modelsPath: '', imagePath: '', videoPath: '', taskPath: '', capabilityPath: '', authMode: 'bearer', enabledCapabilities: [], selectedCapability: '' });
@@ -131,7 +143,7 @@ const DEFAULT: ApiSettings = {
   comfyUrl: '',
   sshCommand: '', sshHost: '', sshPort: 22, sshUsername: '', sshPassword: '',
   gpuAcceleration: true,
-  chatProvider: 'openai', chatBaseUrl: 'https://api.openai.com/v1', chatApiKey: '', chatModel: 'gpt-4o-mini', chatModels: [], chatSystemPrompt: '你是一个专业、可靠的创作助手。', chatThinkingMode: 'auto',
+  chatProvider: 'openai', chatBaseUrl: 'https://api.openai.com/v1', chatApiKey: '', chatModel: 'gpt-4o-mini', chatModels: [], chatSystemPrompt: '你是一个专业、可靠的创作助手。', chatThinkingMode: 'auto', skillsEnabled: false, skillsFolder: '',
   devAgentProvider: 'openai', devAgentBaseUrl: '', devAgentApiKey: '', devAgentModel: '', devAgentModels: [],
   dramaAiProvider: 'openai', dramaAiBaseUrl: '', dramaAiApiKey: '', dramaAiModel: '', dramaAiModels: [],
   assetAutoSave: true, assetSavePath: '', assetRetentionDays: 7, assetMaxSizeGB: 5, showFailedHistory: false,
@@ -141,6 +153,7 @@ const DEFAULT: ApiSettings = {
     paidTextToVideo: EMPTY_PAID_NODE(), paidImageToVideo: EMPTY_PAID_NODE(), paidCapability: EMPTY_PAID_NODE(),
   },
   bailianTextToImage: { apiKey: '', region: 'cn-beijing', workspaceId: '', baseUrl: '' },
+  runningHub: { enabled: false, baseUrl: 'https://www.runninghub.cn/openapi/v2', apiKey: '', executionMode: 'comfy-workflow', defaultWorkflowId: '', defaultEndpoint: 'text-to-image' },
 };
 
 function normalizeUrl(url: string): string {
@@ -201,6 +214,16 @@ function load(): ApiSettings {
       const current = loaded.paidApiProviders?.[provider];
       return [provider, { ...DEFAULT_PAID_PROVIDERS[provider], ...(current && typeof current === 'object' ? current : {}) }];
     })) as ApiSettings['paidApiProviders'];
+    loaded.runningHub = {
+      ...DEFAULT.runningHub,
+      ...(loaded.runningHub && typeof loaded.runningHub === 'object' ? loaded.runningHub : {}),
+      enabled: Boolean(loaded.runningHub?.enabled),
+      baseUrl: String(loaded.runningHub?.baseUrl || DEFAULT.runningHub.baseUrl),
+      apiKey: String(loaded.runningHub?.apiKey || ''),
+      executionMode: loaded.runningHub?.executionMode === 'standard-model' ? 'standard-model' : 'comfy-workflow',
+      defaultWorkflowId: String(loaded.runningHub?.defaultWorkflowId || ''),
+      defaultEndpoint: String(loaded.runningHub?.defaultEndpoint || 'text-to-image'),
+    };
     loaded.bailianTextToImage = {
       apiKey: String(loaded.bailianTextToImage?.apiKey || ''),
       region: ['cn-beijing', 'ap-southeast-1', 'custom'].includes(loaded.bailianTextToImage?.region)
@@ -252,7 +275,7 @@ interface SettingsStore extends ApiSettings {
   setStoryboardSystemPrompt: (prompt: string) => void;
   setComfyUrl: (url: string) => void;
   setSsh: (value: Pick<ApiSettings,'sshCommand'|'sshHost'|'sshPort'|'sshUsername'|'sshPassword'>) => void;
-  setChat: (value: Partial<Pick<ApiSettings,'chatProvider'|'chatBaseUrl'|'chatApiKey'|'chatModel'|'chatModels'|'chatSystemPrompt'|'chatThinkingMode'>>) => void;
+  setChat: (value: Partial<Pick<ApiSettings,'chatProvider'|'chatBaseUrl'|'chatApiKey'|'chatModel'|'chatModels'|'chatSystemPrompt'|'chatThinkingMode'|'skillsEnabled'|'skillsFolder'>>) => void;
   setAssets: (value: Partial<Pick<ApiSettings,'assetAutoSave'|'assetSavePath'|'assetRetentionDays'|'assetMaxSizeGB'|'showFailedHistory'>>) => void;
   setDevAgent: (value: Partial<Pick<ApiSettings,'devAgentProvider'|'devAgentBaseUrl'|'devAgentApiKey'|'devAgentModel'|'devAgentModels'>>) => void;
   setDramaAi: (value: Partial<Pick<ApiSettings,'dramaAiProvider'|'dramaAiBaseUrl'|'dramaAiApiKey'|'dramaAiModel'|'dramaAiModels'>>) => void;
@@ -260,6 +283,7 @@ interface SettingsStore extends ApiSettings {
   setPaidApiNode: (kind: PaidApiNodeKind, value: Partial<PaidApiNodeSettings>) => void;
   setPaidApiProvider: (provider: PaidProviderId, value: Partial<PaidApiProviderSettings>) => void;
   setBailianTextToImage: (value: Partial<BailianTextToImageSettings>) => void;
+  setRunningHub: (value: Partial<RunningHubSettings>) => void;
   setPaidApiProfiles: (profiles: PaidApiProfile[]) => void;
   reset: () => void;
   getSettings: () => ApiSettings;
@@ -302,6 +326,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setPaidApiNode: (kind, value) => { const paidApiNodes = { ...get().paidApiNodes, [kind]: { ...get().paidApiNodes[kind], ...value } }; set({ paidApiNodes }); save({ ...get(), paidApiNodes }); },
   setPaidApiProvider: (provider, value) => { const paidApiProviders = { ...get().paidApiProviders, [provider]: { ...get().paidApiProviders[provider], ...value, provider } }; set({ paidApiProviders }); save({ ...get(), paidApiProviders }); },
   setBailianTextToImage: (value) => { const bailianTextToImage = { ...get().bailianTextToImage, ...value }; set({ bailianTextToImage }); save({ ...get(), bailianTextToImage }); },
+  setRunningHub: (value) => { const runningHub = { ...get().runningHub, ...value }; set({ runningHub }); save({ ...get(), runningHub }); },
   setPaidApiProfiles: (paidApiProfiles) => { set({ paidApiProfiles }); save({ ...get(), paidApiProfiles }); },
   reset: () => { set(DEFAULT); save(DEFAULT); },
   getSettings: () => ({ ...get() }),

@@ -11,14 +11,13 @@ import { ShortcutHelp } from '@/components/ShortcutHelp';
 import { FloatingAssistant } from '@/components/FloatingAssistant';
 import { AgentPanel } from '@/components/AgentPanel';
 import { WorkspaceSidebar } from '@/components/WorkspaceSidebar';
-import { GenerationHistory } from '@/components/GenerationHistory';
-import { PerformanceBar } from '@/components/PerformanceBar';
+
 import { useCanvasStore } from '@/stores/canvasStore';
 import { db, generateId, loadChatSessions } from '@/utils';
 import { StoryDramaStudio } from '@/components/StoryDramaStudio';
 import { DirectorStage3D } from '@/components/DirectorStage3D';
 import { ThemeSelector } from '@/components/ThemeSelector';
-import { TaskQueue } from '@/components/TaskQueue';
+import { RuntimeCenter } from '@/components/RuntimeCenter';
 import { ChatWindow } from '@/components/ChatWindow';
 import { PromptLibrary } from '@/components/PromptLibrary';
 import type { ChatSession } from '@/types';
@@ -57,20 +56,29 @@ const App: React.FC = () => {
   const [agentOpen, setAgentOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyHeight, setHistoryHeight] = useState(0);
-  const [taskQueueOpen, setTaskQueueOpen] = useState(true);
+  const [taskQueueOpen, setTaskQueueOpen] = useState(() => localStorage.getItem('ai-canvas-runtime-center-open') !== 'false');
+  const [runtimeOpen, setRuntimeOpen] = useState(() => localStorage.getItem('ai-canvas-runtime-center-open') !== 'false');
+  const [runtimeTab, setRuntimeTab] = useState<'queue'|'history'|'performance'>(() => {
+    const saved = localStorage.getItem('ai-canvas-runtime-center-tab');
+    return saved === 'history' || saved === 'performance' ? saved : 'queue';
+  });
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
   const [favOpen, setFavOpen] = useState(false);
   const selectedNodeId = useCanvasStore(s => s.selectedNodeId);
-  // 节点配置面板（右侧 Inspector）显示时收起执行列表，避免相互遮挡
-  useEffect(() => { if (selectedNodeId) setTaskQueueOpen(false); }, [selectedNodeId]);
+  // 参数检查器与运行中心可以同时工作；运行中心通过底部布局规则避让历史面板。
   const [chatSession, setChatSession] = useState<ChatSession | null>(null);
   // 覆盖层标志：画布全局快捷键（Canvas keydown）据此禁用，避免在短剧工作室/聊天/DevAgent 里误删底层节点
   useEffect(() => { (window as any).__aiCanvasOverlayOpen = dramaStudioOpen || chatWindowOpen || agentOpen || favOpen || taskQueueOpen || historyOpen || historyModalOpen || recoverModalOpen || saveModalOpen || loadModalOpen || templateModalOpen; }, [dramaStudioOpen, chatWindowOpen, agentOpen, favOpen, taskQueueOpen, historyOpen, historyModalOpen, recoverModalOpen, saveModalOpen, loadModalOpen, templateModalOpen]);
-  // 点击画布空白处自动收起执行列表
+  // 运行中心跨面板导航：队列与生成历史互相可达。
   useEffect(() => {
-    const close = () => setTaskQueueOpen(false);
-    window.addEventListener('ai-canvas-close-taskqueue', close);
-    return () => window.removeEventListener('ai-canvas-close-taskqueue', close);
+    const close = () => { setTaskQueueOpen(false); setHistoryOpen(false); setRuntimeOpen(false); localStorage.setItem('ai-canvas-runtime-center-open', 'false'); };
+    const open = () => { setHistoryOpen(false); setRuntimeTab('queue'); setTaskQueueOpen(true); setRuntimeOpen(true); localStorage.setItem('ai-canvas-runtime-center-open', 'true'); localStorage.setItem('ai-canvas-runtime-center-tab', 'queue'); };
+    const openHistory = () => { setTaskQueueOpen(false); setRuntimeTab('history'); setHistoryOpen(true); setRuntimeOpen(true); localStorage.setItem('ai-canvas-runtime-center-open', 'true'); localStorage.setItem('ai-canvas-runtime-center-tab', 'history'); };
+    const openRuntime = () => { setTaskQueueOpen(false); setHistoryOpen(false); setRuntimeTab('queue'); setRuntimeOpen(true); localStorage.setItem('ai-canvas-runtime-center-open', 'true'); localStorage.setItem('ai-canvas-runtime-center-tab', 'queue'); };
+    window.addEventListener('ai-canvas-open-runtime-center', openRuntime);
+    window.addEventListener('ai-canvas-open-taskqueue', open);
+    window.addEventListener('ai-canvas-open-history', openHistory);
+    return () => { window.removeEventListener('ai-canvas-open-taskqueue', open); window.removeEventListener('ai-canvas-open-history', openHistory); window.removeEventListener('ai-canvas-open-runtime-center', openRuntime); };
   }, []);
   const [textEditor, setTextEditor] = useState<{nodeId:string;field:string;value:string;label:string;kind:'text'|'script'|'scene'}|null>(null);
   const [textEditorOpen, setTextEditorOpen] = useState(false);
@@ -88,6 +96,8 @@ const App: React.FC = () => {
   const uiPrefs = useThemeStore(s => s.preferences);
   const uiCustom = useThemeStore(s => s.custom);
   const uiThemes = useThemeStore(s => s.themes);
+  const currentTheme = uiThemes.find(t => t.id === themeId) || uiThemes[0];
+  const isLightTheme = currentTheme.family === 'light';
   // antd 不接受 CSS 变量字符串（派生色不可靠），改为解析当前主题为 hex 再传入
   const antdTokens = React.useMemo(() => {
     const current = uiThemes.find(t => t.id === themeId) || uiThemes[0];
@@ -173,6 +183,8 @@ const App: React.FC = () => {
   useEffect(() => {
     initAutosave();
     setAutosaveContext(activeProjectId || '', useCanvasStore.getState().projectName);
+    const saveNodeConfig = () => { void flushAutosave(); };
+    window.addEventListener('ai-canvas-autosave-project', saveNodeConfig);
     void (async () => {
       // 启动时始终尝试恢复最近编辑的项目（画布为空才加载，避免覆盖新建内容）。
       // 修复：之前仅在 crashCount===0 时自动恢复；强杀进程后 crashCount 持久化 >0，
@@ -196,6 +208,7 @@ const App: React.FC = () => {
         }
       } catch { /* 忽略 */ }
     })();
+    return () => window.removeEventListener('ai-canvas-autosave-project', saveNodeConfig);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const handleSave = async () => { setProjectNameInput(useCanvasStore.getState().projectName); await refreshProjects(); setSaveModalOpen(true); };
@@ -335,7 +348,7 @@ const App: React.FC = () => {
   ];
 
   return (
-    <ConfigProvider locale={zhCN} theme={{algorithm:themeId === 'light' ? theme.defaultAlgorithm : theme.darkAlgorithm,token:{colorPrimary:antdTokens.colorPrimary,borderRadius:antdTokens.borderRadius,colorBgBase:antdTokens.colorBgBase,colorText:antdTokens.colorText,colorBorder:antdTokens.colorBorder,fontFamily:antdTokens.fontFamily}}}>
+    <ConfigProvider locale={zhCN} theme={{algorithm:isLightTheme ? theme.defaultAlgorithm : theme.darkAlgorithm,token:{colorPrimary:antdTokens.colorPrimary,borderRadius:antdTokens.borderRadius,colorBgBase:antdTokens.colorBgBase,colorText:antdTokens.colorText,colorBorder:antdTokens.colorBorder,fontFamily:antdTokens.fontFamily}}}>
       <AntApp>
         <ShortcutHelp />
         <FloatingAssistant hidden={chatWindowOpen || dramaStudioOpen || directorOpen} />
@@ -416,14 +429,14 @@ const App: React.FC = () => {
           {/* 鍙抽敭鑿滃崟 */}
           <ContextMenu/>
           {/* 鐢熸垚鍘嗗彶 */}
-          {!chatWindowOpen && !dramaStudioOpen && <GenerationHistory onOpenChange={setHistoryOpen} onHeightChange={setHistoryHeight}/>} 
-          {!chatWindowOpen && !dramaStudioOpen && <PerformanceBar compact={historyOpen} />} 
+          {<RuntimeCenter open={runtimeOpen} tab={runtimeTab} onTabChange={tab => { setRuntimeTab(tab); setTaskQueueOpen(tab === 'queue'); setHistoryOpen(tab === 'history'); setRuntimeOpen(true); localStorage.setItem('ai-canvas-runtime-center-tab', tab); localStorage.setItem('ai-canvas-runtime-center-open', 'true'); }} onClose={() => { setTaskQueueOpen(false); setHistoryOpen(false); setRuntimeOpen(false); localStorage.setItem('ai-canvas-runtime-center-open', 'false'); }} onHistoryHeightChange={setHistoryHeight}/>} 
+           
           {!chatWindowOpen && !dramaStudioOpen && <div className="app-uptime" role="status" aria-label="本次启动时长"><FieldTimeOutlined /> 本次已开启 {formatUptime(uptime)}</div>}
           {!chatWindowOpen && !dramaStudioOpen && <div className={'canvas-text-editor ' + (textEditorOpen ? 'is-open' : 'is-collapsed') + (textEditorFullscreen ? ' is-fullscreen' : '')} style={{ bottom: historyOpen ? historyHeight + 16 : 64 }}>
             <Button type="text" className="canvas-text-editor__toggle" onClick={() => setTextEditorOpen(value => !value)} aria-label={textEditorOpen ? '收起文本编辑器' : '展开文本编辑器'}>{textEditorOpen ? '‹' : 'T'}</Button>
             {textEditorOpen && textEditor && <div className="canvas-text-editor__body"><div className="canvas-text-editor__title"><span className="canvas-text-editor__label">{textEditor.label}</span><span className="canvas-text-editor__actions"><Button type="text" size="small" icon={<FullscreenOutlined />} onClick={() => setTextEditorFullscreen(v => !v)} title={textEditorFullscreen ? '退出全屏' : '全屏编辑'} /><Button type="text" size="small" onClick={() => { const value = !textEditorAutoClose; setTextEditorAutoClose(value); localStorage.setItem('ai-canvas-text-editor-auto-close', String(value)); }}>{textEditorAutoClose ? '自动收起' : '手动收起'}</Button></span></div><textarea className="canvas-text-editor__input" autoFocus value={textEditor.value} style={{ height: textEditorHeight }} onChange={e => { updateTextEditor(e.target.value); e.target.style.height = '48px'; setTextEditorHeight(Math.max(48, e.target.scrollHeight)); }} /><div className="canvas-text-editor__meta"><span>{textEditor.value.length} 字</span><span className="canvas-text-editor__hint">点击输入区外自动收起</span></div></div>}
           </div>}
-          {!selectedNodeId && <TaskQueue open={taskQueueOpen} onClose={() => setTaskQueueOpen(false)} onToggle={() => setTaskQueueOpen(v => !v)} />}
+          
                     {dramaStudioOpen && <StoryDramaStudio onClose={()=>setDramaStudioOpen(false)}/>}
           {directorOpen && <DirectorStage3D onClose={() => setDirectorOpen(false)} />}
           <PromptLibrary open={favOpen} onClose={() => setFavOpen(false)} />

@@ -57,12 +57,42 @@ function textFromDataUrl(dataUrl: string): string {
   } catch { return ''; }
 }
 
+/** 依据 MIME、名称后缀与 URL，归一化实际媒体类型，避免资产/历史等来源的 image 被误当文本丢掉。 */
+function effectiveMime(a: ChatAttachment): string {
+  const raw = a.mimeType || '';
+  if (/^image\//i.test(raw) || /^video\//i.test(raw) || /^audio\//i.test(raw) || /^text\//i.test(raw)) return raw;
+  const name = (a.name || '').toLowerCase();
+  const url = (a.url || a.dataUrl || '').toLowerCase();
+  let type = '';
+  if (a.source === 'canvas' || a.source === 'asset' || a.source === 'history') {
+    // 画布/资产/历史传入的 type 字段写在 mimeType（如 image/unknown）；这里按 URL 后缀兜底。
+    if (/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(url)) type = 'image';
+    else if (/\.(mp4|mov|webm|mkv|avi)(\?|#|$)/.test(url)) type = 'video';
+    else if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) type = 'audio';
+  }
+  if (!type) {
+    if (/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name) || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(url)) type = 'image';
+    else if (/\.(mp4|mov|webm|mkv|avi)$/.test(name)) type = 'video';
+    else if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(name)) type = 'audio';
+    else if (/\.(md|txt|json|js|ts|py|yaml|yml|xml|toml|env|ini)$/.test(name)) type = 'text';
+  }
+  if (type === 'image') return 'image/png';
+  if (type === 'video') return 'video/mp4';
+  if (type === 'audio') return 'audio/mpeg';
+  if (type === 'text') return 'text/plain';
+  // 兜底：若 source 已标记 canvas/asset/history 且无类型，按原始保留。
+  return raw;
+}
+
 export function attachmentParts(attachments: ChatAttachment[]) {
-  return attachments.filter(a => a.dataUrl || a.url).map(a => {
+  return attachments.filter(a => effectiveMime(a).startsWith('image') || effectiveMime(a).startsWith('video') || effectiveMime(a).startsWith('audio') || effectiveMime(a).startsWith('text') || (a.dataUrl || a.url)).map(a => {
     const url = a.dataUrl || a.url || '';
-    if (a.mimeType.startsWith('image/')) return { type: 'image_url', image_url: { url } };
-    const text = (/^(text\/|application\/(json|javascript|x-yaml|yaml|xml|sql|toml|pdf))/.test(a.mimeType) || /\.(md|txt|json|js|ts|py|yaml|yml|xml|toml|env|ini)$/i.test(a.name)) && a.dataUrl ? textFromDataUrl(a.dataUrl) : '';
-    return { type: 'text', text: `附件：${a.name}（${a.mimeType}）${text ? `\n${text}` : `\n内容引用：${url}`}` };
+    const mime = effectiveMime(a);
+    if (mime.startsWith('image/')) return { type: 'image_url', image_url: { url } };
+    if (mime.startsWith('video/')) return { type: 'text', text: `附件：${a.name}（视频 ${url}）` };
+    if (mime.startsWith('audio/')) return { type: 'text', text: `附件：${a.name}（音频 ${url}）` };
+    const text = (/^(text\/|application\/(json|javascript|x-yaml|yaml|xml|sql|toml|pdf))/.test(mime) || /\.(md|txt|json|js|ts|py|yaml|yml|xml|toml|env|ini)$/i.test(a.name)) && a.dataUrl ? textFromDataUrl(a.dataUrl) : '';
+    return { type: 'text', text: `附件：${a.name}（${mime}）${text ? `\n${text}` : `\n内容引用：${url}`}` };
   });
 }
 
@@ -147,18 +177,25 @@ export async function sendChat(
   // 默认 60s 超时（外部 signal 如暂停节点 abort 与之合并；TimeoutError 走 error 分支）
   const timeoutSignal = AbortSignal.timeout(overrides?.thinkingMode === 'deep' ? 180000 : 60000);
   const effSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-  let response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: effSignal });
-  // 兼容声明 SSE 但实际返回 JSON、或返回空 SSE 的代理网关。普通 JSON 重试只发生一次。
-  if (wantsStream && response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
-    response = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify({ ...requestBody, stream: false }), signal: effSignal });
+  const doFetch = (stream: boolean) => fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify({ ...requestBody, stream }), signal: effSignal });
+  let response: Response;
+  try {
+    response = await doFetch(wantsStream);
+  } catch (err) {
+    if ((err as any)?.name === 'TimeoutError' || (err as any)?.name === 'AbortError' && !signal) throw new Error('聊天请求超时：模型响应时间过长，请重试或切换到更快的模型或“快速”思考模式。');
+    throw new Error(`网络错误：${(err as Error)?.message || err}。请检查网络连接和 API 地址。`);
+  }
+  // 兼容声明 SSE 但实际返回 JSON、或返回空 SSE 的代理网关。仅当声明了流式但返回的是非 SSE 时回退一次（避免无谓的双重请求，加快响应）。
+  if (wantsStream && response.ok && !response.headers.get('content-type')?.includes('text/event-stream') && response.headers.get('content-type')?.includes('application/json')) {
+    response = await doFetch(false);
   }
   if (!response.ok) {
     const data: any = await response.json().catch(() => ({}));
-    throw new Error(data.error?.message || data.message || `聊天 AI 请求失败（HTTP ${response.status}）`);
+    throw new Error(data.error?.message || data.message || `聊天 AI 请求失败（HTTP ${response.status}），请检查 API Key、接口地址或模型权限。`);
   }
   const streamed = await readResponseText(response, overrides?.onChunk);
   const data: any = streamed.raw;
   const text = streamed.text || (provider === 'gemini' ? data.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') : provider === 'anthropic' ? data.content?.map((p: any) => p.text || '').join('') : provider === 'ollama' ? data.message?.content || data.response : data.choices?.[0]?.message?.content);
-  if (typeof text !== 'string' || !text) throw new Error('聊天 AI 没有返回文本');
+  if (typeof text !== 'string' || !text) throw new Error('聊天模型未返回文本内容：可能是模型不支持该输入（如图片），或触发了内容过滤。请更换支持视觉的模型，或去掉图片后重试。');
   return { text, raw: data };
 }

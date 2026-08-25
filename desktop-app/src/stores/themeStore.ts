@@ -205,6 +205,25 @@ function applyTheme(theme: CanvasTheme, custom: Record<string, string>) {
     '--shadow-sm': tokens['shadow-sm'], '--shadow-md': tokens['shadow-md'], '--shadow-lg': tokens['shadow-lg'],
   };
   Object.entries(aliases).forEach(([key, value]) => root.style.setProperty(key, value));
+  // 统一视觉层使用的 --ui-* 令牌：主题切换必须覆盖全局 Shell，而不只是旧版 --theme-* 组件。
+  const uiTokens: Record<string, string> = {
+    '--ui-bg': tokens.bg,
+    '--ui-surface': tokens.surface,
+    '--ui-surface-raised': tokens.panel,
+    '--ui-surface-active': tokens['surface-2'],
+    '--ui-input': tokens.input,
+    '--ui-border': tokens.border,
+    '--ui-border-strong': tokens['border-strong'],
+    '--ui-text': tokens.text,
+    '--ui-text-secondary': tokens['text-2'],
+    '--ui-text-muted': tokens['text-3'],
+    '--ui-accent': tokens.primary,
+    '--ui-accent-soft': tokens['accent-soft'],
+    '--ui-success': tokens.success,
+    '--ui-warning': tokens.warning,
+    '--ui-danger': tokens.error,
+  };
+  Object.entries(uiTokens).forEach(([key, value]) => root.style.setProperty(key, value));
   root.style.setProperty('color-scheme', theme.family === 'light' ? 'light' : 'dark');
 }
 

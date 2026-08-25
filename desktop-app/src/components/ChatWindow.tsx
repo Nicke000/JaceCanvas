@@ -71,6 +71,7 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('chat-selected-model') || settings.chatModel || '');
   const [chatModels, setChatModels] = useState(settings.chatModels || []);
   const [thinkingMode, setThinkingMode] = useState(settings.chatThinkingMode || 'auto');
+  const [skillsEnabled, setSkillsEnabled] = useState(Boolean(settings.skillsEnabled));
   const [fetching, setFetching] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [sourceTab, setSourceTab] = useState<'local' | 'asset' | 'canvas' | 'history'>('asset');
@@ -138,8 +139,38 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
     const historyMessages=replaceFrom == null ? messages : messages.slice(0, replaceFrom); const userMessage: ChatMessage={id:generateId(),role:'user',content:text,timestamp:Date.now(),attachments:sentAttachmentsResolved,status:'complete'};
     setMessages([...historyMessages,userMessage]); setInput(''); setAttachments([]); setBusy(true); draftRef.current=''; const controller=new AbortController(); controllerRef.current=controller;
     const history: ChatTurn[]=historyMessages.map(item => ({role:item.role,content:item.content}));
-    try { const result=await sendChat(text,sentAttachmentsResolved,history,controller.signal,{model:selectedModel || undefined,thinkingMode,onChunk:chunk => { draftRef.current += chunk; }}); setMessages(current => [...current,{id:generateId(),role:'assistant',content:result.text,timestamp:Date.now(),status:'complete'}]); }
-    catch (error) { if ((error as Error)?.name === 'AbortError') { if (draftRef.current) setMessages(current => [...current,{id:generateId(),role:'assistant',content:draftRef.current,timestamp:Date.now(),status:'stopped'}]); } else message.error(error instanceof Error ? error.message : '发送失败'); }
+    try { let prompt = text; const finalOverrides: { model?: string; thinkingMode?: 'auto' | 'fast' | 'deep'; systemPrompt?: string; onChunk?: (chunk: string) => void } = { model: selectedModel || undefined, thinkingMode, onChunk: (chunk: string) => { draftRef.current += chunk; } };
+    if (skillsEnabled) {
+      // 仅当启用 Skills 时，才用“提示词工程师”强约束；关闭 Skills 则保留正常聊天/问答行为。
+      finalOverrides.systemPrompt = '你是一名提示词工程师。无论用户需求多复杂，你只输出可直接使用的提示词（可加一句简短用途说明）。只允许：目标内容、风格、画质、光线/构图/镜头等必要描述。严禁输出：markdown 标题、列表符号、JSON、代码块、字段名、参数名、协议名、图片/媒体发送格式、链接格式、括号内的英文标签，或任何 skill 中的“说明/字段/示例结构”内容。';
+      // 阶段一：只读元数据（路径/名称/标题/用途摘要），不读取全文，避免 skills 多时全量加载超上下文。
+      const listing = await (window as any).electronAPI?.listSkills?.(settings.skillsFolder);
+      const meta = Array.isArray(listing?.items) ? listing.items : [];
+      const index = meta.map((item: any) => `- ${item.relative}（${item.title || item.name}）：${item.summary || ''}`).join('\n') || '（当前 Skills 文件夹没有 SKILL.md）';
+      let selectedMeta = meta;
+      // 列表很少时（≤2）跳过选择器，直接用全部，避免误判导致明明有 skill 却生成不出。
+      if (meta.length > 2) {
+        const selector = await sendChat(`你是 Skills 选择器。根据用户需求，从下面元数据索引中选择真正相关的 Skills。只输出 JSON 数组，数组元素必须是索引中的完整 relative 路径；没有合适的就输出 []。不要解释、不要带任何其它文字。\n\nSkills 索引（只有名称和用途，不含正文）：\n${index}\n\n用户需求：\n${text}`, sentAttachmentsResolved, [], controller.signal, { model: selectedModel || undefined, thinkingMode });
+        const rawSelector = String(selector.text || '');
+        selectedMeta = meta.filter((item: any) => rawSelector.includes(String(item.relative)) || rawSelector.includes(String(item.name || '')));
+      }
+      // 阶段二：仅对被选中的 skill 按需读取全文，控制上下文大小。
+      const selectedText = (await Promise.all(selectedMeta.map(async (item: any) => {
+        const full = await (window as any).electronAPI?.readSkill?.(settings.skillsFolder, item.relative);
+        return `--- ${item.relative} ---\n${String(full?.content ?? '').slice(0, 12000)}`;
+      }))).filter(Boolean).join('\n\n');
+      prompt = `根据用户需求，参考下面的 skill 知识来生成提示词。skill 只作为知识/风格参考，不要照抄其中任何结构、字段或协议说明。\n\n已选择的 Skills（知识参考）：\n${selectedText || '（没有匹配的 Skill，请直接回答）'}\n\n用户需求：\n${text}`;
+    } const result=await sendChat(prompt,sentAttachmentsResolved,history,controller.signal,finalOverrides); const reply = String(result?.text || '').trim(); setMessages(current => [...current,{id:generateId(),role:'assistant',content: reply || (skillsEnabled ? '（未能生成提示词，请稍后重试或换个说法）' : '（模型未返回内容，请重试或更换模型）'),timestamp:Date.now(),status:'complete'}]); }
+    catch (error) {
+      const err = error as Error;
+      if (err?.name === 'AbortError') { if (draftRef.current) setMessages(current => [...current,{id:generateId(),role:'assistant',content:draftRef.current,timestamp:Date.now(),status:'stopped'}]); else setMessages(current => [...current,{id:generateId(),role:'assistant',content:'（已停止发送）',timestamp:Date.now(),status:'stopped'}]); }
+      else {
+        const msg = err?.message && String(err.message).trim() ? String(err.message) : '发送失败';
+        // 把失败原因作为一条可见的助手消息显示，避免只弹 toast 被忽略。
+        setMessages(current => [...current,{id:generateId(),role:'assistant',content:`⚠️ 请求失败：${msg}`,timestamp:Date.now(),status:'error'}]);
+        message.error(msg);
+      }
+    }
     finally { controllerRef.current=null; setBusy(false); draftRef.current=''; }
   };
 
@@ -169,9 +200,11 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
   const moreMenuItems = [
     { key: 'fetch', label: fetching ? '拉取中…' : '拉取模型', onClick: () => void fetchModels() },
     { key: 'thinking', label: `思考模式：${thinkingMode === 'auto' ? '自动' : thinkingMode === 'fast' ? '快速' : '深度'}`, children: [{ key: 'tm-auto', label: '自动', onClick: () => setThinkingMode('auto') }, { key: 'tm-fast', label: '快速', onClick: () => setThinkingMode('fast') }, { key: 'tm-deep', label: '深度', onClick: () => setThinkingMode('deep') }] },
+
   ];
 
-  return <div className="chat-window-overlay">
+  const themeFamily = document.documentElement.dataset.theme === 'light' ? 'is-light-theme' : 'is-dark-theme';
+  return <div className={`chat-window-overlay ${themeFamily}`}>
     <div className="chat-window-header">
       <div className="chat-window-header__title">AI 对话</div>
       <div className="chat-window-header__session">{currentSession.title}</div>
@@ -202,7 +235,7 @@ export const ChatWindow: React.FC<Props> = ({ onClose, initialSession }) => {
         {selText && <div className="chat-selection-bar"><span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:200 }}>已选中：{selText.slice(0,20)}{selText.length>20?'…':''}</span><Button size="small" type="primary" icon={<EditOutlined />} onClick={pushSelToEditor}>发选中到编辑区</Button><Button size="small" onClick={() => pushTextToCanvas(selText)}>发选中到画布</Button></div>}
         {selectedMessages.size > 0 && <div className="chat-window-send-editor"><Button size="small" icon={<EditOutlined />} onClick={sendToEditor}>发送选中到编辑区（{selectedMessages.size}）</Button></div>}
         <div className="chat-window-input-area">
-          <div className="chat-window-input-row"><textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(!busy)void send();}}} placeholder="输入消息，按 Enter 发送" rows={2} /></div>
+          <div className="chat-window-input-row"><label className="chat-skills-toggle" title="先读取 Skills 名称和用途索引，再只加载匹配的 SKILL.md"><input type="checkbox" checked={skillsEnabled} onChange={e => setSkillsEnabled(e.target.checked)} /> Skills</label><textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(!busy)void send();}}} placeholder="输入消息，按 Enter 发送" rows={2} /></div>
           <div className="chat-window-input-options">
             <Dropdown menu={{ items: addMenuItems }} trigger={['click']}><Button icon={<PaperClipOutlined />}>＋ 添加附件</Button></Dropdown>
             <Select size="small" popupClassName="chat-window-select-popup" value={selectedModel || undefined} onChange={v=>{setSelectedModel(v);localStorage.setItem('chat-selected-model', v||'');}} options={chatModels.map(model=>({label:model,value:model}))} placeholder="选择模型" style={{ minWidth: 280 }} suffixIcon={<DownOutlined />} />

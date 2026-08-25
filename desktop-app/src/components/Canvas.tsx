@@ -210,7 +210,6 @@ export const Canvas: React.FC = () => {
   const onPaneClick = useCallback((e?: React.MouseEvent) => {
     setSelectedNodeId(null);
     setSearchAnchor(null);
-    window.dispatchEvent(new Event('ai-canvas-close-taskqueue')); // 点画布空白收起执行列表
     if (e) {
       const flow = rfRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       if (flow) lastClickPos.current = flow;

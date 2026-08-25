@@ -13,7 +13,8 @@ export type NodeComponentType =
   | 'apiNode'  // 通用API节点（17个工作流）
   | 'localWorkflow'  // 本地导入的 ComfyUI 工作流 JSON 节点
   | 'chatNode' | 'videoTrim' | 'imageCrop' | 'inpaint' | 'interpolate'
-  | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage';
+  | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage'
+  | 'runningHubWorkflow';
 
 /* ========== IO 定义 ========== */
 export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select' | '3d' | 'media';
@@ -174,6 +175,11 @@ export const NODE_CONFIGS: Partial<Record<NodeComponentType, NodeConfig>> = {
   paidTextToVideo: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },
   paidImageToVideo: { inputs: [{ name: 'image', label: '起始图', type: 'image', required: true }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'video', label: '视频', type: 'video' }], params: { prompt: '', aspectRatio: '16:9', resolution: 1080, width: 1280, height: 720, duration: 5, frameRate: 24, seed: -1, model: '' } },
   paidCapability: { inputs: [{ name: 'image', label: '人物图片', type: 'image' }, { name: 'video', label: '参考视频', type: 'video' }, { name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'output', label: '生成结果', type: 'image' }], params: { capability: 'image-upscale', prompt: '', model: '' } },
+  runningHubWorkflow: {
+    inputs: [{ name: 'prompt', label: '提示词', type: 'text', required: true }, { name: 'image', label: '参考图', type: 'image' }, { name: 'video', label: '参考视频', type: 'video' }],
+    outputs: [{ name: 'image', label: '图片', type: 'image' }, { name: 'video', label: '视频', type: 'video' }, { name: 'audio', label: '音频', type: 'audio' }, { name: 'text', label: '文本', type: 'text' }],
+    params: { workflowId: '', executionMode: 'comfy-workflow' },
+  },
   bailianTextToImage: { inputs: [{ name: 'prompt', label: '提示词', type: 'text' }], outputs: [{ name: 'image', label: '图片', type: 'image' }], params: { prompt: '', ratio: '1:1', resolution: 1024, seed: -1 } },
 };
 

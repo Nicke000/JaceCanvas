@@ -4,6 +4,7 @@ import { applyNodeChanges, applyEdgeChanges, MarkerType, type NodeChange, type E
 import type { AppNode, CanvasNodeData, ToolAction, HistorySnapshot, NodeComponentType, ContextMenuState, NodeStatus } from '@/types';
 import { NODE_CONFIGS } from '@/types';
 import { generate, pollResult, uploadFile, getApiBase, bridgeMediaToInput, cancelComfyTask, submitLocalWorkflow, uploadImageToComfy, uploadMediaToComfy, pollLocalWorkflow, type ResultItem } from '@/services/comfyui.service';
+import { createStandardTask, createComfyWorkflowTask, prepareRunningHubInputs, waitRunningHubTask } from '@/services/runninghub.service';
 import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
 import { getPaidModelsForAdapter } from '@/config/paidApiAdapters';
 import { generateId, expandPromptVariants } from '@/utils';
@@ -19,6 +20,7 @@ import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
 import { useSettingsStore, type PaidApiNodeSettings } from '@/stores/settingsStore';
 import { getSupportedPaidCapabilities } from '@/config/paidCapabilityCatalog';
 import { getAllStyles } from '@/config/stylePresets';
+import { runningHubMediaSlotCount, runningHubOptionalOutputs, runningHubSlotKey } from '@/config/runninghubCatalog';
 import { cameraMotionPrompt } from '@/config/cameraMotions';
 import { addGenerationHistory, autoSaveToAssets } from '@/utils/generationHistory';
 
@@ -32,6 +34,14 @@ function getDynamicPortType(node: AppNode, handleId: string | null | undefined, 
     if (!f) return undefined;
     if (f.fileType === 'image' || f.fileType === 'video' || f.fileType === 'audio') return f.fileType;
     return f.type === 'select' ? 'text' : (f.type || 'text');
+  }
+  if (nt === 'runningHubWorkflow') {
+    const contract = node.data.config?.runningHubContract as any;
+    const base = contract?.params?.find((param: any) => param.fieldKey === handleId && ['STRING','TEXT','LIST'].includes(param.type));
+    if (base) return 'text';
+    const media = contract?.params?.find((param: any) => param.fieldKey === handleId || String(handleId || '').startsWith(`${param.fieldKey}__`));
+    if (media?.type === 'IMAGE' || media?.type === 'VIDEO' || media?.type === 'AUDIO') return String(media.type).toLowerCase();
+    return undefined;
   }
   if (nt === 'localWorkflow') {
     const ports = workflowPorts(node.data.config?.workflowJson as Record<string, any> | undefined);
@@ -85,7 +95,7 @@ export const NODE_DEFAULTS: Record<NodeComponentType, { label: string; color: st
   refImageClear:{label:'变清晰',color:'#22c55e'},refImageToVideo:{label:'图生视频',color:'#3b82f6'},
   uploadNode:{label:'上传文件',color:'#60a5fa'},downloadNode:{label:'下载结果',color:'#f59e0b'},
   imageCrop:{label:'修图裁切',color:'#f97316'}, inpaint:{label:'圈画修图',color:'#22d3ee'}, interpolate:{label:'视频补帧',color:'#34d399'}, apiNode:{label:'API节点',color:'#6366f1'}, chatNode:{label:'AI聊天',color:'#22c55e'}, videoTrim:{label:'视频剪辑',color:'#f97316'},
-  paidTextToImage:{label:'付费API·文生图',color:'#a855f7'},paidImageToImage:{label:'付费API·图生图',color:'#0ea5e9'},paidTextToVideo:{label:'付费API·文生视频',color:'#ec4899'},paidImageToVideo:{label:'付费API·图生视频',color:'#f43f5e'},paidCapability:{label:'付费扩展能力',color:'#14b8a6'},bailianTextToImage:{label:'文生图',color:'#ff7a45'},localWorkflow:{label:'本地工作流',color:'#0ea5e9'},
+  paidTextToImage:{label:'付费API·文生图',color:'#a855f7'},paidImageToImage:{label:'付费API·图生图',color:'#0ea5e9'},paidTextToVideo:{label:'付费API·文生视频',color:'#ec4899'},paidImageToVideo:{label:'付费API·图生视频',color:'#f43f5e'},paidCapability:{label:'付费扩展能力',color:'#14b8a6'},bailianTextToImage:{label:'文生图',color:'#ff7a45'},runningHubWorkflow:{label:'RunningHub 工作流',color:'#0ea5e9'},localWorkflow:{label:'本地工作流',color:'#0ea5e9'},
 };
 
 const INITIAL: AppNode[] = [];
@@ -267,13 +277,15 @@ export const useCanvasStore = create<Store>((set, get) => ({
     // 连线颜色按端口数据类型区分（与连接点一致）；查不到类型时回退到源节点色
     const sPortType = source ? getDynamicPortType(source, c.sourceHandle, true) : undefined;
     const edgeColor = sPortType ? portTypeColor(sPortType) : (source?.data.color || '#7c6df2');
-    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', animated: true, style: { stroke: edgeColor, strokeWidth: 2.2 }, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: edgeColor } } as Edge;
+    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', className: `edge--${String(sPortType || 'default')}`, animated: true, style: { stroke: edgeColor, strokeWidth: 2.2 }, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: edgeColor } } as Edge;
     const sourceValues=source?.data.outputValues||{};
     const sourceKey=c.sourceHandle||''; const targetKey=c.targetHandle||sourceKey||'input';
     const scriptId=sourceKey.startsWith('script-')?sourceKey.slice(7):'';
     const scriptValue=scriptId?((source?.data.config?.scripts as Array<{id:string;text:string}>)||[]).find(item=>item.id===scriptId)?.text:undefined;
     const configValue=sourceKey?(source?.data.config?.[sourceKey]??(typeof source?.data.config?.text==='string'?source.data.config.text:undefined)):undefined;
-    const directValue=sourceKey&&sourceKey in sourceValues?sourceValues[sourceKey]:scriptValue??configValue??sourceValues.output??sourceValues.url??sourceValues.image??sourceValues.text;
+    const resultIndex = sourceKey.match(/^result-(\d+)$/)?.[1];
+     const resultValue = resultIndex != null ? (source?.data.results?.[Number(resultIndex)] as any)?.url : undefined;
+     const directValue=sourceKey&&sourceKey in sourceValues?sourceValues[sourceKey]:resultValue??scriptValue??configValue??sourceValues.output??sourceValues.url??sourceValues.image??sourceValues.video??sourceValues.audio??sourceValues.text;
     if (source?.data?.nodeType === 'textInput' || (target?.data?.nodeType === 'apiNode' || target?.data?.nodeType === 'localWorkflow')) {
       try { const logs = (window as any).__submitLogs || []; logs.push({ t: Date.now(), kind: 'connect', src: source?.data?.nodeType, srcCfg: JSON.stringify(source?.data?.config || {}).slice(0, 300), target: target?.data?.nodeType, sourceKey, targetKey, directValue: String(directValue ?? '').slice(0, 120) }); (window as any).__submitLogs = logs.slice(-30); } catch { /* ignore */ }
     }
@@ -466,6 +478,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
     const current = get().nodes.find(n => n.id === id);
     const nextConfig = { ...(current?.data.config || {}), ...partialConfig };
     set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, config: nextConfig, updatedAt: Date.now() } } : n) });
+    window.dispatchEvent(new Event('ai-canvas-autosave-project'));
     if (current?.data.nodeType === 'sceneSettings') {
       get().propagateData(id, 'settings', Object.entries(nextConfig).filter(([,value]) => String(value).trim()).map(([key,value]) => `${key}: ${value}`).join('\n'));
     }
@@ -587,7 +600,106 @@ export const useCanvasStore = create<Store>((set, get) => ({
       let workflow_id = '';
       const input_values: Record<string, unknown> = {};
 
-      if (nt === 'interpolate') {
+      if (nt === 'runningHubWorkflow') {
+        const rh = useSettingsStore.getState().runningHub;
+        if (!rh.enabled || !rh.apiKey) throw new Error(`RunningHub 设置未就绪：${!rh.enabled ? '开关未启用' : ''}${!rh.enabled && !rh.apiKey ? '，' : ''}${!rh.apiKey ? 'API Key 为空' : ''}。请在“设置 → RunningHub 独立接入”中启用并保存。`);
+        if (!/^https:\/\/www\.runninghub\.cn\/openapi\/v2$/i.test(String(rh.baseUrl).replace(/\/+$/, ''))) throw new Error(`RunningHub API 地址不符合当前官方标准：${rh.baseUrl}。应填写 https://www.runninghub.cn/openapi/v2`);
+        Object.assign(input_values, node.data.inputValues || {});
+        const contractForInputs = config.runningHubContract as { params?: Array<{ fieldKey: string; type?: string; description?: string }> } | undefined;
+        // Numbered UI slots are an internal representation; collapse them into the official array field in slot order.
+        for (const param of contractForInputs?.params || []) {
+          if (!['IMAGE', 'VIDEO', 'AUDIO'].includes(String(param.type))) continue;
+          const count = runningHubMediaSlotCount(param as any);
+          if (count <= 1) continue;
+          const values = Array.from({ length: count }, (_, index) => input_values[runningHubSlotKey(param.fieldKey, index)]).filter(value => value !== undefined && value !== null && value !== '');
+          if (values.length) input_values[param.fieldKey] = values;
+          for (let index = 0; index < count; index += 1) delete input_values[runningHubSlotKey(param.fieldKey, index)];
+        }
+        Object.entries(config).forEach(([key, value]) => {
+          const isContractField = contractForInputs?.params?.some(param => param.fieldKey === key);
+          const hasPortValue = input_values[key] !== undefined && input_values[key] !== null && input_values[key] !== '';
+          // Every official input port wins over a local form value, not only media fields.
+          if (value !== '' && value !== undefined && value !== null && !(isContractField && hasPortValue)) input_values[key] = value;
+        });
+        // Collapse slots again after merging node-local values; file picker values live in config slot keys.
+        for (const param of contractForInputs?.params || []) {
+          if (!['IMAGE', 'VIDEO', 'AUDIO'].includes(String(param.type))) continue;
+          const count = runningHubMediaSlotCount(param as any);
+          if (count <= 1) continue;
+          const values = Array.from({ length: count }, (_, index) => input_values[runningHubSlotKey(param.fieldKey, index)]).filter(value => value !== undefined && value !== null && value !== '');
+          if (values.length) input_values[param.fieldKey] = values;
+          for (let index = 0; index < count; index += 1) delete input_values[runningHubSlotKey(param.fieldKey, index)];
+        }
+        const mode = String(config.executionMode || rh.executionMode) as 'standard-model' | 'comfy-workflow';
+        await (window as any).electronAPI?.logRenderError?.({ type: 'runninghub-runtime', enabled: rh.enabled, baseUrl: String(rh.baseUrl).replace(/\/+$/, ''), hasApiKey: Boolean(rh.apiKey), mode, endpoint: String((config.runningHubContract as any)?.endpoint || config.endpoint || ''), fields: Object.fromEntries(Object.entries(input_values).map(([key, value]) => [key, { present: value !== undefined && value !== null && value !== '', arrayLength: Array.isArray(value) ? value.length : undefined, kind: typeof value === 'string' && /^data:|^https?:|^file:|^blob:/i.test(value) ? 'media-or-url' : typeof value }])) });
+        if (mode === 'standard-model') {
+          const requiredParams = (contractForInputs?.params || []).filter(param => (param as any).required === true);
+          const missingFields = requiredParams.filter(param => {
+            const value = input_values[param.fieldKey];
+            if (Array.isArray(value)) return value.filter(item => item !== undefined && item !== null && item !== '').length === 0;
+            return value === undefined || value === null || value === '';
+          }).map(param => param.fieldKey);
+          await (window as any).electronAPI?.logRenderError?.({ type: 'runninghub-required-missing', endpoint: String((config.runningHubContract as any)?.endpoint || ''), missing: missingFields });
+        }
+        if (mode === 'standard-model') {
+          const requiredParams = (contractForInputs?.params || []).filter(param => (param as any).required === true);
+          const missing = requiredParams.filter(param => {
+            const value = input_values[param.fieldKey];
+            if (Array.isArray(value)) return value.filter(item => item !== undefined && item !== null && item !== '').length === 0;
+            return value === undefined || value === null || value === '';
+          });
+          if (missing.length) {
+            const mediaMissing = missing.filter(param => ['IMAGE', 'VIDEO', 'AUDIO'].includes(String(param.type)));
+            const otherMissing = missing.filter(param => !['IMAGE', 'VIDEO', 'AUDIO'].includes(String(param.type)));
+            const detail = missing.map(param => `${param.fieldKey}${param.description ? `（${param.description}）` : ''}`).join('、');
+            const guidance = mediaMissing.length && !otherMissing.length ? '请先执行上游媒体节点并连接到对应编号端口，或在节点内选择文件；仅有连线但上游没有生成结果时仍视为空。' : otherMissing.length && !mediaMissing.length ? '请在节点参数面板填写这些字段，或连接对应的文本/内容端口。' : '请补齐节点面板参数，并确认上游媒体节点已经生成结果。';
+            throw new Error(`RunningHub 缺少官方必填参数：${detail}。${guidance}`);
+          }
+        }
+        await (window as any).electronAPI?.logRenderError?.({ type: 'runninghub-pre-upload', mode, endpoint: String((config.runningHubContract as any)?.endpoint || config.endpoint || '') });
+        const runningHubInputs = await prepareRunningHubInputs(input_values, (config.mediaFields && typeof config.mediaFields === 'object' ? config.mediaFields : undefined) as Record<string, string> | undefined);
+        let results: ResultItem[];
+        if (mode === 'standard-model') {
+          const contract = config.runningHubContract as { endpoint?: string; params?: Array<{ fieldKey: string; multipleInputs?: boolean; type?: string }> } | undefined;
+          if (!contract?.endpoint || !Array.isArray(contract.params)) throw new Error('标准模型节点缺少官方模型合同，请从 RunningHub 节点库重新添加');
+          const endpoint = contract.endpoint;
+          // Any media field the official schema marks as multipleInputs must be sent as an array,
+          // even when only a single value is present (e.g. imageUrls: ["url"]).
+          for (const param of contract.params) {
+            if (param.multipleInputs && ['IMAGE', 'VIDEO', 'AUDIO'].includes(String(param.type)) && param.fieldKey in runningHubInputs) {
+              const current = runningHubInputs[param.fieldKey];
+              if (!Array.isArray(current)) runningHubInputs[param.fieldKey] = [current];
+            }
+          }
+          const allowedFields = new Set(contract.params.map(param => param.fieldKey));
+          const payload = Object.fromEntries(Object.entries(runningHubInputs).filter(([key]) => allowedFields.has(key)));
+          delete (payload as any).workflowId; delete (payload as any).executionMode; delete (payload as any).endpoint; delete (payload as any).runningHubContract; delete (payload as any).runningHubClassName; delete (payload as any).mediaFields;
+          const task = await createStandardTask(endpoint, payload);
+          get().updateNodeData(id, { promptId: task.taskId });
+          results = await waitRunningHubTask(task, (content, progress) => get().updateNodeData(id, { content, progress, generationDurationMs: Date.now() - startedAt }), controller.signal);
+        } else {
+          const workflowId = String(config.workflowId || rh.defaultWorkflowId || '');
+          const nodeInfoList = Object.entries(runningHubInputs).filter(([key, value]) => value !== undefined && value !== null && value !== '').map(([fieldName, value]) => ({ nodeId: String(config.nodeId || '0'), fieldName, fieldValue: String(value) }));
+          const task = await createComfyWorkflowTask(workflowId, nodeInfoList, config.workflow);
+          get().updateNodeData(id, { promptId: task.taskId });
+          results = await waitRunningHubTask(task, (content, progress) => get().updateNodeData(id, { content, progress, generationDurationMs: Date.now() - startedAt }), controller.signal);
+        }
+        if (!results.length) throw new Error('RunningHub 任务完成，但没有返回结果');
+        const first = results[0];
+        const outputValues: Record<string, unknown> = { results, output: first.url, url: first.url };
+        results.forEach(item => { if (!outputValues[item.type]) outputValues[item.type] = item.url; });
+        get().updateNodeData(id, { resultUrl: first.url, results, outputValues, content: `RunningHub 完成 · ${results.length} 个结果`, progress: 100, generationDurationMs: Date.now() - startedAt });
+        results.forEach(item => get().propagateData(id, item.type, item.url));
+        if (mode === 'standard-model' && runningHubOptionalOutputs(config.runningHubContract as any).some(output => output.id === 'lastFrame') && Boolean(input_values.returnLastFrame)) {
+          const lastFrame = results.find(item => item.type === 'image' && item.url !== first.url);
+          if (lastFrame) get().propagateData(id, 'lastFrame', lastFrame.url);
+        }
+        get().propagateData(id, 'results', results);
+        get().setNodeStatus(id, 'success'); runningControllers.delete(id);
+        addGenerationHistory({ id: id + '-' + Date.now(), nodeId: id, nodeName: node.data.label, nodeType: nt, params: config, resultUrl: first.url, results, status: 'success', timestamp: Date.now() });
+        autoSaveToAssets(first.url, results, node.data.label);
+        return true;
+      } else if (nt === 'interpolate') {
         const input = String(node.data.inputValues?.video || node.data.inputValues?.url || config.videoUrl || config.assetUrl || node.data.resultUrl || '');
         if (!input) throw new Error('请先连接或选择视频');
         const fps = Math.max(24, Math.min(120, Number(config.fps) || 60));

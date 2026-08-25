@@ -33,6 +33,7 @@ export const nodeTypes: NodeTypes = {
   refImageClear: GenericNode, refImageToVideo: GenericNode,
   uploadNode: UploadNode, downloadNode: GenericNode,
   apiNode: GenericNode,
+  runningHubWorkflow: GenericNode,
   localWorkflow: LocalWorkflowNode,
   chatNode: ChatNode,
   storyboardPrompt: StoryboardPromptNode,

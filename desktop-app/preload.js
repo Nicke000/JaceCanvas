@@ -39,6 +39,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 获取应用信息
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+  getSkillsSettings: (folder) => ipcRenderer.invoke('get-skills-settings', folder),
+  listSkills: (folder) => ipcRenderer.invoke('list-skills', folder),
+  readSkill: (folder, relative) => ipcRenderer.invoke('read-skill', { folder, relative }),
+  chooseSkillsFolder: () => ipcRenderer.invoke('choose-skills-folder'),
+  openSkillsFolder: (folder) => ipcRenderer.invoke('open-skills-folder', folder),
+  saveSkillFile: (payload) => ipcRenderer.invoke('save-skill-file', payload),
+  deleteSkillFile: (payload) => ipcRenderer.invoke('delete-skill-file', payload),
   createUpdateBackup: () => ipcRenderer.invoke('create-update-backup'),
   checkAppUpdate: () => ipcRenderer.invoke('app-update-check'),
   downloadAppUpdate: () => ipcRenderer.invoke('app-update-download'),

@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useEdges } from '@xyflow/react';
 import { addGenerationHistory, autoSaveToAssets } from '@/utils/generationHistory';
 import { parseWorkflowParams, defaultParamVisible, workflowPorts, workflowImageInputs } from '@/utils/comfyWorkflow';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
@@ -404,6 +405,7 @@ export const ChatNode = memo((p: NodeProps) => {
   const [chatModels, setChatModels] = useState<string[]>(settings.chatModels || []);
   const [selectedModel, setSelectedModel] = useState(String(config.selectedModel || settings.chatModel || ''));
   const thinkingMode = String(config.thinkingMode || settings.chatThinkingMode) as 'auto' | 'fast' | 'deep';
+  const skillsEnabled = settings.skillsEnabled;
   const [fetching, setFetching] = useState(false);
   const fetchModels = async () => {
     setFetching(true);
@@ -448,7 +450,10 @@ export const ChatNode = memo((p: NodeProps) => {
       allAttachments.push({ name: '上游连接文件', mimeType: isVideo ? 'video/*' : isAudio ? 'audio/*' : 'application/octet-stream', url: inputFile });
     }
     try {
-      const result = await sendChat(message || inputPrompt || '请分析我提供的文件。', allAttachments, inputHistory, undefined, { model: selectedModel || undefined, thinkingMode });
+      const userMessage = message || inputPrompt || '请分析我提供的文件。';
+       let skillsContext = '';
+       if (skillsEnabled) { const listing = await (window as any).electronAPI?.getSkillsSettings?.(settings.skillsFolder); const items = Array.isArray(listing?.items) ? listing.items : []; skillsContext = `根据用户需求，选择使用文件夹内合适的skills。\n\n可用 Skills：\n${items.map((item: any) => `--- ${item.relative} ---\n${String(item.content || '').slice(0, 12000)}`).join('\n\n') || '（当前 Skills 文件夹没有 SKILL.md）'}\n\n用户需求：\n`; }
+       const result = await sendChat(skillsContext + userMessage, allAttachments, inputHistory, undefined, { model: selectedModel || undefined, thinkingMode });
       const nextHistory = [...history, { role: 'user' as const, content: message }, { role: 'assistant' as const, content: result.text }];
       const outputValues: Record<string, unknown> = { text: result.text, output: result.text };
       const image = result.text.match(/https?:\/\/[^\s)]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)]*)?/i)?.[0];
@@ -506,6 +511,7 @@ export const ChatNode = memo((p: NodeProps) => {
 
 const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = true, hasOutput = true, inputs, outputs, resizable = false, hideExec = false, children }) => {
   const nd = data as CanvasNodeData;
+  const edges = useEdges();
   // P1 去 emoji：icon 只接受 ReactNode；字符串（旧 emoji/符号）一律走节点类型 lucide 映射
   const iconNode = React.isValidElement(icon) ? icon : <NodeIcon type={nd.nodeType} size={15} />;
   const accent = String(nd.color || color); const s = ST[nd.status || 'idle'];
@@ -589,13 +595,13 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
           return <div className="node-port-row" key={index}>
             <div className="node-port node-port--input">{input&&<>
               <Handle id={input.id} type="target" position={Position.Left} title={`${input.label} (${input.type||'通用'})`}
-                style={{background:portColor(input.type),left:3,top:'50%',border:'2px solid var(--theme-border)',zIndex:10}}/>
+                style={{background:edges.some(edge => edge.target === id && edge.targetHandle === input.id) ? portColor(input.type) : 'var(--theme-panel)',left:3,top:'50%',border:`2px solid ${portColor(input.type)}`,outline:`1px solid ${portColor(input.type)}`,boxShadow:edges.some(edge => edge.target === id && edge.targetHandle === input.id) ? `0 0 7px ${portColor(input.type)}` : `0 0 3px ${portColor(input.type)}55`,zIndex:10}}/>
               <span title={input.label}>{input.label}</span>
             </>}</div>
             <div className="node-port node-port--output">{output&&<>
               <span title={output.label}>{output.label}</span>
               <Handle id={output.id} type="source" position={Position.Right} title={`${output.label} (${output.type||'通用'})`}
-                style={{background:portColor(output.type),right:3,top:'50%',border:'2px solid var(--theme-border)',zIndex:10}}/>
+                style={{background:edges.some(edge => edge.source === id && edge.sourceHandle === output.id) ? portColor(output.type) : 'var(--theme-panel)',right:3,top:'50%',border:`2px solid ${portColor(output.type)}`,outline:`1px solid ${portColor(output.type)}`,boxShadow:edges.some(edge => edge.source === id && edge.sourceHandle === output.id) ? `0 0 7px ${portColor(output.type)}` : `0 0 3px ${portColor(output.type)}55`,zIndex:10}}/>
             </>}</div>
           </div>;
         })}
@@ -1604,6 +1610,7 @@ type Meta = { label:string; icon:string; color:string; cat:string; wf:string; cl
   outputs:{name:string;label:string;type:string}[];
 };
 import { NODE_REGISTRY } from '@/config/registry';
+import { runningHubAllowsMultipleMedia, runningHubIsConnectableInput, runningHubMediaSlotCount, runningHubOptionalOutputs, runningHubParamHelp, runningHubParamLabel, runningHubSlotKey, type RunningHubModelContract, type RunningHubParam } from '@/config/runninghubCatalog';
 const META_MAP = new Map<string, Meta>();
 NODE_REGISTRY.forEach(e => META_MAP.set(e.type, {
   label:e.label, icon:e.icon, color:e.color, cat:e.category,
@@ -1618,6 +1625,9 @@ export const GenericNode = memo((p: NodeProps) => {
   const sc = useCanvasStore(u => u.setNodeConfig);
   const id = p.id;
   const isApiNode = d.nodeType === 'apiNode';
+  const isRunningHubNode = d.nodeType === 'runningHubWorkflow';
+  const runningHubFileRef = useRef<HTMLInputElement>(null);
+  const [runningHubUploadField, setRunningHubUploadField] = useState('');
   const apiLabel = (d.config?._apiLabel as string) || d.label;
   // 实时预览：订阅 ComfyUI WebSocket 的 preview 图，匹配当前节点的 promptId
   const [previewUrl, setPreviewUrl] = useState('');
@@ -1629,19 +1639,21 @@ export const GenericNode = memo((p: NodeProps) => {
     return off;
   }, [isApiNode, d.promptId]);
 
-  if (!meta && !isApiNode) return <NodeShell {...p} color="#666" hasInput={false} hasOutput={false}><div style={{color:'#888',fontSize:12}}>Unknown: {d.nodeType}</div></NodeShell>;
+  if (!meta && !isApiNode && !isRunningHubNode) return <NodeShell {...p} color="#666" hasInput={false} hasOutput={false}><div style={{color:'#888',fontSize:12}}>Unknown: {d.nodeType}</div></NodeShell>;
 
   const cfg = (d.config || {}) as Record<string, unknown>;
   const shot = (cfg.shot && typeof cfg.shot === 'object' ? cfg.shot : {}) as Record<string, unknown>;
   const icon = isApiNode ? <Plug size={15}/> : <NodeIcon type={d.nodeType} size={15}/>;
-  const color = isApiNode ? (d.color || '#6366f1') : meta?.color || '#666';
+  const color = isRunningHubNode ? '#0ea5e9' : isApiNode ? (d.color || '#6366f1') : meta?.color || '#666';
   const apiFields=(cfg._apiFields as Array<{key:string;label:string;field:string;fileType?:string;type:string}>)||[];
   const apiPorts=apiFields.filter(field=>field.fileType||['string','text','textarea'].includes(String(field.type).toLowerCase()))
     .map(field=>({id:field.key,label:field.label,type:field.fileType||'text'}));
   const segmentCount = Math.max(1, Math.min(100, Number(cfg.segmentCount) || 3));
   const dynamicStoryboardOutputs = d.nodeType === 'storyboardPrompt' ? Array.from({length:segmentCount},(_,i)=>{const n=String(i+1).padStart(2,'0');return [{id:`segment_${n}_first_prompt`,label:`片段${i+1} 首帧`,type:'text'},{id:`segment_${n}_last_prompt`,label:`片段${i+1} 尾帧`,type:'text'},{id:`segment_${n}_video_prompt`,label:`片段${i+1} 视频`,type:'text'},{id:`segment_${n}_first_ref`,label:`片段${i+1} 首帧图`,type:'image'},{id:`segment_${n}_last_ref`,label:`片段${i+1} 尾帧图`,type:'image'}]}).flat() : [];
-  const inputPorts:PortSpec[]=isApiNode?(apiPorts.length?apiPorts:[{id:'input',label:'输入'}]):(meta?.inputs.filter(ip=>['text','image','video','audio'].includes(ip.type)).map(ip=>({id:ip.name,label:ip.label,type:ip.type}))||[]);
-  const outputPorts:PortSpec[]=isApiNode?[{id:'output',label:'结果',type:'image'},{id:'image',label:'图片',type:'image'},{id:'video',label:'视频',type:'video'},{id:'audio',label:'音频',type:'audio'},{id:'text',label:'文本',type:'text'}]:d.nodeType==='storyboardPrompt'?[{id:'storyboard_list',label:'分镜列表',type:'text'},...dynamicStoryboardOutputs,{id:'error_warning',label:'错误/警告',type:'text'}]: (meta?.outputs.map(op=>({id:op.name,label:op.label,type:op.type}))||[]);
+  const runningHubContract = cfg.runningHubContract as RunningHubModelContract | undefined;
+  const runningHubPorts: PortSpec[] = isRunningHubNode && runningHubContract ? runningHubContract.params.filter(runningHubIsConnectableInput).flatMap(param => { const type = param.type === 'IMAGE' ? 'image' : param.type === 'VIDEO' ? 'video' : param.type === 'AUDIO' ? 'audio' : 'text'; const count = ['IMAGE','VIDEO','AUDIO'].includes(param.type) ? runningHubMediaSlotCount(param) : 1; return Array.from({length:count}, (_, index) => ({ id:count > 1 ? runningHubSlotKey(param.fieldKey,index) : param.fieldKey, label:count > 1 ? `${runningHubParamLabel(param)} ${index + 1}` : runningHubParamLabel(param), type })); }) : [];
+  const inputPorts:PortSpec[]=isRunningHubNode && runningHubContract ? runningHubPorts : isApiNode?(apiPorts.length?apiPorts:[{id:'input',label:'输入'}]):(meta?.inputs.filter(ip=>['text','image','video','audio'].includes(ip.type)).map(ip=>({id:ip.name,label:ip.label,type:ip.type}))||[]);
+  const outputPorts:PortSpec[]=isRunningHubNode&&runningHubContract?[{id:runningHubContract.output_type === 'string' ? 'text' : runningHubContract.output_type,label:runningHubContract.output_type === 'string' ? '文本结果' : `输出 ${runningHubContract.output_type}`,type:runningHubContract.output_type === 'string' ? 'text' : runningHubContract.output_type}, ...(Boolean(cfg.returnLastFrame) ? runningHubOptionalOutputs(runningHubContract) : [])]:isRunningHubNode?[{id:'image',label:'图片',type:'image'},{id:'video',label:'视频',type:'video'},{id:'audio',label:'音频',type:'audio'},{id:'text',label:'文本',type:'text'}]:isApiNode?[{id:'output',label:'结果',type:'image'},{id:'image',label:'图片',type:'image'},{id:'video',label:'视频',type:'video'},{id:'audio',label:'音频',type:'audio'},{id:'text',label:'文本',type:'text'}]:d.nodeType==='storyboardPrompt'?[{id:'storyboard_list',label:'分镜列表',type:'text'},...dynamicStoryboardOutputs,{id:'error_warning',label:'错误/警告',type:'text'}]: (meta?.outputs.map(op=>({id:op.name,label:op.label,type:op.type}))||[]);
 
   const renderParam = (ip: any) => {
     const val = cfg[ip.name] ?? ip.default ?? '';
@@ -1663,8 +1675,9 @@ export const GenericNode = memo((p: NodeProps) => {
   };
 
   return <NodeShell {...p} icon={icon} color={color} hasInput={false} hasOutput={false} inputs={inputPorts} outputs={outputPorts}>
-    <div style={{fontSize:10,color:'#888',marginBottom:3,fontWeight:600}}>{isApiNode ? apiLabel : meta?.label}</div>
-    {d.nodeType === 'cinematographyKnowledge' && <div className="nodrag" style={{maxHeight:155,overflow:'auto',marginBottom:4}}>
+    <div style={{fontSize:10,color:'#888',marginBottom:3,fontWeight:600}}>{isRunningHubNode ? 'RunningHub 工作流' : isApiNode ? apiLabel : meta?.label}</div>
+    {isRunningHubNode && (() => { const contract = cfg.runningHubContract as RunningHubModelContract | undefined; const parameters = contract?.params || []; const field = (param: RunningHubParam) => { const value = cfg[param.fieldKey] ?? param.defaultValue ?? ''; const style = { width:'100%', padding:5, marginTop:4, background:'var(--theme-input)', color:'var(--theme-text)', border:'1px solid var(--theme-border)', borderRadius:5 }; const label = runningHubParamLabel(param); const help = runningHubParamHelp(param); if (param.type === 'LIST') return <label key={param.fieldKey} className="runninghub-param"><span>{label}</span><select value={String(value)} onChange={e=>sc(id,{[param.fieldKey]:e.target.value})} style={style}>{(param.options || []).map(option => <option key={option.value} value={option.value}>{option.description || option.descriptionEn || option.value}</option>)}</select>{help && <small>{help}</small>}</label>; if (param.type === 'BOOLEAN') return <label key={param.fieldKey} className="runninghub-param runninghub-param--boolean"><span><input type="checkbox" checked={Boolean(value)} onChange={e=>sc(id,{[param.fieldKey]:e.target.checked})}/> {label}</span>{help && <small>{help}</small>}</label>; if (['IMAGE','VIDEO','AUDIO'].includes(param.type)) { const count = runningHubMediaSlotCount(param); return <details key={param.fieldKey} className="runninghub-param runninghub-param--media"><summary><span>{label}{param.required ? ' *' : ''}{count > 1 ? `（${count} 个顺序槽位）` : ''}</span><em>{Array.from({length:count},(_,index)=>{const slotKey=count>1?runningHubSlotKey(param.fieldKey,index):param.fieldKey; return d.inputValues?.[slotKey] || cfg[slotKey] || (Array.isArray(d.inputValues?.[param.fieldKey]) && (d.inputValues?.[param.fieldKey] as unknown[])[index]) ? 1 : 0;}).reduce<number>((total,value)=>total+value,0)}/{count} 已就绪</em></summary>{help && <small>{help}</small>}<div className="runninghub-media-slots">{Array.from({length:count},(_,index)=>{const slotKey=count>1?runningHubSlotKey(param.fieldKey,index):param.fieldKey; return <div key={slotKey}><span>{count>1?`第 ${index+1} 项`:'输入'}：{d.inputValues?.[slotKey] ? '已从端口接收' : cfg[slotKey] ? '已选择文件' : '等待输入'}</span><button className="nodrag" onClick={() => { setRunningHubUploadField(slotKey); runningHubFileRef.current?.click(); }}>选择文件</button></div>;})}</div></details>; } return <label key={param.fieldKey} className="runninghub-param"><span>{label}</span><input type={['INT','FLOAT'].includes(param.type) ? 'number' : 'text'} value={String(value)} onChange={e=>sc(id,{[param.fieldKey]:['INT','FLOAT'].includes(param.type) ? Number(e.target.value) : e.target.value})} placeholder={param.fieldKey} style={style} />{help && <small>{help}</small>}</label>; }; return <div className="nodrag runninghub-node-config"><input ref={runningHubFileRef} hidden type="file" accept="image/*,video/*,audio/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (!file || !runningHubUploadField) return; const reader = new FileReader(); reader.onload = () => sc(id,{[runningHubUploadField]:String(reader.result || '')}); reader.readAsDataURL(file); }} /><div className="runninghub-node-badge">{contract ? `官方模型合同 · ${contract.category.replace(/^RunningHub\//, '')}` : 'Comfy 工作流'}</div>{contract ? <><div style={{fontSize:11,color:'var(--theme-text)'}}>{contract.name_cn || contract.display_name}</div><div style={{fontSize:9,color:'var(--theme-muted)',marginTop:3}}>输出：{contract.output_type} · endpoint 由官方 registry 固定 · 配置自动保存</div>{parameters.filter(param => !['IMAGE','VIDEO','AUDIO'].includes(param.type)).map(field)}<div className="runninghub-media-group">{parameters.filter(param => ['IMAGE','VIDEO','AUDIO'].includes(param.type)).map(field)}</div></> : <><input value={String(cfg.workflowId || '')} onChange={e=>sc(id,{workflowId:e.target.value})} placeholder="RunningHub 工作流 ID（宽选择区）" style={{width:'100%',padding:6}} /><textarea value={String(cfg.workflowNodeMap || '')} onChange={e=>sc(id,{workflowNodeMap:e.target.value})} placeholder="节点字段映射 JSON（nodeId/fieldName，自动保存）" style={{width:'100%',minHeight:64,marginTop:5,padding:6,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5}} /></>}</div>; })()}
+     {d.nodeType === 'cinematographyKnowledge' && <div className="nodrag" style={{maxHeight:155,overflow:'auto',marginBottom:4}}>
       <input value={String(cfg.search||'')} onChange={e=>sc(id,{search:e.target.value})} placeholder="搜索影视效果术语" style={{width:'100%',background:'var(--theme-input)',color:'var(--theme-text-2)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10,marginBottom:4}} />
       <div style={{display:'flex',flexWrap:'wrap',gap:3}}>{visibleEffects.map(effect=><button key={effect.id} onClick={()=>toggleKnowledgeEffect(effect.id)} style={{fontSize:9,padding:'2px 5px',borderRadius:4,border:'1px solid var(--theme-border)',background:knowledgeSelected.includes(effect.id)?'#6651a8':'#202035',color:'var(--theme-text-2)',cursor:'pointer'}} title={`${effect.definition} ${effect.usage}`}>{effect.term}</button>)}</div>
       {Array.isArray(cfg._knowledgePreview)&&cfg._knowledgePreview.length>0&&<div style={{fontSize:9,color:'var(--theme-warning)',marginTop:4}}>⚠ {cfg._knowledgePreview.join(' ')}</div>}

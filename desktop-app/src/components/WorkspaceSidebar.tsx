@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { AppstoreOutlined, CloseOutlined, FolderOpenOutlined, PictureOutlined, RocketOutlined } from '@ant-design/icons';
-import { Button, Segmented } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AppstoreOutlined, CloseOutlined, FolderOpenOutlined, PictureOutlined, RocketOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Input, Segmented } from 'antd';
 import { AssetLibrary } from '@/components/AssetLibrary';
 import { Toolbar } from '@/components/Toolbar';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -11,9 +11,10 @@ import { PAID_CAPABILITIES } from '@/services/paidApi.service';
 import { PAID_API_ADAPTERS, PAID_PROVIDER_IDS, getPaidProvidersForCapability } from '@/config/paidApiAdapters';
 import { DOMAIN_TEMPLATES, type DomainTemplate } from '@/config/domainTemplates';
 import { createWorkflowNode } from '@/utils/workflowNode';
+import { RUNNINGHUB_CATEGORIES, RUNNINGHUB_MODELS, RUNNINGHUB_REGISTRY_VERSION, runningHubDefaults, runningHubMediaFields, runningHubModelUnavailableInCn } from '@/config/runninghubCatalog';
 
 type MainTab = 'assets' | 'nodes';
-type NodeTab = 'fixed' | 'paid' | 'workflow' | 'template';
+type NodeTab = 'fixed' | 'paid' | 'runninghub' | 'workflow' | 'template';
 
 const FIXED_NODES: Array<{ type: NodeComponentType; label: string }> = [
   { type:'textInput', label:'文本' }, { type:'scriptInput', label:'剧本' },
@@ -51,6 +52,14 @@ const PAID_AUDIO_NODES: Array<{ type: NodeComponentType; label: string; config?:
     config: { capability, provider: getPaidProvidersForCapability(capability)[0]?.id || '' },
   })).filter(item => getPaidProvidersForCapability(item.config?.capability as PaidCapability).length > 0),
 ];
+const RUNNINGHUB_NODES: Array<{ type: NodeComponentType; label: string; config?: Record<string, unknown> }> = [
+  { type: 'runningHubWorkflow', label: 'Comfy 工作流', config: { workflowId: '', executionMode: 'comfy-workflow', provider: 'runninghub' } },
+];
+const RUNNINGHUB_MODEL_NODES = RUNNINGHUB_MODELS.map(model => ({
+  type: 'runningHubWorkflow' as NodeComponentType,
+  label: model.name_cn || model.display_name,
+  config: { executionMode: 'standard-model', provider: 'runninghub', runningHubClassName: model.class_name, runningHubContract: model, endpoint: model.endpoint, mediaFields: runningHubMediaFields(model), ...runningHubDefaults(model) },
+}));
 const PAID_3D_NODES: Array<{ type: NodeComponentType; label: string; config?: Record<string, unknown> }> = [
   ...(['text-to-3d', 'image-to-3d'] as PaidCapability[]).map(capability => ({
     type: 'paidCapability' as NodeComponentType,
@@ -64,32 +73,48 @@ export const WorkspaceSidebar: React.FC = () => {
   const [open, setOpen] = useState(() => localStorage.getItem('jacecanvas-workspace-open') === 'true');
   const [mainTab, setMainTab] = useState<MainTab>('assets');
   const [nodeTab, setNodeTab] = useState<NodeTab>('fixed');
+  const [nodeSearch, setNodeSearch] = useState('');
   const addNode = useCanvasStore(s => s.addNode);
   const center = () => ((window as any).__canvasCenter?.() || { x: 320, y: 200 });
   useEffect(() => {
-    const openLibrary = () => { setOpen(true); localStorage.setItem('jacecanvas-workspace-open', 'true'); setMainTab('nodes'); setNodeTab('workflow'); };
+    const openLibrary = () => { setOpen(true); localStorage.setItem('jacecanvas-workspace-open', 'true'); setMainTab('nodes'); setNodeTab('runninghub'); };
     window.addEventListener('ai-canvas-open-node-library', openLibrary);
     return () => window.removeEventListener('ai-canvas-open-node-library', openLibrary);
   }, []);
   const toggleOpen = (value: boolean) => { setOpen(value); localStorage.setItem('jacecanvas-workspace-open', String(value)); };
   // hooks 必须在任何条件 return 之前无条件调用（否则收起/展开切换时 hooks 数量变化 → React error #310 崩溃）
   const [favs, setFavs] = React.useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jacecanvas-fav-nodes') || '[]'); } catch { return []; } });
+  const [runningHubFavs, setRunningHubFavs] = React.useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jacecanvas-fav-runninghub-models') || '[]'); } catch { return []; } });
   const toggleFav = (type: string) => setFavs(prev => { const next = prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]; localStorage.setItem('jacecanvas-fav-nodes', JSON.stringify(next)); return next; });
+  const toggleRunningHubFav = (className: string) => setRunningHubFavs(prev => { const next = prev.includes(className) ? prev.filter(item => item !== className) : [...prev, className]; localStorage.setItem('jacecanvas-fav-runninghub-models', JSON.stringify(next)); return next; });
+  const [runningHubCategory, setRunningHubCategory] = useState('全部');
+  const [runningHubFavoritesOpen, setRunningHubFavoritesOpen] = useState(true);
+  const runningHubVisible = useMemo(() => RUNNINGHUB_MODEL_NODES.filter(item => runningHubCategory === '全部' || (item.config?.runningHubContract as any)?.category === runningHubCategory), [runningHubCategory]);
   if (!open) return <Button className="workspace-sidebar-toggle" icon={<FolderOpenOutlined />} onClick={() => toggleOpen(true)}>资产 / 节点</Button>;
   const add = (type: NodeComponentType) => addNode(type, center(), { label: undefined } as any);
-  const grid = (nodes: Array<{ type: NodeComponentType; label: string; config?: Record<string, unknown> }>, withFav = false) => <div className="workspace-node-grid">{nodes.map(item => <button key={`${item.type}-${item.label}`} onClick={() => addNode(item.type, center(), item.config ? { config: item.config, label: item.label } as any : { label: item.label } as any)} style={{ position: 'relative' }}><i><NodeIcon type={item.type} size={13} /></i><span>{item.label}</span>{withFav && <span title={favs.includes(item.type) ? '取消收藏' : '收藏'} onClick={e => { e.stopPropagation(); toggleFav(item.type); }} style={{ position: 'absolute', top: 2, right: 5, fontSize: 10, cursor: 'pointer', opacity: favs.includes(item.type) ? 1 : 0.3 }}>{favs.includes(item.type) ? '★' : '☆'}</span>}</button>)}</div>;
+  const matches = (item: { label: string; type: NodeComponentType }) => !nodeSearch.trim() || `${item.label} ${item.type}`.toLowerCase().includes(nodeSearch.trim().toLowerCase());
+  const grid = (nodes: Array<{ type: NodeComponentType; label: string; config?: Record<string, unknown> }>, withFav = false) => <div className="workspace-node-grid">{nodes.filter(matches).map(item => <button key={`${item.type}-${item.label}`} onClick={() => addNode(item.type, center(), item.config ? { config: item.config, label: item.label } as any : { label: item.label } as any)} style={{ position: 'relative' }}><i><NodeIcon type={item.type} size={13} /></i><span>{item.label}</span>{withFav && <span title={favs.includes(item.type) ? '取消收藏' : '收藏'} onClick={e => { e.stopPropagation(); toggleFav(item.type); }} style={{ position: 'absolute', top: 2, right: 5, fontSize: 10, cursor: 'pointer', opacity: favs.includes(item.type) ? 1 : 0.3 }}>{favs.includes(item.type) ? '★' : '☆'}</span>}</button>)}</div>;
+  const runningHubGrid = (nodes: typeof RUNNINGHUB_MODEL_NODES) => <div className="workspace-node-grid">{nodes.filter(matches).map(item => { const model = item.config?.runningHubContract as any; const favorite = runningHubFavs.includes(model.class_name); const unavailable = runningHubModelUnavailableInCn(model); return <button key={model.class_name} disabled={unavailable} title={unavailable ? '该模型在国内端点已全线迁移到全球端（runninghub.ai），暂不可用' : (favorite ? '取消收藏' : '收藏')} onClick={() => { if (unavailable) return; addNode(item.type, center(), { config: item.config, label: item.label } as any); }} style={{ position: 'relative', opacity: unavailable ? 0.45 : 1, cursor: unavailable ? 'not-allowed' : 'pointer', pointerEvents: unavailable ? 'none' : 'auto' }}><i><NodeIcon type={item.type} size={13} /></i><span>{item.label}</span>{unavailable && <span style={{ position: 'absolute', top: 2, right: 5, fontSize: 9, color: 'var(--theme-warning)' }}>全球端</span>}{!unavailable && <span title={favorite ? '取消收藏' : '收藏'} onClick={e => { e.stopPropagation(); toggleRunningHubFav(model.class_name); }} style={{ position:'absolute', top:2, right:5, fontSize:10, cursor:'pointer', opacity:favorite ? 1 : .35 }}>{favorite ? '★' : '☆'}</span>}</button>; })}</div>;
   return <aside className="workspace-sidebar">
     <header><div className="workspace-sidebar__brand"><AppstoreOutlined /> 创作工作区</div><Button type="text" icon={<CloseOutlined />} onClick={() => toggleOpen(false)} /></header>
     <Segmented block value={mainTab} onChange={value => setMainTab(value as MainTab)} options={[{ label:<span><PictureOutlined /> 资产</span>, value:'assets' }, { label:<span><RocketOutlined /> 节点</span>, value:'nodes' }]} />
     <section className="workspace-sidebar__body">
+       {mainTab === 'nodes' && (nodeTab === 'fixed' || nodeTab === 'paid' || nodeTab === 'runninghub') && <Input allowClear prefix={<SearchOutlined />} value={nodeSearch} onChange={e => setNodeSearch(e.target.value)} placeholder="在当前来源组中搜索节点" size="small" className="workspace-node-search" />}
       {mainTab === 'assets' && <AssetLibrary embedded collapsed={false} onToggle={() => toggleOpen(false)} />}
       {mainTab === 'nodes' && <>
-        <Segmented className="workspace-sidebar__node-tabs" block value={nodeTab} onChange={value => setNodeTab(value as NodeTab)} options={[{label:'固定节点',value:'fixed'},{label:'付费 API',value:'paid'},{label:'工作流节点',value:'workflow'},{label:'模板',value:'template'}]} />
+        <div className="workspace-sidebar__node-tabs"><button className={nodeTab === 'fixed' ? 'active' : ''} onClick={() => setNodeTab('fixed')}>固定节点</button><button className={nodeTab === 'paid' ? 'active' : ''} onClick={() => setNodeTab('paid')}>付费 API</button><button className={nodeTab === 'runninghub' ? 'active' : ''} onClick={() => setNodeTab('runninghub')}>RunningHub</button><button className={nodeTab === 'workflow' ? 'active' : ''} onClick={() => setNodeTab('workflow')}>工作流节点</button><button className={nodeTab === 'template' ? 'active' : ''} onClick={() => setNodeTab('template')}>模板</button></div>
         {nodeTab === 'fixed' && <>
           {favs.length > 0 && <div style={{ marginBottom: 4 }}><div style={{ fontSize: 10, color: 'var(--theme-muted)', margin: '6px 2px 4px' }}>⭐ 常用</div>{grid(FIXED_NODES.filter(n => favs.includes(n.type)), true)}</div>}
           {FIXED_NODES.filter(n => !favs.includes(n.type)).length > 0 && grid(FIXED_NODES.filter(n => !favs.includes(n.type)), true)}
         </>}
-        {nodeTab === 'paid' && <div className="workspace-paid-node-groups">
+        {nodeTab === 'runninghub' && <div className="workspace-paid-node-groups workspace-runninghub-node-groups">
+           <div className="workspace-sidebar__hint">标准模型来自官方 registry（当前版本 {RUNNINGHUB_REGISTRY_VERSION}），按厂商分类显示；endpoint 和参数合同随节点写入且不可手填。标注「全球端」的模型在国内端点已迁移到 runninghub.ai，暂置灰不可添加。Comfy 工作流保持独立入口。</div>
+           <button className="library-section-toggle" onClick={() => setRunningHubFavoritesOpen(openState => !openState)}><span>RunningHub 收藏</span><span>{runningHubFavoritesOpen ? '收起' : '展开'}</span></button>{runningHubFavoritesOpen && (RUNNINGHUB_MODEL_NODES.filter(item => runningHubFavs.includes((item.config?.runningHubContract as any)?.class_name)).length ? runningHubGrid(RUNNINGHUB_MODEL_NODES.filter(item => runningHubFavs.includes((item.config?.runningHubContract as any)?.class_name))) : <div className="workspace-sidebar__hint">点击模型卡片右上角星标收藏常用模型。</div>)}
+            <h4>Comfy 工作流</h4>{grid(RUNNINGHUB_NODES)}
+            <div className="runninghub-category-tabs"><button className={runningHubCategory === '全部' ? 'active' : ''} onClick={() => setRunningHubCategory('全部')}>全部</button>{RUNNINGHUB_CATEGORIES.map(category => <button key={category} className={runningHubCategory === category ? 'active' : ''} onClick={() => setRunningHubCategory(category)}>{category.replace(/^RunningHub\//, '')}</button>)}</div>
+           {runningHubGrid(runningHubVisible)}
+         </div>}
+         {nodeTab === 'paid' && <div className="workspace-paid-node-groups">
           <div className="workspace-sidebar__hint">只显示已配置或可由厂商能力目录识别的入口。添加后可在节点内选择模型和输入参数。</div>
           <h4>图片</h4>{grid(PAID_IMAGE_NODES)}
           <h4>视频</h4>{grid(PAID_VIDEO_NODES)}

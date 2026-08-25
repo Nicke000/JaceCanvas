@@ -3,6 +3,8 @@
 export function portTypeColor(type?: string): string {
   switch (String(type || '').toLowerCase()) {
     case 'text': return '#a78bfa';
+    case 'number': return '#60a5fa';
+    case 'boolean': return '#94a3b8';
     case 'video': return '#f472b6';
     case 'audio': return '#f59e0b';
     case '3d': return '#34d399';

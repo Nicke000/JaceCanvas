@@ -11,6 +11,7 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, safeStorage, Menu } = require("electron");
 const path = require("path");
 const { spawn, execFileSync } = require("child_process");
+const http = require("http");
 const fs = require("fs");
 const { pathToFileURL, fileURLToPath } = require("url");
 const { autoUpdater } = require("electron-updater");
@@ -171,7 +172,22 @@ function collectSshPerformance(config) {
 // ============================================================
 // 🖥️ 后端服务器管理
 // ============================================================
+function checkServerHealth() {
+  return new Promise((resolve) => {
+    const request = http.get(`http://127.0.0.1:${SERVER_PORT}/api/health`, response => {
+      response.resume();
+      response.once('end', () => resolve(response.statusCode === 200));
+    });
+    request.setTimeout(1200, () => { request.destroy(); resolve(false); });
+    request.on('error', () => resolve(false));
+  });
+}
+
 async function startServer() {
+  if (await checkServerHealth()) {
+    console.log(`[Server] 已检测到运行中的后端，复用 http://localhost:${SERVER_PORT}`);
+    return true;
+  }
   return new Promise((resolve) => {
     // 打包后 extraResources 位于 resources 目录，不能从 app.asar 内直接
     // 作为 Node 子进程入口启动；开发环境仍使用 desktop-app/server。
@@ -223,7 +239,7 @@ async function startServer() {
         console.warn("[Server] 启动超时，继续加载应用");
         resolve(false);
       }
-    }, 10000);
+    }, 5000);
 
     serverProcess.stdout.on("data", (data) => {
       const msg = data.toString().trim();
@@ -465,7 +481,26 @@ ipcMain.handle("app-update-download", async () => { await autoUpdater.downloadUp
 ipcMain.handle("app-update-install", () => { if (updateState.status !== "downloaded") return false; isQuitting = true; autoUpdater.quitAndInstall(false, true); return true; });
 ipcMain.handle("app-update-state", () => updateState);
 
-ipcMain.handle("get-app-info", () => ({
+function skillsRootDir(folder) { return path.resolve(folder || path.join(app.getPath('userData'), 'skills')); }
+function isSkillFile(filePath, root) { const resolved = path.resolve(filePath); return resolved.startsWith(root + path.sep) && path.basename(resolved).toLowerCase() === 'skill.md'; }
+ipcMain.handle('get-skills-settings', (_event, folder) => { const root = skillsRootDir(folder); fs.mkdirSync(root, { recursive: true }); const items = []; const walk = dir => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else if (entry.isFile() && entry.name.toLowerCase() === 'skill.md') { const relative = path.relative(root, full); const content = fs.readFileSync(full, 'utf8'); items.push({ relative, name: path.basename(path.dirname(full)) || 'skill', content }); } } }; walk(root); return { folder: root, items }; });
+ipcMain.handle('choose-skills-folder', async () => { const result = await dialog.showOpenDialog({ title: '选择 Skills 文件夹', properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : { folder: result.filePaths[0] }; });
+ipcMain.handle('open-skills-folder', async (_event, folder) => { const root = skillsRootDir(folder); fs.mkdirSync(root, { recursive: true }); await shell.openPath(root); return { folder: root }; });
+ipcMain.handle('save-skill-file', (_event, { folder, relative, content }) => { const root = skillsRootDir(folder); const target = path.resolve(root, String(relative || '')); if (!isSkillFile(target, root)) throw new Error('只允许写入 Skills 文件夹中的 SKILL.md'); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, String(content || ''), 'utf8'); return { relative: path.relative(root, target) }; });
+ipcMain.handle('delete-skill-file', (_event, { folder, relative }) => { const root = skillsRootDir(folder); const target = path.resolve(root, String(relative || '')); if (!isSkillFile(target, root) || !fs.existsSync(target)) throw new Error('Skill 文件不存在或路径无效'); fs.unlinkSync(target); return true; });
+// 只读 Skill 元数据（路径/名称/标题与用途摘要），不读取全文。供选择器判断相关性，skills 多时也不会一次性加载全部内容。
+function skillMeta(filePath, root) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+  const titleMatch = content.match(/^\s*#\s+(.+)\s*$/m);
+  const title = titleMatch ? titleMatch[1].trim() : '';
+  const summary = lines.slice(0, 20).map(line => line.trim()).filter(Boolean).slice(0, 10).join(' ').slice(0, 240);
+  return { relative: path.relative(root, filePath), name: path.basename(path.dirname(filePath)) || 'skill', title, summary };
+}
+ipcMain.handle('list-skills', (_event, folder) => { const root = skillsRootDir(folder); fs.mkdirSync(root, { recursive: true }); const items = []; const walk = dir => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else if (entry.isFile() && entry.name.toLowerCase() === 'skill.md') items.push(skillMeta(full, root)); } }; walk(root); return { folder: root, items }; });
+// 按需读取单个 SKILL.md 全文（仅在选中后调用，控制上下文大小）。
+ipcMain.handle('read-skill', (_event, { folder, relative }) => { const root = skillsRootDir(folder); const target = path.resolve(root, String(relative || '')); if (!isSkillFile(target, root)) throw new Error('只允许读取 Skills 文件夹中的 SKILL.md'); return { relative, content: fs.readFileSync(target, 'utf8') }; });
+ipcMain.handle("get-app-info", () => ({ 
   name: APP_NAME,
   version: app.getVersion(),
   electron: process.versions.electron,
@@ -712,21 +747,22 @@ ipcMain.handle("proxy-fetch", async (_event, { url, method, headers, body }) => 
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try { const j = JSON.parse(buf.toString("utf8")); msg = j.message || j.error?.message || msg; } catch { /* keep status */ }
-    throw new Error(String(msg));
+    // HTTP 4xx/5xx 是远端业务响应，返回结构化失败结果，避免主进程产生未处理 IPC 异常堆栈。
+    return { ok: false, status: res.status, error: String(msg), b64: buf.toString("base64"), text: buf.toString("utf-8"), mime: String(res.headers.get("content-type") || "application/json") };
   }
-  return { b64: buf.toString("base64"), text: buf.toString("utf-8"), mime: String(res.headers.get("content-type") || "application/octet-stream") };
+  return { ok: true, status: res.status, b64: buf.toString("base64"), text: buf.toString("utf-8"), mime: String(res.headers.get("content-type") || "application/octet-stream") };
 });
 
 // 上传文件到 ComfyUI（multipart/form-data）：主进程执行，规避渲染进程 file:// 跨域被云端网关 403。
 // 直连 ComfyUI 用 /upload/image（fieldName=image），主控用 /api/comfy/upload/file（fieldName=file）。
-ipcMain.handle("upload-file", async (_event, { url, b64, filename, fieldName, mime }) => {
+ipcMain.handle("upload-file", async (_event, { url, b64, filename, fieldName, mime, headers }) => {
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("仅支持 http(s) 地址");
   if (!b64 || typeof b64 !== "string") throw new Error("缺少文件内容 (b64)");
   const buf = Buffer.from(b64, "base64");
   const name = filename || ("upload_" + Date.now() + ".bin");
   const fd = new FormData();
   fd.append(fieldName || "image", new Blob([buf], { type: mime || "application/octet-stream" }), name);
-  const res = await fetch(url + (url.includes("?") ? "&" : "?") + "overwrite=true", { method: "POST", body: fd });
+  const res = await fetch(url, { method: "POST", headers: { ...(headers || {}) }, body: fd });
   const text = await res.text();
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -759,10 +795,19 @@ ipcMain.handle("load-media-b64", async (_event, { url }) => {
 });
 // 把缓存文件复制到素材库永久区（用户"主动保存"），避免 48 小时后被清理
 ipcMain.handle("promote-cache", async (_event, { url, folder, name }) => {
-  const cacheDir = getGeneratedCacheDir();
-  const src = path.resolve(fileURLToPath(String(url)));
-  if (src !== cacheDir && !src.startsWith(cacheDir + path.sep)) throw new Error("仅支持缓存目录中的文件");
-  const root = assetsRootDir();
+  const cacheDir = path.resolve(getGeneratedCacheDir());
+  if (typeof url !== "string" || !/^file:/i.test(url)) throw new Error("仅支持本地文件地址");
+  let src;
+  try { src = path.resolve(fileURLToPath(url)); } catch { throw new Error("本地文件地址无效"); }
+  const root = path.resolve(assetsRootDir());
+  const userData = path.resolve(app.getPath("userData"));
+  const inCache = src === cacheDir || src.startsWith(cacheDir + path.sep);
+  const inAssets = src === root || src.startsWith(root + path.sep);
+  const inUserData = src === userData || src.startsWith(userData + path.sep);
+  if (!inCache && !inAssets && !inUserData) throw new Error("仅支持应用数据目录中的文件");
+  if (!fs.existsSync(src)) throw new Error("素材文件不存在");
+  // 已经在永久素材目录中的文件无需再次复制，避免启动时反复报缓存目录错误。
+  if (inAssets) return { path: src, url: pathToFileURL(src).toString(), folder: path.basename(path.dirname(src)) || "未分类", unchanged: true };
   const safeFolder = String(folder || "未分类").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "未分类";
   const base = path.basename(src);
   let safeName = String(name || base).replace(/[\\/:*?"<>|]/g, "_").slice(0, 120) || base;

@@ -22,9 +22,24 @@ export const GENERATION_HISTORY_EVENT = 'ai-canvas-generation-history-updated';
  * 但成功/失败结果仍必须立即进入本地历史记录。
  */
 /** 资产列表类型（与 AssetLibrary 兼容） */
-export interface AssetEntry { id: string; name: string; type: string; url: string; }
+export interface AssetEntry { id: string; name: string; type: string; url: string; localPath?: string; persistence?: 'disk' | 'index' | 'remote' | 'cache'; }
 
 const ASSETS_KEY = 'ai-canvas-assets-v2';
+
+/**
+ * Remote generation URLs are short-lived. Persist a local copy when the
+ * Electron bridge is available; keep the original URL as a graceful fallback.
+ */
+async function persistGeneratedUrl(url: string, type: string, filename: string): Promise<{ url: string; localPath?: string; persistence: AssetEntry['persistence'] }> {
+  if (!/^https?:\/\//i.test(url)) {
+    return { url, persistence: url.startsWith('file:') ? 'disk' : 'index' };
+  }
+  try {
+    const saved = await (window as any).electronAPI?.cacheMedia?.({ url, dir: 'assets' });
+    if (saved?.url) return { url: saved.url, localPath: saved.path, persistence: 'disk' };
+  } catch { /* Keep remote URL when download is unavailable or fails. */ }
+  return { url, persistence: 'remote' };
+}
 
 /** 保存资产列表：优先 IndexedDB（避免 localStorage 5MB 配额爆掉丢素材），同时兼容写 localStorage */
 export function saveAssets(list: AssetEntry[]): void {
@@ -44,16 +59,21 @@ export async function loadAssetsAsync(): Promise<AssetEntry[]> {
   } catch { return []; }
 }
 
-export function autoSaveToAssets(resultUrl: string | undefined, results: Array<{ url: string; type: string; filename?: string }> | undefined, nodeName: string) {
+export async function autoSaveToAssets(resultUrl: string | undefined, results: Array<{ url: string; type: string; filename?: string }> | undefined, nodeName: string) {
   try {
     // 关闭「自动保存生成素材」时，结果不记入资产库（仅保留在画布与历史中）
     if (useSettingsStore.getState().assetAutoSave === false) return;
     const list = JSON.parse(localStorage.getItem(ASSETS_KEY) || '[]') as AssetEntry[];
     const seen = new Set(list.map(x => x.url));
-    const add = (url: string, type: string, name?: string) => { if (!url || seen.has(url)) return; if (url.startsWith('data:') && url.length > 8000000) return; // 超大 base64 不自动入资产库（手动收藏或保留在画布）
-      seen.add(url); const assetType = type === 'video' ? 'video' : type === 'audio' ? 'audio' : type === 'text' ? 'text' : type === '3d' ? '3d' : 'image'; list.push({ id: 'asset-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), name: name || nodeName, type: assetType, url }); };
-    (results || []).forEach(r => add(r.url, r.type || 'image', r.filename || nodeName));
-    if (resultUrl) add(resultUrl, /(mp4|webm|mov)/i.test(resultUrl) ? 'video' : 'image', nodeName);
+    const items = [...(results || []), ...(resultUrl ? [{ url: resultUrl, type: /(mp4|webm|mov)/i.test(resultUrl) ? 'video' : 'image', filename: nodeName }] : [])];
+    for (const item of items) {
+      if (!item.url || seen.has(item.url) || (item.url.startsWith('data:') && item.url.length > 8000000)) continue;
+      const assetType = item.type === 'video' ? 'video' : item.type === 'audio' ? 'audio' : item.type === 'text' ? 'text' : item.type === '3d' ? '3d' : 'image';
+      const persisted = await persistGeneratedUrl(item.url, assetType, item.filename || nodeName);
+      if (seen.has(persisted.url)) continue;
+      seen.add(persisted.url);
+      list.push({ id: 'asset-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), name: item.filename || nodeName, type: assetType, url: persisted.url, localPath: persisted.localPath, persistence: persisted.persistence });
+    }
     if (list.length > 300) list.splice(0, list.length - 300);
     saveAssets(list);
   } catch { /* ignore */ }

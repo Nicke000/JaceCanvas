@@ -72,6 +72,11 @@ async function ftch(url: string, opts: RequestInit, ms: number): Promise<Respons
       // 主进程代理：规避 ComfyUI 未开 CORS 时渲染进程 fetch 被拦
       const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
       const result = await proxy({ url, method: opts.method || 'GET', headers: (opts.headers || {}) as any, body: body !== undefined ? body : undefined });
+      // 主进程将 HTTP 失败作为结构化结果返回，保留状态码但不制造未处理 IPC 异常。
+      if (result?.ok === false) {
+        clearTimeout(t); opts.signal?.removeEventListener('abort', abort);
+        return { ok: false, status: Number(result.status) || 400, text: async () => result.text || JSON.stringify({ error: result.error || `HTTP ${result.status}` }), headers: new Headers() } as unknown as Response;
+      }
       // 主进程直接返回 utf-8 text（渲染进程可能没有 Buffer，不能用 Buffer.from(b64)）
       let text: string;
       if (typeof result.text === 'string') text = result.text;

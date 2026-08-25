@@ -9,7 +9,7 @@ import { MediaThumb } from '@/components/MediaThumb';
 import { downloadMedia } from '@/utils/downloadMedia';
 import { loadAssetsAsync, saveAssets, type AssetEntry } from '@/utils/generationHistory';
 
-interface AssetItem { id:string; name:string; type:'image'|'video'|'audio'|'text'|'3d'; url:string; localPath?:string; folder?:string; createdAt:number; category:string; tags:string[]; }
+interface AssetItem { id:string; name:string; type:'image'|'video'|'audio'|'text'|'3d'; url:string; localPath?:string; persistence?:'disk'|'index'|'remote'|'cache'; folder?:string; createdAt:number; category:string; tags:string[]; }
 
 const CATS = [
   { key: 'character', label: '\u4eba\u7269', icon: <UserOutlined/> },
@@ -150,7 +150,7 @@ export const AssetLibrary: React.FC<{ collapsed: boolean; onToggle: () => void; 
               onClick={()=>setEditTagId(a.id)}>+标签</Tag>)}
           </div>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <span style={{fontSize:9,color:'var(--theme-muted)'}}>{new Date(a.createdAt).toLocaleDateString()}</span>
+            <span style={{fontSize:9,color:'var(--theme-muted)'}}>{new Date(a.createdAt).toLocaleDateString()}</span><span className={`asset-persistence asset-persistence--${a.persistence || (a.localPath || a.url.startsWith('file:') ? 'disk' : a.url.startsWith('http') ? 'remote' : 'index')}`} title={a.localPath ? `已保存到本机：${a.localPath}` : undefined}>{a.persistence === 'disk' || a.localPath || a.url.startsWith('file:') ? '已落盘' : a.persistence === 'remote' || a.url.startsWith('http') ? '远端链接' : '已入库'}</span>
             <span style={{display:'flex',gap:8}}><DownloadOutlined title="保存到本机" style={{fontSize:11,color:'#60a5fa',cursor:'pointer'}} onClick={e=>{e.stopPropagation();void saveAsset(a)}}/><EditOutlined title="重命名" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setEditNameId(a.id);setNameInput(a.name)}}/><DeleteOutlined title="删除" style={{fontSize:11,color:'var(--theme-muted)',cursor:'pointer'}} onClick={e=>{e.stopPropagation();save(assets.filter(x=>x.id!==a.id));}}/></span>
           </div>
         </div>))}

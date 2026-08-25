@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { getRunningTaskCount, getQueuedTaskIds } from '@/stores/canvasStore';
 
-export const PerformanceBar: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
+export const PerformanceBar: React.FC<{ compact?: boolean; embedded?: boolean }> = ({ compact = false, embedded = false }) => {
   const baseUrl = useSettingsStore(s=>s.baseUrl);
   const sshHost = useSettingsStore(s=>s.sshHost);
   const sshPort = useSettingsStore(s=>s.sshPort);
@@ -24,11 +24,11 @@ export const PerformanceBar: React.FC<{ compact?: boolean }> = ({ compact = fals
   const Metric=({icon,label,value,detail,color}:{icon:string;label:string;value?:number;detail:string;color:string})=><div className="performance-metric">
     <span className="performance-metric__icon" style={{color}}>{icon}</span><span className="performance-metric__body"><span className="performance-metric__label">{label}</span><span className="performance-metric__value">{value==null?'--':`${Math.round(value)}%`} <small>{detail}</small></span><span className="performance-meter"><i style={{width:`${meter(value)}%`,background:color}}/></span></span>
   </div>;
-  return <div className={`performance-bar ${compact?'is-compact':''}`} role="status" aria-label="服务器性能状态">
+  return <div className={`performance-bar ${compact?'is-compact':''} ${embedded?'performance-bar--embedded':''}`} role="status" aria-label="服务器性能状态">
     <span className={`performance-dot ${online?'is-online':''}`}/><span title="当前服务器">{activeServerName} · {info?.source==='ssh'?'SSH 实时':online?'HTTP 在线':'离线'}</span>
     <span className="performance-sep"/>
-    <button className="performance-queue-link" onClick={()=>{const node=nodes.find(n=>n.data.status==='running');if(node)(window as any).__focusCanvasNode?.(node.id)}}>执行中 {Math.max(info?.runningCount ?? 0,getRunningTaskCount(),nodes.filter(n=>n.data.status==='running').length)}</button>
-    <button className="performance-queue-link" onClick={()=>{const id=getQueuedTaskIds().find(taskId=>nodes.some(n=>n.id===taskId&&n.data.status!=='running'));if(id)(window as any).__focusCanvasNode?.(id)}}>排队中 {Math.max(info?.pendingCount ?? 0,getQueuedTaskIds().filter(id=>nodes.some(n=>n.id===id&&n.data.status!=='running')).length)}</button>
+    <button className="performance-queue-link" onClick={()=>{window.dispatchEvent(new Event('ai-canvas-open-taskqueue'));const node=nodes.find(n=>n.data.status==='running');if(node)(window as any).__focusCanvasNode?.(node.id)}}>执行中 {Math.max(info?.runningCount ?? 0,getRunningTaskCount(),nodes.filter(n=>n.data.status==='running').length)}</button>
+    <button className="performance-queue-link" onClick={()=>{window.dispatchEvent(new Event('ai-canvas-open-taskqueue'));const id=getQueuedTaskIds().find(taskId=>nodes.some(n=>n.id===taskId&&n.data.status!=='running'));if(id)(window as any).__focusCanvasNode?.(id)}}>排队中 {Math.max(info?.pendingCount ?? 0,getQueuedTaskIds().filter(id=>nodes.some(n=>n.id===id&&n.data.status!=='running')).length)}</button>
     <Metric icon="GPU" label="显卡" value={info?.gpuUsage} detail={info?.gpuName||'未连接'} color="#a78bfa"/>
     <Metric icon="VRAM" label="显存" value={gpuMemPct??undefined} detail={fmtMem(info?.gpuMemoryUsed,info?.gpuMemoryTotal,'MB')} color="#38bdf8"/>
     <Metric icon="CPU" label="处理器" value={info?.cpuUsage} detail="使用率" color="#34d399"/>

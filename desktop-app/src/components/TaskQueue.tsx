@@ -4,11 +4,11 @@ import { CloseOutlined, DeleteOutlined, PauseOutlined, PlayCircleOutlined, Verti
 import { useCanvasStore } from '@/stores/canvasStore';
 import type { NodeStatus } from '@/types';
 
-interface TaskQueueProps { open: boolean; onClose: () => void; onToggle: () => void; }
+interface TaskQueueProps { open: boolean; onClose: () => void; onToggle: () => void; embedded?: boolean; }
 
 const statusText: Record<NodeStatus, string> = { idle: '等待', queued: '排队中', running: '执行中', paused: '已暂停', success: '完成', error: '失败' };
 
-export const TaskQueue: React.FC<TaskQueueProps> = ({ open, onClose, onToggle }) => {
+export const TaskQueue: React.FC<TaskQueueProps> = ({ open, onClose, onToggle, embedded = false }) => {
   const nodes = useCanvasStore(s => s.nodes);
   const pauseNode = useCanvasStore(s => s.pauseNode);
   const enqueueNode = useCanvasStore(s => s.enqueueNode);
@@ -30,9 +30,9 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ open, onClose, onToggle })
     useCanvasStore.getState().updateNodeData(id, { queuedAt: undefined, queueOrder: undefined, content: '已从本地队列移除' });
   };
   return <>
-    <Tooltip title="执行列表（点画布空白处自动收起）"><Button className="task-queue-fab" onClick={onToggle}><FieldTimeOutlined /> 执行列表{busyCount > 0 && <em>{busyCount}</em>}</Button></Tooltip>
-    {open && <aside className="task-queue-panel">
-    <header><div><b>执行列表</b><small>{active.filter(node => node.data.status === 'running').length} 执行中 · {queued.length} 排队</small></div><Button type="text" icon={<CloseOutlined />} onClick={onClose} /></header>
+    {!embedded && <Tooltip title="运行中心：查看队列、生成历史与任务状态"><Button className="task-queue-fab" onClick={onToggle}><FieldTimeOutlined /> 运行中心{busyCount > 0 && <em>{busyCount}</em>}</Button></Tooltip>}
+    {open && <aside className={embedded ? 'task-queue-panel task-queue-panel--embedded' : 'task-queue-panel'}>
+    <header><div><b>运行中心</b><small>{active.filter(node => node.data.status === 'running').length} 执行中 · {queued.length} 排队</small></div><div className="task-queue-panel__header-actions"><Button type="text" size="small" onClick={() => window.dispatchEvent(new Event('ai-canvas-open-history'))}>生成历史</Button><Button type="text" icon={<CloseOutlined />} onClick={onClose} /></div></header>
     <div className="task-queue-panel__hint">单 GPU 模式：排队任务不会提前提交到 ComfyUI。</div>
     <section>{tasks.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行任务" /> : tasks.map((node, index) => {
       const status = node.data.status || 'idle'; const percent = Math.max(0, Math.min(100, Number(node.data.progress || 0)));

@@ -211,13 +211,13 @@ export const ConfigPanel: React.FC = () => {
   </Form>;
   return <aside className="config-panel workspace-panel" style={{ position: 'absolute', right: 0, top: 40, width: 370, height: 'calc(100vh - 40px)', background: 'var(--theme-panel)', borderLeft: '1px solid var(--theme-border)', zIndex: 15, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
     <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--theme-border)', display: 'flex', alignItems: 'center', gap: 8 }}><strong style={{ flex: 1, color: 'var(--theme-text)' }}>{node.data.label}</strong><Tag color={node.data.status === 'running' ? 'blue' : node.data.status === 'error' ? 'red' : 'default'}>{node.data.status}</Tag><Button type="text" icon={<MessageOutlined />} title="与 AI 对话（带节点及上游上下文）" onClick={() => { setChatOpen(true); setChatMsgs(m => m.length ? m : [{ role: 'ai', text: '已读取当前节点及上游节点上下文，想让我帮你做什么？' }]); }} /><Button type="text" icon={<CloseOutlined />} onClick={() => setSelected(null)} /></div>
-    <div style={{ padding: '10px 14px', overflow: 'auto' }}><Space style={{ marginBottom: 10 }}><Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => void execute(node.id)}>执行</Button><Button size="small" icon={<ThunderboltOutlined />} onClick={() => void executeFrom(node.id)}>从此执行</Button></Space>
-      {servers.length > 0 && <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ color: 'var(--theme-muted)', fontSize: 11 }}>服务器</span>
+    <div className="config-panel__body" style={{ padding: '10px 14px', overflow: 'auto' }}><div className="config-action-bar"><Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => void execute(node.id)}>执行</Button><Button size="small" icon={<ThunderboltOutlined />} onClick={() => void executeFrom(node.id)}>从此执行</Button><span className="config-action-bar__hint">修改后可直接重跑</span></div>
+      {servers.length > 0 && <div className="config-server-section" style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="config-section-label">服务器</span>
         <Select size="small" style={{ flex: 1 }} value={String(node.data.serverId || '')} onChange={v => updateNodeData(node.id, { serverId: v || undefined })}
           options={[{ label: '跟随默认', value: '' }, ...servers.map(s => ({ label: s.name, value: s.id }))]} />
       </div>}
-      {nodeType === 'localWorkflow' ? renderLocalWorkflow() : nodeType === 'apiNode' ? renderApi() : renderBasic()}</div>
+      <div className="config-parameters-section"><div className="config-section-heading">参数 <small>核心设置</small></div>{nodeType === 'localWorkflow' ? renderLocalWorkflow() : nodeType === 'apiNode' ? renderApi() : renderBasic()}</div></div>
       <Modal title={`与 AI 对话 · ${node.data.label}`} open={chatOpen} onCancel={() => setChatOpen(false)} footer={null} width={480} destroyOnClose={false}>
         <div style={{ maxHeight: 340, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
           {chatMsgs.map((m, i) => (

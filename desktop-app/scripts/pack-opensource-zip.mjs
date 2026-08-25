@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const out = path.join(root, 'release-v4.7.1', 'JaceCanvas-4.7.1-opensource.zip');
-const SKIP = new Set(['node_modules', 'dist', '.git', '.vite', 'opensource-resource', 'release-v4.6.8', 'release-v4.7.1', 'release-pure-install', 'dist-installer', 'opensource-staging', '.reasonix', 'node_modules.cache', 'data', 'server/data', 'runtime-verify-endpoint-v4.5.1', 'runtime-verify-sw-v4.5.1', 'runtime-verify-v4.5.1']);
+const out = path.join(root, 'release-v4.7.3', 'JaceCanvas-4.7.3-opensource.zip');
+const SKIP = new Set(['node_modules', 'dist', '.git', '.vite', 'opensource-resource', 'release-v4.6.8', 'release-v4.7.1', 'release-v4.7.2', 'release-v4.7.3', 'release-pure-install', 'dist-installer', 'opensource-staging', '.reasonix', 'node_modules.cache', 'data', 'server/data', 'runtime-verify-endpoint-v4.5.1', 'runtime-verify-sw-v4.5.1', 'runtime-verify-v4.5.1', 'website']);
 
 const files = [];
 function collect(dir, rel = '') {

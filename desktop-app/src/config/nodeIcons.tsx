@@ -67,6 +67,7 @@ export const NODE_ICONS: Record<NodeComponentType, LucideIcon> = {
   paidImageToVideo: Play,
   paidCapability: Layers3,
   bailianTextToImage: Cloud,
+  runningHubWorkflow: Cloud,
 };
 
 /** 便捷渲染：<NodeIcon type="textInput" size={15}/>，类型未知时回退 Wand2 */

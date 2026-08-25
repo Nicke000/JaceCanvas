@@ -15,7 +15,7 @@ import { addGenerationHistory, GENERATION_HISTORY_EVENT, readGenerationHistory, 
 
 type HistoryItem = GenerationHistoryItem;
 
-export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; onHeightChange?: (height:number)=>void }> = ({ onOpenChange, onHeightChange }) => {
+export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; onHeightChange?: (height:number)=>void; embedded?: boolean }> = ({ onOpenChange, onHeightChange, embedded = false }) => {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [visibleCount, setVisibleCount] = useState(30); // 增量渲染：默认只渲染 30 条，滚动到底加载更多，避免 50 条媒体全部加载卡顿
@@ -56,6 +56,12 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   const exec = useCanvasStore(s => s.enqueueNode);
   const sel = useCanvasStore(s => s.setSelectedNodeId);
   useEffect(() => { onHeightChange?.(height); }, [height, onHeightChange]);
+
+  useEffect(() => {
+    const openHistory = () => changeOpen(true);
+    window.addEventListener('ai-canvas-open-history', openHistory);
+    return () => window.removeEventListener('ai-canvas-open-history', openHistory);
+  }, []);
 
   useEffect(() => {
     setItems(readGenerationHistory());
@@ -117,7 +123,7 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   };
 
   const changeOpen=(next:boolean)=>{setOpen(next);onOpenChange?.(next)};
-  if (!open) return (
+  if (!open && !embedded) return (
     <div className="generation-history-toggle" style={{position:'fixed',bottom:'calc(10px + env(safe-area-inset-bottom))',right:174,left:'auto',zIndex:1002}}>
       <Tooltip title="生成历史"><Button type="text" icon={<HistoryOutlined/>} onClick={()=>changeOpen(true)}
         className="generation-history-toggle__btn"/></Tooltip>
@@ -125,10 +131,10 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   );
 
   return (
-    <div className="generation-history" style={{position:'absolute',bottom:0,left:0,right:0,height,background:'var(--theme-panel)',borderTop:'1px solid var(--theme-border)',zIndex:25,display:'flex',flexDirection:'column'}}>
+    <div className={embedded ? 'generation-history generation-history--embedded' : 'generation-history'} style={{position:'absolute',bottom:0,left:0,right:0,height,background:'var(--theme-panel)',borderTop:'1px solid var(--theme-border)',zIndex:25,display:'flex',flexDirection:'column'}}>
       <div className="generation-history__resize" title="上下拖动调整历史栏高度" onPointerDown={startResize}><span/></div>
       <div style={{padding:'8px 14px',borderBottom:'1px solid var(--theme-border)',display:'flex',alignItems:'center',gap:8}}>
-        <HistoryOutlined style={{color:'var(--theme-muted)'}}/>
+        <HistoryOutlined style={{color:'var(--theme-primary)'}}/><span className="generation-history__title">运行中心</span><Button type="text" size="small" className="generation-history__queue-link" onClick={() => window.dispatchEvent(new Event('ai-canvas-open-taskqueue'))}>查看队列</Button>
         <div className="history-tabs"><button className={tab === 'generation' ? 'is-active' : ''} onClick={() => setTab('generation')}>生成历史</button><button className={tab === 'chat' ? 'is-active' : ''} onClick={() => { setTab('chat'); void loadChatSessions().then(setChatSessions).catch(() => undefined); }}>聊天记录</button></div>
         {tab === 'generation' && <label style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 10, color: 'var(--theme-muted)', cursor: 'pointer' }}><Checkbox checked={showFailed} onChange={e => { setShowFailed(e.target.checked); try { useSettingsStore.getState().setAssets({ showFailedHistory: e.target.checked }); } catch { /* ignore */ } }} />显示失败记录</label>}
         <Button type="text" size="small" onClick={()=>changeOpen(false)} style={{color:'var(--theme-muted)'}}><CloseOutlined/></Button>

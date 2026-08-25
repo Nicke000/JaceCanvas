@@ -120,6 +120,8 @@ export const Toolbar: React.FC<{ embedded?: boolean; onClose?: () => void }> = (
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState<string | null>(null);
   const [category, setCategory] = useState<Category>('全部');
+  const [favorites, setFavorites] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jacecanvas-fav-workflows') || '[]'); } catch { return []; } });
+  const [favoritesOpen, setFavoritesOpen] = useState(true);
   const [domain, setDomain] = useState<Domain>('全部');
   const [serverId, setServerId] = useState(() => useSettingsStore.getState().activeServerId || '');
   const activeServerId = useSettingsStore(s => s.activeServerId);
@@ -203,6 +205,7 @@ export const Toolbar: React.FC<{ embedded?: boolean; onClose?: () => void }> = (
     reader.readAsText(file);
   };
 
+  const toggleFavorite = (workflowId: string) => setFavorites(previous => { const next = previous.includes(workflowId) ? previous.filter(id => id !== workflowId) : [...previous, workflowId]; localStorage.setItem('jacecanvas-fav-workflows', JSON.stringify(next)); return next; });
   const localEntries = localWfs;
   const mergedWorkflows = useMemo(() => {
     const localItems = localEntries.map(w => ({ id: w.id, name: w.name, category: 'local', local: true, run_count: 0 } as any));
@@ -292,7 +295,8 @@ export const Toolbar: React.FC<{ embedded?: boolean; onClose?: () => void }> = (
             <Button icon={<FileTextOutlined/>} onClick={()=>addNode('storyboardPrompt',center(),{label:'剧情分镜提示词'})}>剧情分镜</Button>
       <Button icon={<ThunderboltOutlined/>} onClick={()=>addNode('cinematographyKnowledge',center(),{label:'影视专业效果知识库'})}>影视知识库</Button>
     </div>}
-    <div className="node-library__filters">
+    <div className="library-section-toggle workflow-favorites-toggle" onClick={() => setFavoritesOpen(openState => !openState)}><span>工作流收藏</span><span>{favoritesOpen ? '收起' : '展开'}</span></div>{favoritesOpen && <div className="workflow-favorites-list">{favorites.length ? mergedWorkflows.filter(workflow => favorites.includes(workflow.id)).map(workflow => <Button key={workflow.id} size="small" icon={<StarFilled />} onClick={() => void addWorkflow(workflow)} title={workflow.name || workflow.id}>{workflow.name || workflow.id}</Button>) : <span className="workflow-favorites-empty">暂无收藏工作流</span>}</div>}
+     <div className="node-library__filters">
       <div className="node-library__serverbar">
         {servers.length > 0 && <Select size="small" style={{ width: 140, flex: 'none' }} value={serverId} onChange={v => { setServerId(v); useSettingsStore.getState().setActiveServer(v || servers[0]?.id || ''); }} options={[{ label: '默认服务器', value: '' }, ...servers.map(s => ({ label: s.name, value: s.id }))]} />}
         <Button size="small" icon={<span>📥</span>} onClick={() => setImportOpen(true)} style={{ marginLeft: 'auto' }}>导入 JSON</Button>
@@ -308,7 +312,7 @@ export const Toolbar: React.FC<{ embedded?: boolean; onClose?: () => void }> = (
             onDragStart={e => { e.dataTransfer.setData('application/remote-workflow', JSON.stringify(workflow)); e.dataTransfer.effectAllowed = 'copy'; }}>
             <span className="workflow-card__icon" style={{color:style.color,background:`${style.color}18`}}>{style.icon}</span>
             <span className="workflow-card__body"><span className="workflow-card__name">{workflow.name || workflow.id}</span><span className="workflow-card__meta"><Tag color={style.color}>{isQwenEdit?'图像编辑':cat}</Tag>{verified && <Tag color="green"><ThunderboltOutlined/> 已验证</Tag>}{workflow.pinned && <StarFilled style={{color:'var(--theme-warning)'}}/>}</span></span>
-            {(workflow.run_count || 0) > 0 && <Badge count={workflow.run_count} overflowCount={999} color="#3730a3"/>}
+            <span className={'workflow-card__favorite ' + (favorites.includes(workflow.id) ? 'is-favorite' : '')} title={favorites.includes(workflow.id) ? '取消收藏' : '收藏'} onClick={event => { event.stopPropagation(); toggleFavorite(workflow.id); }}><StarFilled /></span>{(workflow.run_count || 0) > 0 && <Badge count={workflow.run_count} overflowCount={999} color="#3730a3"/>}
             {adding === workflow.id && <span className="workflow-card__adding"><Spin size="small"/></span>}
             {(workflow as any).local && <span className="workflow-card__del" title="删除本地工作流" onClick={e => { e.stopPropagation(); e.preventDefault(); removeLocalWorkflow(workflow.id); refreshLocal(); message.success('已删除本地工作流「' + workflow.name + '」（画布上的节点仍保留）'); }} style={{ position: 'absolute', top: 2, right: 4, zIndex: 2, fontSize: 13, color: 'var(--theme-muted)', cursor: 'pointer', lineHeight: 1, padding: '2px 5px', borderRadius: 4, background: 'var(--theme-bg)' }}>✕</span>}
           </button>;

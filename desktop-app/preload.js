@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   proxyFetch: (payload) => ipcRenderer.invoke('proxy-fetch', payload),
   uploadFile: (payload) => ipcRenderer.invoke('upload-file', payload),
   ffmpegTrimVideo: (payload) => ipcRenderer.invoke('ffmpeg-trim-video', payload),
+  ffmpegTrimAudio: (payload) => ipcRenderer.invoke('ffmpeg-trim-audio', payload),
   ffmpegCompose: (payload) => ipcRenderer.invoke('ffmpeg-compose', payload),
   ffmpegSplice: (payload) => ipcRenderer.invoke('ffmpeg-splice', payload),
   ffmpegExtractFrames: (payload) => ipcRenderer.invoke('ffmpeg-extract-frames', payload),

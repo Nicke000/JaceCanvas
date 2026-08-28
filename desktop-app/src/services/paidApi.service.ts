@@ -75,13 +75,16 @@ export const PAID_CAPABILITIES: Record<PaidCapability, PaidCapabilityDefinition>
 };
 
 export function supportsPaidCapability(provider: string, capability: PaidCapability): boolean {
-  return PAID_CAPABILITIES[capability]?.providers.includes(normalizeProvider(provider)) ?? false;
+  const adapter = PAID_API_ADAPTERS[normalizeProvider(provider) as keyof typeof PAID_API_ADAPTERS];
+  return adapter ? adapter.models.some(model => model.capabilities.includes(capability)) : false;
 }
 
 function normalizeProvider(provider: string): string {
-  if (provider === 'openai_paid') return 'openai';
-  if (provider === 'google_paid') return 'google';
-  return provider;
+  const legacy: Record<string, string> = {
+    openai_paid: 'openai', google_paid: 'gemini', google: 'gemini',
+    tongyi: 'bailian', jimeng: 'volcengine', custom: 'openaiCompatible', gateway: 'openaiCompatible',
+  };
+  return legacy[provider] || provider;
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -109,13 +112,21 @@ function providerPath(provider: string, kind: 'models' | 'image' | 'video' | 'ta
   return `${prefix}/${kind}/generate`;
 }
 
+function resolveAuthMode(config: Pick<PaidApiConfig, 'provider' | 'authMode'>): NonNullable<PaidApiConfig['authMode']> {
+  if (config.authMode) return config.authMode;
+  return PAID_API_ADAPTERS[normalizeProvider(config.provider) as keyof typeof PAID_API_ADAPTERS]?.authMode || 'bearer';
+}
+
 function authHeaders(config: PaidApiConfig): Record<string, string> {
-  if (config.authMode === 'none') return { 'Content-Type': 'application/json' };
-  if (config.authMode === 'x-api-key') return { 'Content-Type': 'application/json', 'X-API-Key': config.apiKey };
-  if (config.authMode === 'x-key') return { 'Content-Type': 'application/json', 'x-key': config.apiKey };
-  if (config.authMode === 'key') return { 'Content-Type': 'application/json', Authorization: `Key ${config.apiKey}` };
-  if (config.authMode === 'query-key') return { 'Content-Type': 'application/json' };
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${(config.apiKey || '').replace(/\s+/g, '')}` }; // Key 去空格（复制粘贴常混入）
+  const apiKey = (config.apiKey || '').replace(/\s+/g, '');
+  switch (resolveAuthMode(config)) {
+    case 'none': return { 'Content-Type': 'application/json' };
+    case 'x-api-key': return { 'Content-Type': 'application/json', 'X-API-Key': apiKey };
+    case 'x-key': return { 'Content-Type': 'application/json', 'x-key': apiKey };
+    case 'key': return { 'Content-Type': 'application/json', Authorization: `Key ${apiKey}` };
+    case 'query-key': return { 'Content-Type': 'application/json' };
+    default: return { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
+  }
 }
 
 // ========== 提供商预设 ==========
@@ -152,40 +163,20 @@ export const ASPECT_RATIOS = [
 export async function fetchPaidModels(provider: string, baseUrl: string, apiKey: string, overrides: Pick<PaidApiConfig, 'modelsPath' | 'authMode'> = {}): Promise<string[]> {
   try {
     const normalizedProvider = normalizeProvider(provider);
-    const root = (baseUrl || PAID_PROVIDERS[normalizedProvider]?.defaultBaseUrl || '').replace(/\/+$/, '');
-    if (!root || !apiKey) return [];
-    // 不同提供商的模型列表接口不同
-    let endpoint = '';
-    let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (overrides.modelsPath) {
-      endpoint = joinUrl(root, overrides.modelsPath);
-    } else if (normalizedProvider === 'stability') {
-      endpoint = joinUrl(root, providerPath(normalizedProvider, 'models', root));
-    } else if (normalizedProvider === 'google') {
-      endpoint = `${root}/models?key=${encodeURIComponent(apiKey)}`;
-    } else if (normalizedProvider === 'kling') {
-      endpoint = `${root}/models`;
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    } else {
-      // OpenAI 兼容接口
-      endpoint = `${root}/models`;
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-    if (overrides.authMode === 'query-key' && !endpoint.includes('?')) endpoint += `?key=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(endpoint, { headers });
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
-        console.warn(`[fetchPaidModels] ${normalizedProvider} 认证失败: HTTP ${res.status}`);
-        return [];
-      }
-      console.warn(`[fetchPaidModels] ${normalizedProvider} 请求失败: HTTP ${res.status}`);
-      return [];
-    }
+    const adapter = PAID_API_ADAPTERS[normalizedProvider as keyof typeof PAID_API_ADAPTERS];
+    const root = (baseUrl || adapter?.defaultBaseUrl || '').replace(/\/+$/, '');
+    const authMode = overrides.authMode || adapter?.authMode || 'bearer';
+    if (!root || (!apiKey && authMode !== 'none')) return [];
+    // The official APIs below do not publish a generic /models resource. Keep
+    // their vetted static catalog instead of generating an invalid paid call.
+    if (!overrides.modelsPath && ['bailian', 'kling', 'minimax', 'flux', 'fal', 'meshy', 'elevenlabs'].includes(normalizedProvider)) return [];
+    let endpoint = overrides.modelsPath ? joinUrl(root, overrides.modelsPath) : `${root}/models`;
+    if (authMode === 'query-key') endpoint += `${endpoint.includes('?') ? '&' : '?'}key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(endpoint, { headers: authHeaders({ provider: normalizedProvider, baseUrl: root, apiKey, model: '', authMode }) });
+    if (!res.ok) return [];
     const data: any = await res.json();
-    // 处理不同返回格式
     const items = Array.isArray(data) ? data : data.data || data.models || [];
-    const models = items.map((item: any) => String(item.id || item.name || '').replace(/^models\//, '')).filter(Boolean);
-    return models;
+    return items.map((item: any) => String(item.id || item.name || '').replace(/^models\//, '')).filter(Boolean);
   } catch (e) {
     console.warn(`[fetchPaidModels] ${provider} 拉取异常:`, e);
     return [];
@@ -214,14 +205,20 @@ export async function testPaidConnection(
   }
   provider = normalizeProvider(provider);
   try {
-    baseUrl = baseUrl || PAID_PROVIDERS[provider]?.defaultBaseUrl || '';
+    const adapter = PAID_API_ADAPTERS[provider as keyof typeof PAID_API_ADAPTERS];
+    const authMode = config.authMode || adapter?.authMode || 'bearer';
+    baseUrl = baseUrl || adapter?.defaultBaseUrl || PAID_PROVIDERS[provider]?.defaultBaseUrl || '';
     if (!baseUrl) return { ok: false, message: '请填写接口地址' };
-    if (!apiKey) return { ok: false, message: '请填写 API 密钥' };
+    if (!apiKey && authMode !== 'none') return { ok: false, message: '请填写 API 密钥' };
+    // Several official media APIs intentionally have no generic /models route.
+    // Do not mark valid credentials invalid just because a guessed route returns 404.
+    if (!config.modelsPath && ['bailian', 'kling', 'minimax', 'flux', 'fal', 'meshy', 'elevenlabs'].includes(provider)) {
+      return { ok: true, message: `✅ 已保存 ${adapter?.label || provider} 凭据。该官方媒体 API 不提供通用模型列表，请使用已核对的节点模型后执行真实生成验证。` };
+    }
     const root = baseUrl.replace(/\/+$/, '');
-    // 灏濊瘯鑾峰彇妯″瀷鍒楄〃鏉ラ獙璇佽繛鎺?
     let endpoint = config.modelsPath ? joinUrl(root, config.modelsPath) : joinUrl(root, providerPath(provider, 'models', root));
-    const headers = authHeaders({ ...config, provider, baseUrl: root, apiKey });
-    if (config.authMode === 'query-key' && !endpoint.includes('?')) endpoint += `?key=${encodeURIComponent(apiKey)}`;
+    const headers = authHeaders({ ...config, provider, baseUrl: root, apiKey, authMode });
+    if (authMode === 'query-key' && !endpoint.includes('?')) endpoint += `?key=${encodeURIComponent(apiKey)}`;
     if (provider === 'google') {
       if (!config.modelsPath) endpoint = `${root}/models?key=${encodeURIComponent(apiKey)}`;
     } else if (provider === 'stability') {
@@ -327,7 +324,7 @@ function normalizeMediaUrl(url: string, baseUrl: string): string {
 // ========== 调用付费 API ==========
 export async function callPaidApi(config: PaidApiConfig, params: {
   type: PaidCapability;
-  prompt: string; negativePrompt?: string; imageUrl?: string; lastImageUrl?: string; videoUrl?: string; audioUrl?: string; templateId?: string; width?: number; height?: number; aspectRatio?: string; resolution?: number; duration?: number; frameRate?: number; seed?: number; voiceId?: string;
+  prompt: string; negativePrompt?: string; imageUrl?: string; images?: string[]; lastImageUrl?: string; videoUrl?: string; videos?: string[]; audioUrl?: string; audios?: string[]; templateId?: string; width?: number; height?: number; aspectRatio?: string; resolution?: number; duration?: number; frameRate?: number; seed?: number; voiceId?: string; cfgScale?: number; variants?: number;
 }): Promise<PaidGenerationResult> {
   const provider = normalizeProvider(config.provider);
   const p = PAID_PROVIDERS[provider] || (() => {
@@ -337,7 +334,11 @@ export async function callPaidApi(config: PaidApiConfig, params: {
   if (!p) throw new Error(`不支持的提供商: ${config.provider}`);
   const baseUrl = (config.baseUrl || p.defaultBaseUrl).replace(/\/+$/, '');
   const apiKey = config.apiKey;
-  if (!apiKey) throw new Error('请先配置 API 密钥');
+  if (!apiKey && resolveAuthMode(config) !== 'none') throw new Error('请先配置 API 密钥');
+  const adapter = PAID_API_ADAPTERS[provider as keyof typeof PAID_API_ADAPTERS];
+  if (adapter && !adapter.models.some(model => model.id === config.model && model.capabilities.includes(params.type))) {
+    throw new Error(`模型“${config.model}”未在 ${adapter.label} 的已核对能力中支持“${PAID_CAPABILITIES[params.type]?.label || params.type}”，已拒绝提交以避免无效计费。`);
+  }
 
   if (provider === 'kling') {
     return callKlingVideo(config, params);
@@ -346,11 +347,19 @@ export async function callPaidApi(config: PaidApiConfig, params: {
   if (provider === 'minimax') return callMiniMaxNative(config, params);
   if (provider === 'gemini') return callGeminiNative(config, params);
   if (provider === 'openai') return callOpenAINative(config, params);
-  if (provider === 'volcengine') return callVolcengineNative(config, params);
+  if (provider === 'volcengine') {
+    throw new Error('火山方舟 Seedream/Seedance 的当前公开官方文档无法核对本节点所需的精确媒体请求与任务协议；为避免使用推测字段产生无效计费，请暂勿通过此节点提交。');
+  }
   if (provider === 'flux') return callFluxNative(config, params);
   if (provider === 'fal') return callFalNative(config, params);
   if (provider === 'meshy') return callMeshyNative(config, params);
   if (provider === 'elevenlabs') return callElevenLabsNative(config, params);
+  // A custom OpenAI-compatible endpoint has no universal contract for
+  // specialized capabilities. Reject those requests until an explicit adapter
+  // exists rather than composing a plausible but invalid path.
+  if (provider === 'openaiCompatible' && !['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video'].includes(params.type)) {
+    throw new Error('OpenAI 兼容节点仅可调用标准图像/视频协议；当前扩展能力没有可验证的通用请求格式，已拒绝提交以避免无效计费。');
+  }
 
   const isVideo = PAID_CAPABILITIES[params.type]?.output === 'video';
   const headers: Record<string, string> = authHeaders(config);
@@ -492,10 +501,13 @@ async function callMiniMaxNative(config: PaidApiConfig, params: PaidCallParams):
   }
   const content: any[] = [{ type:'text', text:params.prompt }];
   if (params.imageUrl) content.push({ type:'image_url', image_url:{url:params.imageUrl}, role:'first_frame' });
+  for (const url of params.images || []) if (url && url !== params.imageUrl) content.push({ type:'image_url', image_url:{url}, role:'reference_image' });
   if (params.lastImageUrl) content.push({ type:'image_url', image_url:{url:params.lastImageUrl}, role:'last_frame' });
   if (params.videoUrl) content.push({ type:'video_url', video_url:{url:params.videoUrl}, role:'reference_video' });
+  for (const url of params.videos || []) if (url && url !== params.videoUrl) content.push({ type:'video_url', video_url:{url}, role:'reference_video' });
   if (params.audioUrl) content.push({ type:'audio_url', audio_url:{url:params.audioUrl}, role:'reference_audio' });
-  const response = await fetch(joinUrl(config.baseUrl || 'https://api.minimaxi.com', '/v2/video_generation'), { method:'POST', headers:authHeaders(config), body:JSON.stringify({ model:config.model, content, ...(params.aspectRatio ? { ratio:params.aspectRatio } : {}) }) });
+  for (const url of params.audios || []) if (url && url !== params.audioUrl) content.push({ type:'audio_url', audio_url:{url}, role:'reference_audio' });
+  const response = await fetch(joinUrl(config.baseUrl || 'https://api.minimaxi.com', '/v2/video_generation'), { method:'POST', headers:authHeaders(config), body:JSON.stringify({ model:config.model, content, ...(params.aspectRatio ? { ratio:params.aspectRatio } : {}), ...(params.duration ? { duration:params.duration } : {}) }) });
   const data = await readJsonResponse(response, 'MiniMax');
   const taskId = data.task_id || data.id || data.data?.task_id;
   if (!taskId) throw new Error('MiniMax 响应中没有 task_id');
@@ -538,9 +550,12 @@ async function callVolcengineNative(config: PaidApiConfig, params: PaidCallParam
   // 视频 / 多模态参考：异步任务创建 + 轮询
   const contents: any[] = [{ type: 'text', text: params.prompt }];
   if (params.imageUrl) contents.push({ type: 'image_url', image_url: { url: params.imageUrl }, role: 'first_frame' });
+  for (const url of params.images || []) if (url && url !== params.imageUrl) contents.push({ type: 'image_url', image_url: { url }, role: 'reference_image' });
   if (params.lastImageUrl) contents.push({ type: 'image_url', image_url: { url: params.lastImageUrl }, role: 'last_frame' });
   if (params.videoUrl) contents.push({ type: 'video_url', video_url: { url: params.videoUrl }, role: 'reference_video' });
+  for (const url of params.videos || []) if (url && url !== params.videoUrl) contents.push({ type: 'video_url', video_url: { url }, role: 'reference_video' });
   if (params.audioUrl) contents.push({ type: 'audio_url', audio_url: { url: params.audioUrl }, role: 'reference_audio' });
+  for (const url of params.audios || []) if (url && url !== params.audioUrl) contents.push({ type: 'audio_url', audio_url: { url }, role: 'reference_audio' });
   const body: Record<string, unknown> = { model: config.model, content: contents };
   if (params.duration) body.duration = params.duration;
   if (params.resolution) body.resolution = `${params.resolution}p`;
@@ -683,11 +698,11 @@ async function callFalNative(config: PaidApiConfig, params: PaidCallParams): Pro
 }
 
 async function callKlingVideo(config: PaidApiConfig, params: PaidCallParams): Promise<PaidGenerationResult> {
-  const firstFrame = params.imageUrl ? { image_url: params.imageUrl } : {};
-  const lastFrame = params.lastImageUrl ? { tail_image_url: params.lastImageUrl } : {};
+  const firstFrame = params.imageUrl ? { image: params.imageUrl } : {};
+  const lastFrame = params.lastImageUrl ? { image_tail: params.lastImageUrl } : {};
   const endpoint = params.imageUrl || params.lastImageUrl ? '/v1/videos/image2video' : '/v1/videos/text2video';
   const data = await readJsonResponse(await fetch(joinUrl(config.baseUrl || 'https://api-beijing.klingai.com', endpoint), {
-    method:'POST', headers:authHeaders(config), body:JSON.stringify({ model_name:config.model, prompt:params.prompt, ...firstFrame, ...lastFrame, ...(params.duration ? { duration:String(params.duration) } : {}), ...(params.aspectRatio ? { aspect_ratio:params.aspectRatio } : {}) }),
+    method:'POST', headers:authHeaders(config), body:JSON.stringify({ model_name:config.model, prompt:params.prompt, ...firstFrame, ...lastFrame, ...(params.duration ? { duration:String(params.duration) } : {}), ...(!params.imageUrl && !params.lastImageUrl && params.aspectRatio ? { aspect_ratio:params.aspectRatio } : {}), ...(typeof params.cfgScale === 'number' && params.cfgScale >= 0 ? { cfg_scale:params.cfgScale } : {}) }),
   }), '可灵');
   const taskId=data.data?.task_id||data.task_id;if(!taskId)throw new Error('可灵响应中没有 task_id');
   return pollTask(config.baseUrl||'https://api-beijing.klingai.com',`${endpoint}/${taskId}`,config,taskId);

@@ -1,6 +1,6 @@
 import type { PaidCapability } from '@/services/paidApi.service';
 
-export type PaidProviderId = 'bailian' | 'kling' | 'minimax' | 'gemini' | 'openai' | 'volcengine' | 'flux' | 'fal' | 'meshy' | 'elevenlabs';
+export type PaidProviderId = 'bailian' | 'kling' | 'minimax' | 'gemini' | 'openai' | 'volcengine' | 'flux' | 'fal' | 'meshy' | 'elevenlabs' | 'openaiCompatible';
 export type PaidInputField = 'prompt' | 'image' | 'images' | 'firstImage' | 'lastImage' | 'video' | 'audio' | 'duration' | 'ratio' | 'resolution' | 'fps' | 'seed' | 'template';
 export type PaidAuthMode = 'bearer' | 'query-key' | 'x-api-key' | 'x-key' | 'key';
 
@@ -45,6 +45,8 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
       { id: 'qwen-image-2.0-pro', label: 'Qwen-Image 2.0 Pro', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'qwen-image-2.0', label: 'Qwen-Image 2.0', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'z-image-turbo', label: 'Z-Image Turbo', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'wan2.7-image-pro', label: 'Wan 2.7 图像 Pro', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'wan2.7-image', label: 'Wan 2.7 图像', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'qwen-image', label: 'Qwen-Image', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'qwen-image-plus', label: 'Qwen-Image Plus', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'qwen-image-max', label: 'Qwen-Image Max', capabilities: ['text-to-image', 'image-to-image'] },
@@ -71,15 +73,17 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
   },
   kling: {
     id: 'kling', label: '快手可灵', shortLabel: '可灵',
-    description: '可灵官方视频生成、首尾帧、全能参考、动作控制、主体管理、音色管理。',
+    description: '可灵官方视频接口：当前节点仅提交已核对的文生视频、图生视频与首尾帧字段；其他能力需逐端点补充官方契约后开放。',
     defaultBaseUrl: 'https://api-beijing.klingai.com', authMode: 'bearer',
     models: [
-      { id: 'kling-v3-omni', label: 'Kling 3.0 Omni', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-edit', 'motion-video', 'first-last-to-video'] },
-      { id: 'kling-o1', label: 'Kling O1', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-edit', 'motion-video', 'first-last-to-video'] },
+      { id: 'kling-v3-omni', label: 'Kling 3.0 Omni', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video'] },
+      { id: 'kling-video-o1', label: 'Kling Video O1', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video'] },
+      { id: 'kling-v3', label: 'Kling 3', capabilities: ['text-to-video', 'image-to-video'] },
       { id: 'kling-v2-6', label: 'Kling 2.6', capabilities: ['text-to-video', 'image-to-video'] },
+      { id: 'kling-v2-5-turbo', label: 'Kling 2.5 Turbo', capabilities: ['text-to-video', 'image-to-video'] },
       { id: 'kling-v1-6', label: 'Kling 1.6', capabilities: ['text-to-video', 'image-to-video'] },
     ],
-    capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'motion-video', 'video-edit', 'dance-video', 'element-manage', 'voice-manage'],
+    capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'element-manage', 'voice-manage'],
     docs: '付费api节点整理/视频.docx、素材模板.docx',
   },
   minimax: {
@@ -100,9 +104,12 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
     defaultBaseUrl: 'https://generativelanguage.googleapis.com', authMode: 'query-key',
     models: [
       { id: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'gemini-3-flash-image', label: 'Gemini 3 Flash Image', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'veo-3.1-generate-preview', label: 'Veo 3.1', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video'] },
+      { id: 'veo-3.1-fast-generate-preview', label: 'Veo 3.1 Fast', capabilities: ['text-to-video', 'image-to-video'] },
+      { id: 'veo-3.1-lite-generate-preview', label: 'Veo 3.1 Lite', capabilities: ['text-to-video', 'image-to-video'] },
       { id: 'veo-3.0-generate-preview', label: 'Veo 3', capabilities: ['text-to-video', 'image-to-video'] },
     ],
     capabilities: ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'first-last-to-video'],
@@ -113,6 +120,8 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
     description: 'OpenAI 图像生成/编辑和视频任务接口。',
     defaultBaseUrl: 'https://api.openai.com/v1', authMode: 'bearer',
     models: [
+      { id: 'gpt-image-2', label: 'GPT Image 2（最新）', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'gpt-image-1.5', label: 'GPT Image 1.5', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'gpt-image-1', label: 'GPT Image 1', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'sora-2', label: 'Sora 2', capabilities: ['text-to-video', 'image-to-video', 'video-edit'] },
     ],
@@ -121,10 +130,13 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
   },
   volcengine: {
     id: 'volcengine', label: '火山方舟', shortLabel: '火山',
-    description: '豆包 Seedream 文生图/图生图 + Seedance 视频，Ark 任务创建/查询流程。',
+    description: '豆包 Seedream / Seedance：公开文档尚未核对到本应用所需精确媒体协议，节点将拒绝提交，避免发送推测参数产生无效计费。',
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3', authMode: 'bearer',
     models: [
       { id: 'doubao-seedream-5-0-260128', label: 'Seedream 5.0', capabilities: ['text-to-image', 'image-to-image', 'first-frame-to-image'] },
+      { id: 'doubao-seedream-4-0-250828', label: 'Seedream 4.0', capabilities: ['text-to-image', 'image-to-image', 'first-frame-to-image'] },
+      { id: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5（视频+音频，全模态参考，最新）', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] },
+      { id: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0（多模态/参考视频）', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] },
       { id: 'doubao-seedance-2-0', label: 'Seedance 2.0', capabilities: ['text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'] },
     ],
     capabilities: ['text-to-image', 'image-to-image', 'first-frame-to-image', 'text-to-video', 'image-to-video', 'first-last-to-video', 'reference-to-video', 'video-edit'],
@@ -135,13 +147,16 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
     description: 'Black Forest Labs 官方 API：FLUX.2 Pro/Klein/Flex 文生图与图生图，异步任务轮询，x-key 鉴权。',
     defaultBaseUrl: 'https://api.bfl.ai', authMode: 'x-key',
     models: [
-      { id: 'flux-2-pro-preview', label: 'FLUX.2 Pro', capabilities: ['text-to-image', 'image-to-image'] },
-      { id: 'flux-2-klein-9b', label: 'FLUX.2 Klein 9B', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-3-video', label: 'FLUX 3（视频+原生音频，最新）', capabilities: ['text-to-video', 'image-to-video', 'video-edit'] },
+      { id: 'flux-2-pro', label: 'FLUX.2 Pro', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-2-max', label: 'FLUX.2 Max', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'flux-2-flex', label: 'FLUX.2 Flex', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-2-klein-9b', label: 'FLUX.2 Klein 9B', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'flux-1.1-pro', label: 'FLUX.1.1 Pro', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'flux-1.1-kontext', label: 'FLUX.1.1 Kontext（图像编辑）', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'flux-dev', label: 'FLUX.1 Dev', capabilities: ['text-to-image', 'image-to-image'] },
     ],
-    capabilities: ['text-to-image', 'image-to-image'],
+    capabilities: ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'video-edit'],
     docs: 'https://docs.bfl.ai',
   },
   fal: {
@@ -153,8 +168,10 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
       { id: 'fal-ai/flux/schnell', label: 'FLUX.1 Schnell', capabilities: ['text-to-image'] },
       { id: 'fal-ai/flux-pro/v1.1', label: 'FLUX.1 Pro v1.1', capabilities: ['text-to-image', 'image-to-image'] },
       { id: 'fal-ai/stable-diffusion-v35-large', label: 'SD3.5 Large', capabilities: ['text-to-image'] },
+      { id: 'fal-ai/wan/v2.2-5b/text-to-video', label: 'Wan 2.2 5B 文生视频', capabilities: ['text-to-video'] },
+      { id: 'fal-ai/meshy/v6/image-to-3d', label: 'Meshy V6 图生3D', capabilities: ['image-to-3d'] },
     ],
-    capabilities: ['text-to-image', 'image-to-image'],
+    capabilities: ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-3d'],
     docs: 'https://fal.ai/docs',
   },
   elevenlabs: {
@@ -175,11 +192,27 @@ export const PAID_API_ADAPTERS: Record<PaidProviderId, PaidProviderDefinition> =
     description: 'Meshy 文生3D/图生3D：生成 GLB 模型，文生3D 为 preview→refine 两阶段贴图。',
     defaultBaseUrl: 'https://api.meshy.ai', authMode: 'bearer',
     models: [
-      { id: 'meshy-6', label: 'Meshy 6（最新）', capabilities: ['text-to-3d', 'image-to-3d'] },
+      { id: 'meshy-7', label: 'Meshy 7（最新）', capabilities: ['text-to-3d', 'image-to-3d'] },
+      { id: 'meshy-6', label: 'Meshy 6', capabilities: ['text-to-3d', 'image-to-3d'] },
       { id: 'meshy-5', label: 'Meshy 5', capabilities: ['text-to-3d', 'image-to-3d'] },
     ],
     capabilities: ['text-to-3d', 'image-to-3d'],
     docs: 'https://docs.meshy.ai',
+  },
+  openaiCompatible: {
+    id: 'openaiCompatible', label: 'OpenAI 兼容协议（第三方）', shortLabel: 'OpenAI兼容',
+    description: '填入任意实现 OpenAI 兼容接口的第三方网关/中继地址（images/generations、videos、audio/speech 三套形状），Bearer 鉴权，模型可在线拉取。',
+    defaultBaseUrl: '', authMode: 'bearer',
+    models: [
+      { id: 'gpt-image-2', label: 'GPT Image 2', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'gpt-image-1', label: 'GPT Image 1', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'gpt-image-1.5', label: 'GPT Image 1.5', capabilities: ['text-to-image', 'image-to-image'] },
+      { id: 'dall-e-3', label: 'DALL·E 3', capabilities: ['text-to-image'] },
+      { id: 'sora-2', label: 'Sora 2（若网关支持）', capabilities: ['text-to-video', 'image-to-video'] },
+      { id: 'tts-1', label: 'TTS 1（若网关支持）', capabilities: ['text-to-speech'] },
+    ],
+    capabilities: ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'text-to-speech'],
+    docs: 'OpenAI 兼容协议：images / videos / audio/speech',
   },
 };
 
@@ -190,7 +223,11 @@ export function getPaidAdapter(provider: string): PaidProviderDefinition | undef
 }
 
 export function getPaidProvidersForCapability(capability: PaidCapability): PaidProviderDefinition[] {
-  return PAID_PROVIDER_IDS.map(id => PAID_API_ADAPTERS[id]).filter(adapter => adapter.capabilities.includes(capability));
+  // The model table is the authoritative capability contract. Do not expose a
+  // provider merely because an old generic capability catalog mentions it.
+  return PAID_PROVIDER_IDS
+    .map(id => PAID_API_ADAPTERS[id])
+    .filter(adapter => adapter.models.some(model => model.capabilities.includes(capability)));
 }
 
 export function getPaidModelsForAdapter(provider: string, capability: PaidCapability): PaidModelDefinition[] {

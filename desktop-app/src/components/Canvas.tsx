@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, MarkerType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Lightbox, type LightboxItem } from '@/components/Lightbox';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 // 稳定 props（避免每次 render 新建对象引用导致 ReactFlow 重渲染）
-const DEFAULT_EDGE_OPTIONS = { type: 'deletable' as const, animated: true, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'var(--theme-edge)' }, style: { stroke: 'var(--theme-edge)', strokeWidth: 2.2 } };
+const DEFAULT_EDGE_OPTIONS = { type: 'deletable' as const, animated: true, style: { stroke: 'var(--theme-edge)', strokeWidth: 2.2 } };
 
 import { nodeTypes } from '@/components/nodes/nodeTypes';
 import { DeletableEdge } from '@/components/edges/DeletableEdge';
@@ -80,7 +80,7 @@ export const Canvas: React.FC = () => {
   const edges = useCanvasStore(s => s.edges);
   const visibleEdges = useMemo(() => {
     const idSet = new Set(nodes.filter(n => !n.data.hidden).map(n => n.id));
-    return edges.filter(e => idSet.has(e.source) && idSet.has(e.target));
+    return edges.filter(e => idSet.has(e.source) && idSet.has(e.target)).map(({ markerEnd: _markerEnd, markerStart: _markerStart, ...edge }) => edge);
   }, [edges, nodes]);
   const onNodesChange = useCanvasStore(s => s.onNodesChange);
   const pushHistory = useCanvasStore(s => s._pushHistory);

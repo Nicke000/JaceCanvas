@@ -67,6 +67,23 @@ export function defaultParamVisible(field: string): boolean {
   return false;
 }
 
+/** 输入端口默认可见类型：素材/文本类；数值、选择、文件名/步数等非素材默认隐藏（可在面板手动开启）。
+ *  config._portsShow[portId] 手动覆盖：true=强制显示，false=强制隐藏。 */
+const PORT_DEFAULT_TYPES = new Set(['image', 'video', 'audio', 'text', '3d', 'media']);
+const PORT_ALWAYS_HIDE = /^(step|steps|seed|noise_seed|cfg|strength|scale|temperature|top_p|top_k|batch|batch_size|width|height|resolution|fps|frame_rate|duration|count|num_|loop|end_time|start_time|force_rate|blur|crop|file_|filename|path|format|codec|device|sampler|scheduler)/i;
+export function shouldShowInputPort(portId: string, portType: string | undefined, cfg: Record<string, unknown> | undefined): boolean {
+  const overrides = (cfg?._portsShow || {}) as Record<string, boolean>;
+  if (portId in overrides) return overrides[portId];
+  const type = String(portType || '').toLowerCase();
+  if (!PORT_DEFAULT_TYPES.has(type)) return false;
+  if (PORT_ALWAYS_HIDE.test(portId)) return false;
+  return true;
+}
+export function setPortShow(cfg: Record<string, unknown>, portId: string, show: boolean): Record<string, unknown> {
+  const overrides = { ...((cfg._portsShow || {}) as Record<string, boolean>), [portId]: show };
+  return { ...cfg, _portsShow: overrides };
+}
+
 /** 校验工作流 JSON 是否合法（API 格式：节点对象含 inputs/class_type） */
 export function validateWorkflowJson(json: unknown): { ok: boolean; message: string; nodeCount?: number } {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return { ok: false, message: 'JSON 必须是对象（工作流节点集合）' };

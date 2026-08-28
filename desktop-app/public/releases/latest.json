@@ -1,6 +1,6 @@
 {
-  "version": "v4.7.3",
-  "downloadUrl": "https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.3.exe",
-  "releaseNotes": "新增 RunningHub 标准模型 API、AI Chat Skills、运行中心、3D 导演台升级与聊天体验优化；修复素材持久化、ComfyUI 直连端口与打包图标。",
-  "sha256": "ADAFECC838B3EB586F9610B741FE5F5128E5AB3E39C17F665F044BEC52E03A69"
+  "version": "v4.7.4",
+  "downloadUrl": "https://jacecomfyui.xyz/downloads/JaceCanvas-Setup-4.7.4.exe",
+  "releaseNotes": "视频剪辑节点新增音频剪辑（截取音频段）；输入端口过滤与手动「呈现连接点」开关；参数编辑迁右侧面板并消除节点空白拉伸；端口贴边/同名对齐；节点库工作流名称两列、RunningHub 字号放大；任务成功/失败提示音；apiNode 数值字段防文本误入；渲染崩溃与 EPIPE 递归加固。",
+  "sha256": "A2EA22CC9705E24F2122E8D896A7F3D2F36D4EDDEDC1F85D3E30E96D5876E2C0"
 }

@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useEdges } from '@xyflow/react';
 import { addGenerationHistory, autoSaveToAssets } from '@/utils/generationHistory';
-import { parseWorkflowParams, defaultParamVisible, workflowPorts, workflowImageInputs } from '@/utils/comfyWorkflow';
+import { parseWorkflowParams, defaultParamVisible, workflowPorts, workflowImageInputs, shouldShowInputPort, setPortShow } from '@/utils/comfyWorkflow';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { CanvasNodeData } from '@/types';
@@ -26,7 +26,8 @@ import { getPaidModelsForCapability } from '@/config/paidCapabilityCatalog';
 import { getAllStyles, saveCustomStyle, deleteCustomStyle } from '@/config/stylePresets';
 import { CAMERA_MOTIONS } from '@/config/cameraMotions';
 import { getSupportedPaidCapabilities, PAID_CAPABILITY_LABELS } from '@/config/paidCapabilityCatalog';
-import { PAID_API_ADAPTERS, getPaidModelsForAdapter, getPaidProvidersForCapability, type PaidProviderId } from '@/config/paidApiAdapters';
+import { PAID_API_ADAPTERS, getPaidAdapter, getPaidModelsForAdapter, getPaidProvidersForCapability, type PaidProviderId } from '@/config/paidApiAdapters';
+import { getPaidParamKinds, getCapReference } from '@/config/paidApiParamSchema';
 import { BAILIAN_RATIO_OPTIONS, BAILIAN_RESOLUTION_OPTIONS, BAILIAN_VIDEO_RATIO_OPTIONS, BAILIAN_VIDEO_RESOLUTION_OPTIONS } from '@/services/bailianTextToImage.service';
 import { generateId, saveChatSession } from '@/utils';
 import { UserRound, Mic, Music, Video, Paperclip, Type as TypeIcon, Image as ImageIcon, Plug, WandSparkles } from 'lucide-react';
@@ -46,9 +47,36 @@ const ST: Record<string, { bg: string; icon: string; glow: string }> = {
 const DIMS = [{ l:'512',w:512,h:512 },{ l:'HD',w:768,h:1136 },{ l:'FHD',w:1080,h:1920 },{ l:'2K',w:1440,h:2560 },{ l:'4K',w:2160,h:3840 },{ l:'1:1',w:1024,h:1024 }];
 
 type PortSpec = { id:string; label:string; type?:string };
-type SP = { data: any; id: string; selected: boolean; icon?: React.ReactNode; color: string; hasInput?: boolean; hasOutput?: boolean; inputs?:PortSpec[]; outputs?:PortSpec[]; resizable?: boolean; hideExec?: boolean; children?: React.ReactNode };
+type NodeDisplayMode = 'collapsed' | 'expanded';
+type SP = { data: any; id: string; selected: boolean; icon?: React.ReactNode; color: string; hasInput?: boolean; hasOutput?: boolean; inputs?:PortSpec[]; outputs?:PortSpec[]; resizable?: boolean; hideExec?: boolean; compactNormal?: boolean; compactBody?: boolean; children?: React.ReactNode };
 
 const portColor = portTypeColor;
+const PORT_GROUP_LABELS: Record<string, string> = { text: '文本', image: '图片', video: '视频', audio: '音频', '3d': '3D 资源', media: '媒体', number: '数值', select: '选项' };
+function groupPorts(ports: PortSpec[]) {
+  return ports.reduce<Array<{ type: string; label: string; ports: PortSpec[] }>>((groups, port) => {
+    const type = port.type || 'media';
+    const found = groups.find(group => group.type === type);
+    if (found) found.ports.push(port);
+    else groups.push({ type, label: PORT_GROUP_LABELS[type] || '通用', ports: [port] });
+    return groups;
+  }, []);
+}
+// 输入端口默认过滤：只对“素材/文本”类输入默认呈现（图片/视频/音频/文本/3D/媒体）。
+// 数值、布尔、选择、以及文件名/步数等非素材字段默认隐藏，避免端口过多。
+// 用户可在右侧面板为任一参数手动开启「呈现连接点」（写入 config._portsShow[portId]），误过滤时补回。
+
+function nodeParameterSummary(node: CanvasNodeData): string[] {
+  const config = node.config || {};
+  const parts: string[] = [];
+  if (config.model) parts.push(String(config.model));
+  if (config.aspectRatio) parts.push(String(config.aspectRatio));
+  if (config.resolution) parts.push(`${config.resolution}P`);
+  if (config.duration) parts.push(`${config.duration}秒`);
+  if (config.frameRate) parts.push(`${config.frameRate}fps`);
+  if (config.seed != null && Number(config.seed) >= 0) parts.push(`种子 ${config.seed}`);
+  if (config.variants && Number(config.variants) > 1) parts.push(`${config.variants} 变体`);
+  return parts.slice(0, 4);
+}
 const openTextEditor=(nodeId:string,field:string,value:string,label:string,kind:'text'|'script'|'scene')=>window.dispatchEvent(new CustomEvent('ai-canvas-open-text-editor',{detail:{nodeId,field,value,label,kind}}));
 
 function formatDuration(ms?: number) {
@@ -85,6 +113,39 @@ export const VideoTrimNode = memo((p: NodeProps) => {
   const [lastKey, setLastKey] = useState('');
   const [restylePrompt, setRestylePrompt] = useState('');
   const [restyleFps, setRestyleFps] = useState(4); // 抽帧修图帧率
+  // 音频剪辑（截取音频段，与视频剪辑类似）
+  const [audioSrc, setAudioSrc] = useState('');
+  const [audioMeta, setAudioMeta] = useState({ duration: 0 });
+  const [audioRange, setAudioRange] = useState({ start: 0, end: 0 });
+  const [audioBusy, setAudioBusy] = useState(false);
+  const [audioOut, setAudioOut] = useState('');
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
+  // 音频来源：优先 audio 输入端口/结果 → 本地音频选择 → 当前视频（取音轨）
+  const audioFromVideo = () => { if (exportInput) setAudioSrc(exportInput); };
+  const pickAudio = () => audioFileInputRef.current?.click();
+  const onPickAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => { setAudioSrc(String(reader.result)); setAudioOut(''); };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = '';
+  };
+  const exportAudio = async () => {
+    const api=(window as any).electronAPI;
+    if (!api?.ffmpegTrimAudio) { useCanvasStore.getState().updateNodeData(p.id,{error:'请使用 Electron 桌面版执行音频导出',status:'error'}); return; }
+    const start=audioRange.start, end=audioRange.end;
+    if (!audioSrc || end<=start || !audioMeta.duration) return;
+    setAudioBusy(true);
+    try {
+      const result=await api.ffmpegTrimAudio({ input:audioSrc, startTime:start, endTime:end });
+      setAudioOut(result.clip);
+      useCanvasStore.getState().updateNodeData(p.id,{ outputValues:{audio:result.clip}, results:[{type:'audio',url:result.clip,filename:'trimmed.mp3'}], resultUrl:result.clip, status:'success', error:undefined });
+      useCanvasStore.getState().propagateData(p.id,'audio',result.clip);
+    } catch (e:any) { useCanvasStore.getState().updateNodeData(p.id,{error:e instanceof Error?e.message:'音频导出失败',status:'error'}); }
+    finally { setAudioBusy(false); }
+  };
   const frame = 1 / Math.max(1, meta.fps);
   const maxFrame = Math.max(0, Math.round(meta.duration * meta.fps) - 1);
   const setFrame = (key: 'start'|'end', value: number) => {
@@ -234,7 +295,7 @@ export const VideoTrimNode = memo((p: NodeProps) => {
           const f2 = await api?.loadMediaB64?.({ url: outputs.lastFrame });
           if (f2?.b64) lastImage = `data:${f2.mime || 'image/png'};base64,${f2.b64}`;
         } catch { /* 回退原始 URL */ }
-        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-video', imageUrl: firstImage, lastImageUrl: lastImage, prompt, duration: regenDuration });
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: getPaidAdapter(String(profile.provider))?.authMode }, { type: 'image-to-video', imageUrl: firstImage, lastImageUrl: lastImage, prompt, duration: regenDuration });
         if (!result.url) throw new Error('视频接口未返回地址');
         cached = await cachePaidMedia(result.url, 'video');
       }
@@ -288,7 +349,7 @@ export const VideoTrimNode = memo((p: NodeProps) => {
           const b64 = await api.loadMediaB64?.({ url: frames[i] });
           if (b64?.b64) imageUrl = `data:${b64.mime || 'image/png'};base64,${b64.b64}`;
         } catch { /* 回退直接传帧 URL */ }
-        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-image', imageUrl, prompt: restylePrompt.trim() || '保持画面与人物一致，统一风格' });
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: getPaidAdapter(String(profile.provider))?.authMode }, { type: 'image-to-image', imageUrl, prompt: restylePrompt.trim() || '保持画面与人物一致，统一风格' });
         if (!result.url) throw new Error(`第 ${i + 1} 帧修图未返回结果`);
         const cached = await cachePaidMedia(result.url, 'image');
         restyled.push(cached);
@@ -321,7 +382,29 @@ export const VideoTrimNode = memo((p: NodeProps) => {
     event.target.value = '';
   };
   useEffect(()=>{ setOutputs({}); if(!input)return; },[input]);
-  return <NodeShell {...p} color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'},{id:'regenerated',label:'重生成片段',type:'video'},{id:'spliced',label:'替换后视频',type:'video'},{id:'restyled',label:'抽帧修图视频',type:'video'}]} resizable>
+  // 音频源变化时探测时长、重置区间
+  useEffect(()=>{
+    if (!audioSrc) { setAudioMeta({duration:0}); setAudioRange({start:0,end:0}); return; }
+    // 超大 data URL（如本地多媒体音频）会显著拉高内存并可能压垮渲染进程；仅对小文件用 Audio 探测元数据。
+    if (/^data:/i.test(audioSrc) && audioSrc.length > 15 * 1024 * 1024) {
+      setAudioMeta({ duration: 0 });
+      return;
+    }
+    let cancelled = false;
+    const a = new Audio();
+    a.preload = 'metadata';
+    a.src = audioSrc;
+    a.onloadedmetadata = () => { if (cancelled) return; const dur=Number(a.duration)||0; if (Number.isFinite(dur)) { setAudioMeta({duration:dur}); setAudioRange(r=>({start:r.start||0, end:r.end||dur})); } };
+    a.onerror = () => { if (!cancelled) setAudioMeta({duration:0}); };
+    return () => { cancelled = true; a.removeAttribute('src'); a.load?.(); };
+  },[audioSrc]);
+  // 优先使用上游 audio 输入端口的结果作为音频源
+  useEffect(()=>{
+    const upstreamAudio = String(d.inputValues?.audio || '');
+    if (upstreamAudio && upstreamAudio !== audioSrc) setAudioSrc(upstreamAudio);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[d.inputValues?.audio]);
+  return <NodeShell {...p} color="#f97316" inputs={[{id:'video',label:'输入视频',type:'video'},{id:'audio',label:'输入音频',type:'audio'}]} outputs={[{id:'clip',label:'剪辑后视频',type:'video'},{id:'firstFrame',label:'首帧',type:'image'},{id:'lastFrame',label:'尾帧',type:'image'},{id:'regenerated',label:'重生成片段',type:'video'},{id:'spliced',label:'替换后视频',type:'video'},{id:'restyled',label:'抽帧修图视频',type:'video'},{id:'audio',label:'剪辑后音频',type:'audio'}]} resizable>
     <div className="video-trim-node">
       {input?<video ref={ref} src={input} controls playsInline className="video-trim-preview" onLoadedMetadata={e=>{const v=e.currentTarget;const duration=v.duration||0;setMeta(m=>({duration,fps:m.fps}));setRange(r=>({start:Math.min(r.start,Math.max(0,Math.round(duration*meta.fps)-1)),end:r.end||Math.max(1,Math.round(duration*meta.fps)-1)}));}}/>:<div className="video-trim-empty">连接视频、从素材库拖入，或选择本地文件</div>}
       <button className="nodrag" onClick={chooseVideo} style={{marginBottom:5,fontSize:10}}>选择本地视频</button><input ref={fileInputRef} hidden type="file" accept="video/*,.mp4,.mov,.mkv,.avi,.webm" onChange={onChooseVideo}/>
@@ -329,6 +412,21 @@ export const VideoTrimNode = memo((p: NodeProps) => {
       <input className="video-trim-range" type="range" min={0} max={maxFrame||1} value={range.start} onChange={e=>setFrame('start',Number(e.target.value))}/><input className="video-trim-range" type="range" min={1} max={maxFrame||1} value={Math.max(1,range.end||1)} onChange={e=>setFrame('end',Number(e.target.value))}/>
       <div className="video-trim-controls"><button className="nodrag" onClick={()=>setFrame('start',range.start-1)}>入点 −1帧</button><button className="nodrag" onClick={()=>setFrame('start',range.start+1)}>入点 +1帧</button><button className="nodrag" onClick={()=>setFrame('end',(range.end||1)-1)}>出点 −1帧</button><button className="nodrag" onClick={()=>setFrame('end',(range.end||1)+1)}>出点 +1帧</button></div>
       <div className="video-trim-actions"><button className="nodrag video-trim-primary" disabled={!input||busy} onClick={exportAll}>{busy?'FFmpeg 导出中…':'截取并生成 MP4 输出'}</button>{outputs.clip&&<button className="nodrag" onClick={()=>download(outputs.clip!,'trimmed.mp4')}>下载 MP4</button>}{outputs.firstFrame&&<button className="nodrag" onClick={()=>download(outputs.firstFrame!,'first-frame.png')}>首帧</button>}{outputs.lastFrame&&<button className="nodrag" onClick={()=>download(outputs.lastFrame!,'last-frame.png')}>尾帧</button>}</div>
+      <div className="video-trim-audio">
+        <div className="video-trim-audio__head"><span>音频剪辑（截取音频段）</span>{audioOut && <span className="video-trim-audio__status">已生成音频</span>}</div>
+        {audioSrc ? <audio controls src={audioSrc} className="video-trim-audio__preview" /> : <div className="video-trim-empty" style={{fontSize:10}}>连接音频、从素材库拖入，或选择本地音频 / 从当前视频取音轨</div>}
+        <div className="video-trim-audio__bar">
+          <button className="nodrag" onClick={pickAudio} style={{fontSize:10}}>选择本地音频</button>
+          <input ref={audioFileInputRef} hidden type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" onChange={onPickAudio}/>
+          <button className="nodrag" onClick={audioFromVideo} disabled={!exportInput} title="从当前视频（或输入音频）中截取音轨" style={{fontSize:10}}>从视频取音轨</button>
+        </div>
+        {audioMeta.duration>0 ? <>
+          <div className="video-trim-time">{(audioRange.start).toFixed(2)}s — {(audioRange.end).toFixed(2)}s · 总长 {audioMeta.duration.toFixed(2)}s</div>
+          <input className="video-trim-range" type="range" min={0} max={audioMeta.duration||1} step={0.01} value={audioRange.start} onChange={e=>setAudioRange(r=>({...r,start:Math.min(Number(e.target.value),r.end-0.05)}))}/>
+          <input className="video-trim-range" type="range" min={0} max={audioMeta.duration||1} step={0.01} value={audioRange.end} onChange={e=>setAudioRange(r=>({...r,end:Math.max(Number(e.target.value),r.start+0.05)}))}/>
+          <div className="video-trim-actions"><button className="nodrag video-trim-primary" disabled={audioBusy||audioRange.end<=audioRange.start} onClick={exportAudio}>{audioBusy?'FFmpeg 导出中…':'截取音频并输出 MP3'}</button>{audioOut&&<button className="nodrag" onClick={()=>download(audioOut,'trimmed.mp3')}>下载 MP3</button>}</div>
+        </> : <div className="video-trim-empty" style={{fontSize:9}}>选择音频后会显示可截取范围</div>}
+      </div>
       {outputs.firstFrame && outputs.lastFrame && <div className="video-trim-regen">
         <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>引擎</span>
@@ -509,9 +607,13 @@ export const ChatNode = memo((p: NodeProps) => {
 
 
 
-const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = true, hasOutput = true, inputs, outputs, resizable = false, hideExec = false, children }) => {
+const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = true, hasOutput = true, inputs, outputs, resizable = false, hideExec = false, compactNormal = false, compactBody = false, children }) => {
   const nd = data as CanvasNodeData;
   const edges = useEdges();
+  const updateNodeInternals = useUpdateNodeInternals();
+  // 显示状态是纯运行时 UI：新建/重新挂载节点默认展开，不写入业务 data。
+  const [displayMode, setDisplayMode] = useState<NodeDisplayMode>('expanded');
+  const [manualSize, setManualSize] = useState(false);
   // P1 去 emoji：icon 只接受 ReactNode；字符串（旧 emoji/符号）一律走节点类型 lucide 映射
   const iconNode = React.isValidElement(icon) ? icon : <NodeIcon type={nd.nodeType} size={15} />;
   const accent = String(nd.color || color); const s = ST[nd.status || 'idle'];
@@ -519,13 +621,40 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
   const serverName = nd.serverId ? (servers.find(item => item.id === nd.serverId)?.name || '') : '';
   const inputPorts:PortSpec[]=inputs?.length?inputs:(hasInput?[{id:'input',label:'输入'}]:[]);
   const outputPorts:PortSpec[]=outputs?.length?outputs:(hasOutput?[{id:'output',label:'输出'}]:[]);
-  const portRows=Math.max(inputPorts.length,outputPorts.length);
+  const inputGroups = groupPorts(inputPorts);
+  const outputGroups = groupPorts(outputPorts);
+  const hasPortGroups = inputGroups.length > 0 || outputGroups.length > 0;
+  // 标题栏颜色：优先取节点生成的输出资源类型（文本/图片/视频/音频/3D），无输出则回退输入类型，最后回退主题色。
+  const titleType = outputPorts[0]?.type || inputPorts[0]?.type;
+  const titleColor = titleType ? portColor(titleType) : accent;
+  const updateNodeStyle = useCanvasStore(u => u.updateNodeStyle);
+  const portRows = displayMode === 'expanded' ? Math.max(inputPorts.length, outputPorts.length) : Math.max(inputGroups.length, outputGroups.length);
+  const parameterSummary = nodeParameterSummary(nd);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const chromeRef = useRef<HTMLDivElement>(null);
+  const expandedHeightRef = useRef<number | null>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  // 自动尺寸：非手动模式下测量真实布局内容高度并写入数值（同步到 style + measured + node.height，
+  // React Flow 才会重排外层盒子）。收起随内容收缩、展开随内容增高；用户手动拖拽时由 NodeResizer 接管。
+  const syncNodeGeometry = useCallback(() => {
+    if (manualSize) { updateNodeInternals(id); return; }
+    const node = useCanvasStore.getState().nodes.find(item => item.id === id);
+    const naturalHeight = Math.ceil(layoutRef.current?.scrollHeight || 0);
+    if (node && naturalHeight) {
+      const currentHeight = parseFloat(String(node.style?.height || '0')) || 0;
+      if (Math.abs(currentHeight - naturalHeight) > 2) updateNodeStyle(id, { height: naturalHeight });
+    }
+    updateNodeInternals(id);
+  }, [id, manualSize, updateNodeInternals, updateNodeStyle]);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => { syncNodeGeometry(); updateNodeInternals(id); });
+    const timer = window.setTimeout(() => { syncNodeGeometry(); updateNodeInternals(id); }, 120);
+    return () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); };
+  }, [displayMode, id, syncNodeGeometry, updateNodeInternals]);
   const enqueue = useCanvasStore(u => u.enqueueNode);
   const pause = useCanvasStore(u => u.pauseNode);
   const sel = useCanvasStore(u => u.setSelectedNodeId);
   const ctx = useCanvasStore(u => u.showContextMenu);
-  const updateNodeStyle = useCanvasStore(u => u.updateNodeStyle);
-  const contentRef = useRef<HTMLDivElement>(null);
   const [now,setNow]=useState(Date.now());
   useEffect(()=>{if(nd.status!=='running')return;const timer=setInterval(()=>setNow(Date.now()),100);return()=>clearInterval(timer)},[nd.status]);
   const elapsed=nd.status==='running'&&nd.generationStartedAt?now-nd.generationStartedAt:nd.generationDurationMs;
@@ -534,29 +663,30 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
   // 只有真实异步节点需要进度条：服务器工作流 / 付费 API / 耗时本地工具；瞬时本地节点与上传节点（有独立进度条）不显示
   const showProgressBar = ['apiNode','textToSpeech','videoToVideo','audioToVideo','textToAudio','storyboardRender','timelineRender','imageGeneration','imageToImage','videoGeneration','qwenImageGen','qwenImageEdit','cinematographyKnowledge'].includes(nd.nodeType) || nd.nodeType.startsWith('paid');
   const doExec = useCallback((e: React.MouseEvent) => { e.stopPropagation(); if (nd.status === 'running') { pause(id); return; } enqueue(id); }, [id, enqueue, nd.status, pause]);
-  useEffect(() => {
-    // 可缩放节点的高度由 NodeResizer 完全控制，不能被内容观察器覆盖。
-    if (resizable) return;
-    const element = contentRef.current;
-    if (!element) return;
-    let frame = 0;
-    const resizeIfNeeded = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const node = useCanvasStore.getState().nodes.find(item => item.id === id);
-        const currentHeight = Number(node?.style?.height || 0);
-        const neededHeight = Math.min(1400, Math.max(150, Math.ceil(element.scrollHeight + 86 + portRows * 13)));
-        // 按内容实际高度只增不减：手动放大的节点保持用户尺寸，内容变多时继续撑高。
-        if (!currentHeight || neededHeight > currentHeight + 4) updateNodeStyle(id, { height: neededHeight });
-      });
-    };
-    const observer = new ResizeObserver(resizeIfNeeded);
-    observer.observe(element);
-    resizeIfNeeded();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [id, portRows, updateNodeStyle, children, resizable]);
+  const toggleDisplayMode = useCallback(() => {
+    const node = useCanvasStore.getState().nodes.find(item => item.id === id);
+    if (displayMode === 'expanded') {
+      expandedHeightRef.current = parseFloat(String(node?.style?.height || '0')) || null;
+      setDisplayMode('collapsed');
+      return;
+    }
+    setDisplayMode('expanded');
+    if (manualSize && expandedHeightRef.current) updateNodeStyle(id, { height: expandedHeightRef.current });
+  }, [displayMode, id, manualSize, updateNodeStyle]);
+  // 收起态：每组同类端口把真实 Handle 堆叠在边界同一点，作为可见且可连接的聚合点；
+  // 这样连接线自然落到视觉点，不再与装饰圆点错位。多端口组展开后选具体端口。
+  const collapsedHandleStyle = (type: string, side: 'left' | 'right') => ({
+    [side]: 0,
+    top: '50%',
+    width: 12,
+    height: 12,
+    background: portColor(type),
+    border: '2px solid var(--theme-panel)',
+    boxShadow: `0 0 0 1px color-mix(in srgb, ${portColor(type)} 65%, transparent)`,
+    zIndex: 6,
+  });
   return (
-    <div className={`node-shell ${selected ? 'is-selected' : ''} ${nd.queuedAt || nd.status === 'queued' ? 'is-queued' : ''}`} data-status={nd.status || 'idle'} onClick={(e) => { if (!e.shiftKey && !e.ctrlKey) sel(id); }}
+    <div className={`node-shell node-shell--${displayMode} ${resizable ? 'node-shell--resizable' : ''} ${manualSize ? 'node-shell--manual' : ''} ${selected ? 'is-selected' : ''} ${nd.queuedAt || nd.status === 'queued' ? 'is-queued' : ''}`} data-status={nd.status || 'idle'} onClick={(e) => { if (!e.shiftKey && !e.ctrlKey) sel(id); }}
       onPointerDown={e => {
         const target = e.target as HTMLElement;
         if (target.closest('input, textarea, select, button, audio, video, .nodrag, .react-flow__handle')) e.stopPropagation();
@@ -566,47 +696,56 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
         borderRadius: 10, background: 'var(--theme-panel)',
         border: `2px solid ${selected ? accent : 'var(--theme-border)'}`,
         boxShadow: selected ? `0 0 20px ${accent}44` : '0 1px 4px rgba(0,0,0,0.3)',
-        width:'100%',height:resizable ? '100%' : 'auto',minWidth: portRows>3?280:220, minHeight: 150, maxWidth: resizable ? 'none' : 520, cursor: 'pointer',
+        width:'100%',height: manualSize ? '100%' : 'auto',minWidth: portRows>3?280:220, minHeight: 0, maxWidth: resizable ? 'none' : 520, cursor: 'pointer',
         transition: 'border-color .15s ease, box-shadow .15s ease',
         opacity: nd.disabled ? 0.5 : 1, position: 'relative', color: 'var(--theme-text)', display: resizable ? 'flex' : undefined, flexDirection: resizable ? 'column' : undefined,
       }}>
-      {resizable&&<NodeResizer isVisible={selected} minWidth={220} minHeight={150} maxWidth={1600} maxHeight={1200} color={accent} handleStyle={{width:10,height:10}}/>}
-      <div style={{
-        background: `linear-gradient(135deg, ${accent}22, ${accent}11)`,
-        borderBottom: `1px solid ${accent}22`,
-        padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8,
-        borderTopLeftRadius: 8, borderTopRightRadius: 8,
-      }}>
-        <span style={{ fontSize: 15 }}>{iconNode}</span>
+      {resizable&&<NodeResizer isVisible={selected} minWidth={220} minHeight={64} maxWidth={1600} maxHeight={1400} color={accent} handleStyle={{width:10,height:10}} onResizeStart={() => setManualSize(true)} onResizeEnd={() => { setManualSize(true); updateNodeInternals(id); }}/>} 
+      <div ref={layoutRef} className="node-shell__layout">
+      <div ref={chromeRef} className="node-shell__chrome">
+        <div style={{
+          background: `linear-gradient(135deg, ${titleColor}2e, ${titleColor}14)`,
+          borderBottom: `1px solid ${titleColor}33`,
+          padding: '5px 9px', display: 'flex', alignItems: 'center', gap: 7,
+          borderTopLeftRadius: 8, borderTopRightRadius: 8,
+        }}>
+        <span style={{ fontSize: 14 }}>{iconNode}</span>
         <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--theme-text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nd.label}</span>
         {serverName && <span className="node-server-badge" title={`服务器：${serverName}`}>{serverName}</span>}
+        <button className="node-mode-toggle nodrag" onClick={e => { e.stopPropagation(); toggleDisplayMode(); }} title={displayMode === 'collapsed' ? '展开端口与参数' : '收起为端口摘要'} aria-label="切换节点展开状态">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">{displayMode === 'collapsed' ? <><path d="m6 9 6 6 6-6"/></> : <><path d="m6 15 6-6 6 6"/></>}</svg>
+        </button>
         {!hideExec && <span onClick={doExec} title={nd.status === 'running' ? '点击取消任务' : nd.status + ' - 点击执行'}
           style={{
-            width: 26, height: 26, borderRadius: '50%', background: s.bg,
+            width: 24, height: 24, borderRadius: '50%', background: s.bg,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', fontSize: 13, color: '#fff',
+            cursor: 'pointer', fontSize: 12, color: '#fff',
             boxShadow: `0 0 10px ${s.glow}`, transition: 'all 0.3s',
             animation: nd.status === 'running' ? 'pulse 0.8s infinite' : (nd.status === 'success' ? 'glowPulse 2s infinite' : 'none'),
           }}>{nd.status === 'running' ? '×' : s.icon}</span>}
-      </div>
-      {portRows>0&&<div className="node-ports" style={{minHeight:portRows*26+10}}>
-        {Array.from({length:portRows},(_,index)=>{
-          const input=inputPorts[index],output=outputPorts[index];
-          return <div className="node-port-row" key={index}>
-            <div className="node-port node-port--input">{input&&<>
-              <Handle id={input.id} type="target" position={Position.Left} title={`${input.label} (${input.type||'通用'})`}
-                style={{background:edges.some(edge => edge.target === id && edge.targetHandle === input.id) ? portColor(input.type) : 'var(--theme-panel)',left:3,top:'50%',border:`2px solid ${portColor(input.type)}`,outline:`1px solid ${portColor(input.type)}`,boxShadow:edges.some(edge => edge.target === id && edge.targetHandle === input.id) ? `0 0 7px ${portColor(input.type)}` : `0 0 3px ${portColor(input.type)}55`,zIndex:10}}/>
-              <span title={input.label}>{input.label}</span>
-            </>}</div>
-            <div className="node-port node-port--output">{output&&<>
-              <span title={output.label}>{output.label}</span>
-              <Handle id={output.id} type="source" position={Position.Right} title={`${output.label} (${output.type||'通用'})`}
-                style={{background:edges.some(edge => edge.source === id && edge.sourceHandle === output.id) ? portColor(output.type) : 'var(--theme-panel)',right:3,top:'50%',border:`2px solid ${portColor(output.type)}`,outline:`1px solid ${portColor(output.type)}`,boxShadow:edges.some(edge => edge.source === id && edge.sourceHandle === output.id) ? `0 0 7px ${portColor(output.type)}` : `0 0 3px ${portColor(output.type)}55`,zIndex:10}}/>
-            </>}</div>
+        </div>
+      {hasPortGroups && <div className={`node-ports node-ports--${displayMode}`} style={{ minHeight: portRows * 26 + 8 }}>
+        {displayMode === 'collapsed' ? Array.from({ length: portRows }, (_, index) => {
+          const input = inputGroups[index], output = outputGroups[index];
+          const renderCollapsedGroup = (group: typeof input, direction: 'target' | 'source') => {
+            if (!group) return null;
+            const isInput = direction === 'target';
+            return <div className={`node-port node-port--${isInput ? 'input' : 'output'} node-port--group`}>
+              {group.ports.map(port => <Handle key={port.id} id={port.id} type={direction} position={isInput ? Position.Left : Position.Right} title={`${group.label}（${group.ports.length} 个）`} style={collapsedHandleStyle(port.type || 'media', isInput ? 'left' : 'right')} />)}
+              <button className="node-port-group-anchor nodrag" onClick={event => { event.stopPropagation(); setDisplayMode('expanded'); }} title={`展开以选择${group.ports.map(port => port.label).join('、')}`}>{group.label}{group.ports.length > 1 ? ` ×${group.ports.length}` : ''}</button>
+            </div>;
+          };
+          return <div className="node-port-row node-port-row--collapsed" key={`${input?.type || 'none'}-${output?.type || 'none'}`}>{renderCollapsedGroup(input, 'target')}{renderCollapsedGroup(output, 'source')}</div>;
+        }) : Array.from({ length: portRows }, (_, index) => {
+          const input = inputPorts[index], output = outputPorts[index];
+          return <div className="node-port-row node-port-row--expanded" key={index}>
+            <div className="node-port node-port--input">{input && <><Handle id={input.id} type="target" position={Position.Left} title={`${input.label} (${input.type || '通用'})`} style={{ background: edges.some(edge => edge.target === id && edge.targetHandle === input.id) ? portColor(input.type) : 'var(--theme-panel)', left:1, top:'50%', border:`2px solid ${portColor(input.type)}`, outline:`1px solid ${portColor(input.type)}`, zIndex:10 }}/><span className="node-port-label" title={input.label}>{input.label}</span></>}</div>
+            <div className="node-port node-port--output">{output && <><span className="node-port-label" title={output.label}>{output.label}</span><Handle id={output.id} type="source" position={Position.Right} title={`${output.label} (${output.type || '通用'})`} style={{ background: edges.some(edge => edge.source === id && edge.sourceHandle === output.id) ? portColor(output.type) : 'var(--theme-panel)', right:1, top:'50%', border:`2px solid ${portColor(output.type)}`, outline:`1px solid ${portColor(output.type)}`, zIndex:10 }}/></>}</div>
           </div>;
         })}
       </div>}
-      <div ref={contentRef} className="node-shell__content" style={{ padding: '10px 14px', fontSize: 12, minWidth: 0, minHeight: 0, overflow: 'auto', flex: resizable ? 1 : undefined, display: resizable ? 'flex' : undefined, flexDirection: resizable ? 'column' : undefined }}>{children ?? <div style={{ color: '#555' }}>点击配置...</div>}</div>
+      </div>
+      {displayMode === 'expanded' && <div ref={contentRef} className="node-shell__content" style={{ padding: '10px 14px', fontSize: 12, minWidth: 0, minHeight: 0, overflow: 'auto', flex: '0 0 auto', display: resizable ? 'flex' : undefined, flexDirection: resizable ? 'column' : undefined }}>{compactBody ? <div className="node-compact-hint">参数与设置请在右侧属性面板编辑</div> : (children ?? <div style={{ color: '#555' }}>点击配置...</div>)}</div>}
       {(nd.status === 'running' || nd.status === 'success') && showProgressBar && <div className="node-progress-stack">
         {nd.nodeType === 'apiNode' ? (
           <div className="node-progress-row"><span>步骤</span><div><i className="node-progress-step" style={{width:`${stepProgress}%`}}/></div><b>{Math.round(stepProgress)}%</b></div>
@@ -619,6 +758,7 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--theme-error)', fontSize: 10 }} title={nd.error}>{nd.error}</span>
         <button onClick={(e) => { e.stopPropagation(); enqueue(id); }} style={{ flexShrink: 0, background: 'var(--theme-error)', border: 'none', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}>重试</button>
       </div>}
+      </div>
     </div>
   );
 };
@@ -650,11 +790,11 @@ export const LocalWorkflowNode = memo((p: NodeProps) => {
       const note = notes[posParams[ti]?.key];
       ti += 1;
       return note ? { ...port, label: note } : port;
-    });
-  }, [ports.inputs, notes, posParams]);
+    }).filter(port => shouldShowInputPort(port.id, port.type, cfg));
+  }, [ports.inputs, notes, posParams, cfg]);
   const origin = originTag(servers, d.serverId, activeServerId);
   // 绑定端口的节点：NodeShell 已显示端口名（node-server-badge），这里只补「未绑定」提示，避免重复标签
-  return <NodeShell {...p} color="#0ea5e9" inputs={labeledInputs} outputs={ports.outputs}>
+  return <NodeShell {...p} color="#0ea5e9" inputs={labeledInputs} outputs={ports.outputs} compactBody>
     {!d.serverId && <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
       <span title="未绑定端口（执行时跟随当前服务器）" style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, color: '#fff', background: origin.color, fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>跟随：{origin.label}</span>
       <span style={{ fontSize: 10, color: 'var(--theme-muted)' }}>{meta.length} 参数</span>
@@ -728,12 +868,11 @@ export const ScriptInputNode = memo((p:NodeProps)=>{
   const setScripts=(next:typeof scripts)=>useCanvasStore.getState().setNodeConfig(p.id,{scripts:next});
   const change=(id:string,text:string)=>{const next=scripts.map(item=>item.id===id?{...item,text}:item);setScripts(next);useCanvasStore.getState().propagateData(p.id,`script-${id}`,text)};
   const add=()=>setScripts([...scripts,{id:`${Date.now().toString(36)}${Math.random().toString(36).slice(2,5)}`,label:`场景 ${scripts.length+1}`,text:''}]);
-  return <NodeShell {...p} color="#8b5cf6" hasInput={false} hasOutput={false}>
+  return <NodeShell {...p} color="#8b5cf6" hasInput={false} hasOutput={false} resizable>
     <div className="script-list">{scripts.map((item,index)=><div className="script-row" key={item.id}>
       <input className="script-label nodrag" value={item.label} onChange={e=>setScripts(scripts.map(x=>x.id===item.id?{...x,label:e.target.value}:x))}/>
       <textarea className="script-text nodrag" onFocus={()=>openTextEditor(p.id,`script:${item.id}`,item.text,item.label,'script')} value={item.text} placeholder="输入该段剧本..." onChange={e=>change(item.id,e.target.value)}/>
-      <span className="script-output-label">文本输出</span>
-      <Handle id={`script-${item.id}`} type="source" position={Position.Right} title={`${item.label}（文本）`} style={{background:portColor('text'),right:4,top:'50%',border:'2px solid var(--theme-border)'}}/>
+      <Handle id={`script-${item.id}`} type="source" position={Position.Right} title={`${item.label}（文本）`} style={{background:portColor('text'),right:-7,top:'50%',border:'2px solid var(--theme-border)'}}/>
       {scripts.length>1&&<button className="script-remove nodrag" onClick={()=>setScripts(scripts.filter(x=>x.id!==item.id))}>×</button>}
     </div>)}</div>
     <button className="script-add nodrag" onClick={add}>＋ 添加剧本段落</button>
@@ -1060,6 +1199,8 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
   const [styleModal, setStyleModal] = useState(false);
   const [styleName, setStyleName] = useState('');
   const [styleWords, setStyleWords] = useState('');
+  const [modelCustomMode, setModelCustomMode] = useState(false);
+  const [modelCustomId, setModelCustomId] = useState('');
   const settings = useSettingsStore();
   const update = useCanvasStore(s => s.setNodeConfig);
   const cfg = d.config || {};
@@ -1071,20 +1212,32 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
   const provider = PAID_API_ADAPTERS[configuredProvider];
   const providerSettings = settings.paidApiProviders?.[configuredProvider];
   const modelOptions = getPaidModelsForAdapter(configuredProvider, capability);
+  // 节点模型下拉 = 厂商预置模型 + 设置中「拉取并选中」的模型；任何厂商都允许「自定义模型」输入。
+  // 修复：此前仅 openaiCompatible 合并了设置拉取到的模型，导致其它厂商"没拉出来用"。
+  const selectedInSettings = providerSettings?.selectedModel;
+  const modelOptionsForNode = selectedInSettings && !modelOptions.some(m => m.id === selectedInSettings)
+    ? [...modelOptions, { id: selectedInSettings, label: selectedInSettings, capabilities: [capability] }]
+    : modelOptions;
+  const isDynamicModel = true; // 任何厂商都允许自定义模型 ID
   const isVideo = capabilityInfo?.output === 'video';
   const isAudio = capabilityInfo?.output === 'audio';
   const is3d = capabilityInfo?.output === '3d';
-  const needsImage = Boolean(capabilityInfo && ['image', 'first-last', 'image-video'].includes(capabilityInfo.input));
+  const modelForPorts = String((cfg.model as string) || providerSettings?.selectedModel || modelOptions[0]?.id || '');
+  const capRef = getCapReference(capability, modelForPorts);
+  const refImages = capRef.images || 0;
+  const refVideos = capRef.videos || 0;
+  const refAudios = capRef.audios || 0;
+  const needsImage = Boolean(refImages > 0 || capRef.lastImage);
   const output = isAudio ? 'audio' : is3d ? '3d' : isVideo ? 'video' : 'image';
-  const inputPorts = capabilityInfo?.input === 'first-last'
-    ? [{id:'firstImage',label:'首帧图片',type:'image'},{id:'lastImage',label:'尾帧图片',type:'image'}]
-    : capabilityInfo?.input === 'video'
-      ? [{id:'video',label:'输入视频',type:'video'}]
-      : capabilityInfo?.input === 'image-video'
-        ? [{id:'image',label:'人物图片',type:'image'},{id:'video',label:'参考视频',type:'video'},{id:'audio',label:'参考音频',type:'audio'}]
-      : needsImage ? [{id:'image',label:'参考素材',type:'image'}] : [];
+  // 按能力的「参考输入路数」动态生成端口：文生图=0 参考、图生视频=1 首帧、参考生视频=多图、对口型=视频+音频……
+  const imgParts = Array.from({ length: refImages }, (_, i) => ({ id: i === 0 ? 'image' : `image${i + 1}`, label: i === 0 ? (capRef.lastImage ? '首帧图片' : '参考图') : `参考图${i + 1}`, type: 'image' as const }));
+  const vidParts = Array.from({ length: refVideos }, (_, i) => ({ id: i === 0 ? 'video' : `video${i + 1}`, label: i === 0 ? '参考视频' : `参考视频${i + 1}`, type: 'video' as const }));
+  const audParts = Array.from({ length: refAudios }, (_, i) => ({ id: i === 0 ? 'audio' : `audio${i + 1}`, label: i === 0 ? '参考音频' : `参考音频${i + 1}`, type: 'audio' as const }));
+  const inputPorts = [...imgParts, ...(capRef.lastImage ? [{ id: 'lastImage', label: '尾帧图片', type: 'image' as const }] : []), ...vidParts, ...audParts];
   const ratio = String(cfg.aspectRatio || (isVideo ? '16:9' : '1:1'));
   const isBailian = configuredProvider === 'bailian';
+  // 按厂商+能力的官方参数 schema 决定面板显示哪些参数（解决"参数不适配"）
+  const supportedParams = new Set(getPaidParamKinds(configuredProvider, capability));
   const resolution = Number(cfg.resolution) || (isVideo ? 1080 : 1024);
   const ratioOptions = isBailian ? (isVideo ? BAILIAN_VIDEO_RATIO_OPTIONS : BAILIAN_RATIO_OPTIONS) : ASPECT_RATIOS;
   const videoResolutionOptions = BAILIAN_VIDEO_RESOLUTION_OPTIONS;
@@ -1101,23 +1254,24 @@ export const PaidGenerationNode = memo((p: NodeProps) => {
   if (capability === 'element-manage' || capability === 'voice-manage') {
     return <KlingManagePanel {...p} />;
   }
-  return <><NodeShell {...p} icon={isAudio ? <Music size={15}/> : isVideo ? <Video size={15}/> : <WandSparkles size={15}/>} color={isAudio ? '#fb923c' : isVideo ? '#ec4899' : '#a855f7'} inputs={[...inputPorts,...(isVideo && !inputPorts.some(port => port.id === 'audio') ? [{id:'audio',label:'音频输入',type:'audio'}] : []),{id:'prompt',label:isAudio?'台词文本':'提示词',type:'text'}]} outputs={[{id:output,label:isAudio?'音频':isVideo?'视频':'图片',type:output}]} resizable>
+  return <><NodeShell {...p} icon={isAudio ? <Music size={15}/> : isVideo ? <Video size={15}/> : <WandSparkles size={15}/>} color={isAudio ? '#fb923c' : isVideo ? '#ec4899' : '#a855f7'} inputs={[...inputPorts,{id:'prompt',label:isAudio?'台词文本':'提示词',type:'text'}]} outputs={[{id:output,label:isAudio?'音频':isVideo?'视频':'图片',type:output}]} resizable compactNormal compactBody>
     <div className="nodrag" style={{display:'flex',gap:6,alignItems:'center',marginBottom:6,fontSize:10,color:'#c4b5fd'}}><b style={{flex:1}}>付费 API · {capabilityInfo?.label || '节点'}</b><span>{capabilityInfo?.description}</span></div>
-    <div className="paid-node-provider-row nodrag"><select value={configuredProvider} onChange={e=>update(p.id,{provider:e.target.value,model:''})}>{providerOptions.map(id=><option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select><select value={selectedModel} onChange={e=>update(p.id,{model:e.target.value})}>{modelOptions.map(model=><option key={model.id} value={model.id}>{model.label}</option>)}</select></div>
+    <div className="paid-node-provider-row nodrag"><select value={configuredProvider} onChange={e=>update(p.id,{provider:e.target.value,model:''})}>{providerOptions.map(id=><option key={id} value={id}>{PAID_API_ADAPTERS[id].label}</option>)}</select><select value={modelCustomMode ? '__custom__' : selectedModel} onChange={e=>{ const v=e.target.value; if(v==='__custom__'){ setModelCustomMode(true); setModelCustomId(String(selectedModel||'')); update(p.id,{model:''}); } else { setModelCustomMode(false); update(p.id,{model:v}); } }}>{modelOptionsForNode.map(model=><option key={model.id} value={model.id}>{model.label}</option>)}{isDynamicModel && <option value="__custom__">自定义模型…</option>}</select></div>
+    {modelCustomMode && <div className="nodrag" style={{display:'flex',gap:4,alignItems:'center',marginBottom:2}}><input value={modelCustomId} onChange={e=>{ setModelCustomId(e.target.value); update(p.id,{model:e.target.value}); }} placeholder="输入网关返回的模型 ID" style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,padding:3,fontSize:10}} list="paid-model-custom" /><datalist id="paid-model-custom">{(providerSettings?.models || []).map(m=><option key={m} value={m} />)}</datalist><button className="nodrag" onClick={()=>setModelCustomMode(false)} title="返回下拉选择" style={{border:'1px solid var(--theme-border)',background:'transparent',color:'var(--theme-accent)',borderRadius:4,fontSize:10,padding:'2px 5px',cursor:'pointer'}}>完成</button></div>}
     {!providerSettings?.apiKey ? <div style={{fontSize:10,color:'var(--theme-warning)',lineHeight:1.5}}>请到“设置 → 付费 API 厂商配置”填写 {provider?.label || '当前厂商'} 的 API Key。</div> : null}
       <textarea className="nodrag" value={String(cfg.prompt || '')} onChange={e=>update(p.id,{prompt:e.target.value})} placeholder={capabilityInfo?.input === 'image' ? '可选：输入编辑指令' : '输入提示词，或连接文本节点'} style={{width:'100%',minHeight:55,resize:'none',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:5,fontSize:10}} />
       {!isAudio && !is3d && <div style={{display:'flex',gap:4,marginTop:4,alignItems:'center'}}><select className="nodrag" value={String(cfg.style || 'none')} onChange={e=>update(p.id,{style:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{getAllStyles().map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><span style={{fontSize:9,color:'var(--theme-muted)'}}>风格</span>{String(cfg.style || '').startsWith('custom-') && <button className="nodrag" onClick={()=>{ if (window.confirm('删除该自定义风格？')) { deleteCustomStyle(String(cfg.style)); update(p.id,{style:'none'}); } }} style={{border:'1px solid var(--theme-border)',background:'transparent',color:'var(--theme-error)',borderRadius:4,fontSize:9,padding:'2px 5px',cursor:'pointer'}}>删</button>}<button className="nodrag" onClick={()=>setStyleModal(true)} style={{border:'1px solid var(--theme-border)',background:'transparent',color:'var(--theme-accent)',borderRadius:4,fontSize:10,padding:'2px 6px',cursor:'pointer'}}>＋保存</button></div>}
-      {!isAudio && !is3d && <input className="nodrag" value={String(cfg.negativePrompt || '')} onChange={e=>update(p.id,{negativePrompt:e.target.value})} placeholder="负面提示词（可选）" style={{width:'100%',marginTop:4,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}} />}
+      {!isAudio && !is3d && supportedParams.has('negative') && <input className="nodrag" value={String(cfg.negativePrompt || '')} onChange={e=>update(p.id,{negativePrompt:e.target.value})} placeholder="负面提示词（可选）" style={{width:'100%',marginTop:4,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}} />}
       {isAudio && configuredProvider === 'minimax' && <div style={{display:'flex',gap:4,marginTop:5,alignItems:'center'}}><select className="nodrag" value={String(cfg.voice_id || 'female-tianmei')} onChange={e=>update(p.id,{voice_id:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{TTS_VOICE_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select><span style={{fontSize:9,color:'var(--theme-muted)'}}>音色</span></div>}
       {isAudio && configuredProvider !== 'minimax' && <div style={{fontSize:9,color:'var(--theme-muted)',marginTop:4}}>当前厂商音色请在「模型」下拉中选择（模型即音色）。</div>}
       {is3d && <div style={{fontSize:9,color:'var(--theme-success)',marginTop:4,lineHeight:1.5}}>3D 生成约需 2–5 分钟（文生3D 含网格+贴图两阶段），结果自动保存本地。</div>}
       {needsImage && <div style={{fontSize:9,color:d.inputValues?.image?'var(--theme-success)':'var(--theme-warning)',marginTop:4}}>{d.inputValues?.image ? '✓ 已接收图片输入' : '等待图片输入连接'}</div>}
-      {!isAudio && !is3d && <div style={{display:'flex',gap:4,marginTop:5}}><select className="nodrag" value={ratio} onChange={e=>setRatio(e.target.value)} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{ratioOptions.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}{!isBailian && <option value="custom">自定义</option>}</select>{isBailian && !isVideo && <select className="nodrag" value={resolution} onChange={e=>{ const value=Number(e.target.value); const size=getBailianImageSize(value,ratio).split('*').map(Number); update(p.id,{resolution:value,width:size[0],height:size[1]}); }} style={{width:92,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{BAILIAN_RESOLUTION_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.value}px</option>)}</select>}{ratio==='custom'&&<><input className="nodrag" type="number" value={Number(cfg.width)||1024} onChange={e=>update(p.id,{width:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,fontSize:10}}/><input className="nodrag" type="number" value={Number(cfg.height)||1024} onChange={e=>update(p.id,{height:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,fontSize:10}}/></>}
-      {ratio==='custom'&&<div style={{display:'flex',gap:3,marginTop:3,flexWrap:'wrap'}}>{[{w:512,h:512,l:'512²'},{w:768,h:768,l:'768²'},{w:1024,h:1024,l:'1024²'},{w:768,h:1344,l:'768×1344'},{w:1344,h:768,l:'1344×768'},{w:896,h:1152,l:'896×1152'},{w:1152,h:896,l:'1152×896'}].map(quick=><button key={quick.l} className="nodrag" onClick={()=>update(p.id,{width:quick.w,height:quick.h})} style={{padding:'1px 7px',fontSize:9,border:'1px solid var(--theme-border)',background:'var(--theme-input)',color:'var(--theme-text-2)',borderRadius:4,cursor:'pointer'}} title={`${quick.w}×${quick.h}`}>{quick.l}</button>)}</div>}</div>}
+      {!isAudio && !is3d && <div style={{display:'flex',gap:4,marginTop:5}}><select className="nodrag" value={ratio} onChange={e=>setRatio(e.target.value)} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{ratioOptions.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}{supportedParams.has('size') && <option value="custom">自定义</option>}</select>{isBailian && supportedParams.has('size') && <select className="nodrag" value={resolution} onChange={e=>{ const value=Number(e.target.value); const size=getBailianImageSize(value,ratio).split('*').map(Number); update(p.id,{resolution:value,width:size[0],height:size[1]}); }} style={{width:92,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,padding:4,fontSize:10}}>{BAILIAN_RESOLUTION_OPTIONS.map(item=><option key={item.value} value={item.value}>{item.value}px</option>)}</select>}{ratio==='custom' && supportedParams.has('size') &&<><input className="nodrag" type="number" value={Number(cfg.width)||1024} onChange={e=>update(p.id,{width:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,fontSize:10}}/><input className="nodrag" type="number" value={Number(cfg.height)||1024} onChange={e=>update(p.id,{height:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5,fontSize:10}}/></>}
+      {ratio==='custom' && supportedParams.has('size') &&<div style={{display:'flex',gap:3,marginTop:3,flexWrap:'wrap'}}>{[{w:512,h:512,l:'512²'},{w:768,h:768,l:'768²'},{w:1024,h:1024,l:'1024²'},{w:768,h:1344,l:'768×1344'},{w:1344,h:768,l:'1344×768'},{w:896,h:1152,l:'896×1152'},{w:1152,h:896,l:'1152×896'}].map(quick=><button key={quick.l} className="nodrag" onClick={()=>update(p.id,{width:quick.w,height:quick.h})} style={{padding:'1px 7px',fontSize:9,border:'1px solid var(--theme-border)',background:'var(--theme-input)',color:'var(--theme-text-2)',borderRadius:4,cursor:'pointer'}} title={`${quick.w}×${quick.h}`}>{quick.l}</button>)}</div>}</div>}
       {!isAudio && !is3d && <div style={{fontSize:9,color:'var(--theme-muted)',marginTop:3}}>{isBailian && isVideo ? `输出规格：${resolution}P · ${ratio}（官方 resolution / ratio）` : `输出分辨率：${Number(cfg.width)||1024} × ${Number(cfg.height)||1024}`}</div>}
-      {!isAudio && !is3d && <div style={{display:'flex',gap:5,marginTop:5,fontSize:10,color:'var(--theme-text-2)',alignItems:'center'}}><label>种子 <input className="nodrag" type="number" min="-1" value={Number.isFinite(Number(cfg.seed)) ? Number(cfg.seed) : -1} onChange={e=>update(p.id,{seed:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /></label><label>变体 <input className="nodrag" type="number" min="1" max="8" value={Number(cfg.variants)||1} onChange={e=>update(p.id,{variants:Math.max(1,Math.min(8,Number(e.target.value)))})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} title="一次生成 N 个变体（提示词中可用 {a|b|c}）" /></label>{isVideo && <label>时长 <input className="nodrag" type="number" min="1" max="60" value={Number(cfg.duration)||5} onChange={e=>update(p.id,{duration:Number(e.target.value)})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> 秒</label>}{isVideo && isBailian && <label>分辨率 <select className="nodrag" value={resolution} onChange={e=>update(p.id,{resolution:Number(e.target.value)})} style={{width:68,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,fontSize:10}}>{videoResolutionOptions.map(value=><option key={value} value={value}>{value}P</option>)}</select></label>}</div>}
-      {isVideo && <div style={{marginTop:5,fontSize:10,color:'var(--theme-text-2)'}}>帧率 <input className="nodrag" type="number" min="1" max="120" value={Number(cfg.frameRate)||24} onChange={e=>update(p.id,{frameRate:Number(e.target.value)})} style={{width:48,margin:'0 4px',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> fps</div>}
-      {isVideo && <div style={{display:'flex',gap:4,marginTop:5,alignItems:'center',fontSize:10,color:'var(--theme-text-2)'}}>
+      {!isAudio && !is3d && <div style={{display:'flex',gap:5,marginTop:5,fontSize:10,color:'var(--theme-text-2)',alignItems:'center'}}>{supportedParams.has('seed') && <label>种子 <input className="nodrag" type="number" min="-1" value={Number.isFinite(Number(cfg.seed)) ? Number(cfg.seed) : -1} onChange={e=>update(p.id,{seed:Number(e.target.value)})} style={{width:58,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /></label>}{supportedParams.has('variants') && <label>变体 <input className="nodrag" type="number" min="1" max="8" value={Number(cfg.variants)||1} onChange={e=>update(p.id,{variants:Math.max(1,Math.min(8,Number(e.target.value)))})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} title="一次生成 N 个变体（提示词中可用 {a|b|c}）" /></label>}{supportedParams.has('duration') && <label>时长 <input className="nodrag" type="number" min="1" max="60" value={Number(cfg.duration)||5} onChange={e=>update(p.id,{duration:Number(e.target.value)})} style={{width:42,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> 秒</label>}{supportedParams.has('resolution') && <label>分辨率 <select className="nodrag" value={resolution} onChange={e=>update(p.id,{resolution:Number(e.target.value)})} style={{width:68,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,fontSize:10}}>{videoResolutionOptions.map(value=><option key={value} value={value}>{value}P</option>)}</select></label>}</div>}
+      {supportedParams.has('fps') && <div style={{marginTop:5,fontSize:10,color:'var(--theme-text-2)'}}>帧率 <input className="nodrag" type="number" min="1" max="120" value={Number(cfg.frameRate)||24} onChange={e=>update(p.id,{frameRate:Number(e.target.value)})} style={{width:48,margin:'0 4px',background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4}} /> fps</div>}
+      {isVideo && supportedParams.has('camera') && <div style={{display:'flex',gap:4,marginTop:5,alignItems:'center',fontSize:10,color:'var(--theme-text-2)'}}>
         <span>运镜</span>
         <select className="nodrag" value={String(cfg.cameraMotion || '')} onChange={e=>update(p.id,{cameraMotion:e.target.value})} style={{flex:1,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:4,padding:3,fontSize:10}}>
           {CAMERA_MOTIONS.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
@@ -1356,7 +1510,7 @@ export const InpaintNode = memo((p: NodeProps) => {
         if (!provider || !profile?.apiKey) throw new Error('请先配置支持图生图的付费 API 厂商');
         const model = profile.selectedModel || (profile.models || [])[0] || '';
         if (!model) throw new Error('请选择图片模型');
-        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, { type: 'image-to-image', imageUrl: imageDataUrl, prompt: `${ptext}（只修改白色蒙版覆盖的区域，其余区域保持完全不变）` });
+        const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: getPaidAdapter(String(profile.provider))?.authMode }, { type: 'image-to-image', imageUrl: imageDataUrl, prompt: `${ptext}（只修改白色蒙版覆盖的区域，其余区域保持完全不变）` });
         if (!result.url) throw new Error('接口未返回结果');
         url = await cachePaidMedia(result.url, 'image');
       }
@@ -1647,12 +1801,13 @@ export const GenericNode = memo((p: NodeProps) => {
   const color = isRunningHubNode ? '#0ea5e9' : isApiNode ? (d.color || '#6366f1') : meta?.color || '#666';
   const apiFields=(cfg._apiFields as Array<{key:string;label:string;field:string;fileType?:string;type:string}>)||[];
   const apiPorts=apiFields.filter(field=>field.fileType||['string','text','textarea'].includes(String(field.type).toLowerCase()))
+    .filter(field=>shouldShowInputPort(field.key, field.fileType || 'text', cfg))
     .map(field=>({id:field.key,label:field.label,type:field.fileType||'text'}));
   const segmentCount = Math.max(1, Math.min(100, Number(cfg.segmentCount) || 3));
   const dynamicStoryboardOutputs = d.nodeType === 'storyboardPrompt' ? Array.from({length:segmentCount},(_,i)=>{const n=String(i+1).padStart(2,'0');return [{id:`segment_${n}_first_prompt`,label:`片段${i+1} 首帧`,type:'text'},{id:`segment_${n}_last_prompt`,label:`片段${i+1} 尾帧`,type:'text'},{id:`segment_${n}_video_prompt`,label:`片段${i+1} 视频`,type:'text'},{id:`segment_${n}_first_ref`,label:`片段${i+1} 首帧图`,type:'image'},{id:`segment_${n}_last_ref`,label:`片段${i+1} 尾帧图`,type:'image'}]}).flat() : [];
   const runningHubContract = cfg.runningHubContract as RunningHubModelContract | undefined;
-  const runningHubPorts: PortSpec[] = isRunningHubNode && runningHubContract ? runningHubContract.params.filter(runningHubIsConnectableInput).flatMap(param => { const type = param.type === 'IMAGE' ? 'image' : param.type === 'VIDEO' ? 'video' : param.type === 'AUDIO' ? 'audio' : 'text'; const count = ['IMAGE','VIDEO','AUDIO'].includes(param.type) ? runningHubMediaSlotCount(param) : 1; return Array.from({length:count}, (_, index) => ({ id:count > 1 ? runningHubSlotKey(param.fieldKey,index) : param.fieldKey, label:count > 1 ? `${runningHubParamLabel(param)} ${index + 1}` : runningHubParamLabel(param), type })); }) : [];
-  const inputPorts:PortSpec[]=isRunningHubNode && runningHubContract ? runningHubPorts : isApiNode?(apiPorts.length?apiPorts:[{id:'input',label:'输入'}]):(meta?.inputs.filter(ip=>['text','image','video','audio'].includes(ip.type)).map(ip=>({id:ip.name,label:ip.label,type:ip.type}))||[]);
+  const runningHubPorts: PortSpec[] = isRunningHubNode && runningHubContract ? runningHubContract.params.filter(runningHubIsConnectableInput).flatMap(param => { const type = param.type === 'IMAGE' ? 'image' : param.type === 'VIDEO' ? 'video' : param.type === 'AUDIO' ? 'audio' : 'text'; const count = ['IMAGE','VIDEO','AUDIO'].includes(param.type) ? runningHubMediaSlotCount(param) : 1; return Array.from({length:count}, (_, index) => ({ id:count > 1 ? runningHubSlotKey(param.fieldKey,index) : param.fieldKey, label:count > 1 ? `${runningHubParamLabel(param)} ${index + 1}` : runningHubParamLabel(param), type })).filter(p => shouldShowInputPort(p.id, p.type, cfg)); }) : [];
+  const inputPorts:PortSpec[]=isRunningHubNode && runningHubContract ? runningHubPorts : isApiNode?(apiPorts.length?apiPorts:[{id:'input',label:'输入'}]):(meta?.inputs.filter(ip=>['text','image','video','audio'].includes(ip.type)).filter(ip=>shouldShowInputPort(ip.name, ip.type, cfg)).map(ip=>({id:ip.name,label:ip.label,type:ip.type}))||[]);
   const outputPorts:PortSpec[]=isRunningHubNode&&runningHubContract?[{id:runningHubContract.output_type === 'string' ? 'text' : runningHubContract.output_type,label:runningHubContract.output_type === 'string' ? '文本结果' : `输出 ${runningHubContract.output_type}`,type:runningHubContract.output_type === 'string' ? 'text' : runningHubContract.output_type}, ...(Boolean(cfg.returnLastFrame) ? runningHubOptionalOutputs(runningHubContract) : [])]:isRunningHubNode?[{id:'image',label:'图片',type:'image'},{id:'video',label:'视频',type:'video'},{id:'audio',label:'音频',type:'audio'},{id:'text',label:'文本',type:'text'}]:isApiNode?[{id:'output',label:'结果',type:'image'},{id:'image',label:'图片',type:'image'},{id:'video',label:'视频',type:'video'},{id:'audio',label:'音频',type:'audio'},{id:'text',label:'文本',type:'text'}]:d.nodeType==='storyboardPrompt'?[{id:'storyboard_list',label:'分镜列表',type:'text'},...dynamicStoryboardOutputs,{id:'error_warning',label:'错误/警告',type:'text'}]: (meta?.outputs.map(op=>({id:op.name,label:op.label,type:op.type}))||[]);
 
   const renderParam = (ip: any) => {
@@ -1674,7 +1829,7 @@ export const GenericNode = memo((p: NodeProps) => {
     sc(id,{selectedEffectIds:next, _knowledgePreview:result.constraints});
   };
 
-  return <NodeShell {...p} icon={icon} color={color} hasInput={false} hasOutput={false} inputs={inputPorts} outputs={outputPorts}>
+  return <NodeShell {...p} icon={icon} color={color} hasInput={false} hasOutput={false} inputs={inputPorts} outputs={outputPorts} compactBody={isApiNode || isRunningHubNode}>
     <div style={{fontSize:10,color:'#888',marginBottom:3,fontWeight:600}}>{isRunningHubNode ? 'RunningHub 工作流' : isApiNode ? apiLabel : meta?.label}</div>
     {isRunningHubNode && (() => { const contract = cfg.runningHubContract as RunningHubModelContract | undefined; const parameters = contract?.params || []; const field = (param: RunningHubParam) => { const value = cfg[param.fieldKey] ?? param.defaultValue ?? ''; const style = { width:'100%', padding:5, marginTop:4, background:'var(--theme-input)', color:'var(--theme-text)', border:'1px solid var(--theme-border)', borderRadius:5 }; const label = runningHubParamLabel(param); const help = runningHubParamHelp(param); if (param.type === 'LIST') return <label key={param.fieldKey} className="runninghub-param"><span>{label}</span><select value={String(value)} onChange={e=>sc(id,{[param.fieldKey]:e.target.value})} style={style}>{(param.options || []).map(option => <option key={option.value} value={option.value}>{option.description || option.descriptionEn || option.value}</option>)}</select>{help && <small>{help}</small>}</label>; if (param.type === 'BOOLEAN') return <label key={param.fieldKey} className="runninghub-param runninghub-param--boolean"><span><input type="checkbox" checked={Boolean(value)} onChange={e=>sc(id,{[param.fieldKey]:e.target.checked})}/> {label}</span>{help && <small>{help}</small>}</label>; if (['IMAGE','VIDEO','AUDIO'].includes(param.type)) { const count = runningHubMediaSlotCount(param); return <details key={param.fieldKey} className="runninghub-param runninghub-param--media"><summary><span>{label}{param.required ? ' *' : ''}{count > 1 ? `（${count} 个顺序槽位）` : ''}</span><em>{Array.from({length:count},(_,index)=>{const slotKey=count>1?runningHubSlotKey(param.fieldKey,index):param.fieldKey; return d.inputValues?.[slotKey] || cfg[slotKey] || (Array.isArray(d.inputValues?.[param.fieldKey]) && (d.inputValues?.[param.fieldKey] as unknown[])[index]) ? 1 : 0;}).reduce<number>((total,value)=>total+value,0)}/{count} 已就绪</em></summary>{help && <small>{help}</small>}<div className="runninghub-media-slots">{Array.from({length:count},(_,index)=>{const slotKey=count>1?runningHubSlotKey(param.fieldKey,index):param.fieldKey; return <div key={slotKey}><span>{count>1?`第 ${index+1} 项`:'输入'}：{d.inputValues?.[slotKey] ? '已从端口接收' : cfg[slotKey] ? '已选择文件' : '等待输入'}</span><button className="nodrag" onClick={() => { setRunningHubUploadField(slotKey); runningHubFileRef.current?.click(); }}>选择文件</button></div>;})}</div></details>; } return <label key={param.fieldKey} className="runninghub-param"><span>{label}</span><input type={['INT','FLOAT'].includes(param.type) ? 'number' : 'text'} value={String(value)} onChange={e=>sc(id,{[param.fieldKey]:['INT','FLOAT'].includes(param.type) ? Number(e.target.value) : e.target.value})} placeholder={param.fieldKey} style={style} />{help && <small>{help}</small>}</label>; }; return <div className="nodrag runninghub-node-config"><input ref={runningHubFileRef} hidden type="file" accept="image/*,video/*,audio/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (!file || !runningHubUploadField) return; const reader = new FileReader(); reader.onload = () => sc(id,{[runningHubUploadField]:String(reader.result || '')}); reader.readAsDataURL(file); }} /><div className="runninghub-node-badge">{contract ? `官方模型合同 · ${contract.category.replace(/^RunningHub\//, '')}` : 'Comfy 工作流'}</div>{contract ? <><div style={{fontSize:11,color:'var(--theme-text)'}}>{contract.name_cn || contract.display_name}</div><div style={{fontSize:9,color:'var(--theme-muted)',marginTop:3}}>输出：{contract.output_type} · endpoint 由官方 registry 固定 · 配置自动保存</div>{parameters.filter(param => !['IMAGE','VIDEO','AUDIO'].includes(param.type)).map(field)}<div className="runninghub-media-group">{parameters.filter(param => ['IMAGE','VIDEO','AUDIO'].includes(param.type)).map(field)}</div></> : <><input value={String(cfg.workflowId || '')} onChange={e=>sc(id,{workflowId:e.target.value})} placeholder="RunningHub 工作流 ID（宽选择区）" style={{width:'100%',padding:6}} /><textarea value={String(cfg.workflowNodeMap || '')} onChange={e=>sc(id,{workflowNodeMap:e.target.value})} placeholder="节点字段映射 JSON（nodeId/fieldName，自动保存）" style={{width:'100%',minHeight:64,marginTop:5,padding:6,background:'var(--theme-input)',color:'var(--theme-text)',border:'1px solid var(--theme-border)',borderRadius:5}} /></>}</div>; })()}
      {d.nodeType === 'cinematographyKnowledge' && <div className="nodrag" style={{maxHeight:155,overflow:'auto',marginBottom:4}}>
@@ -1746,8 +1901,10 @@ export const StoryboardRenderNode = memo((p: NodeProps) => {
   const providerOptions = getPaidProvidersForCapability('text-to-image').map(item => item.id);
   const configuredProvider = String(cfg.provider || providerOptions[0] || '');
   const providerSettings = useSettingsStore.getState().paidApiProviders?.[configuredProvider as keyof ReturnType<typeof useSettingsStore.getState>['paidApiProviders']];
-  const modelOptions = getPaidModelsForAdapter(configuredProvider, 'text-to-image');
-  const selectedModel = String(cfg.model || providerSettings?.selectedModel || modelOptions[0]?.id || '');
+  const selectedInSettings = providerSettings?.selectedModel || '';
+  const baseImageModels = getPaidModelsForAdapter(configuredProvider, 'text-to-image');
+  const modelOptions = selectedInSettings && !baseImageModels.some(m => m.id === selectedInSettings) ? [...baseImageModels, { id: selectedInSettings, label: selectedInSettings, capabilities: [] }] : baseImageModels;
+  const selectedModel = String(cfg.model || selectedInSettings || modelOptions[0]?.id || '');
   const variants = Math.max(1, Math.min(4, Number(cfg.variants) || 1));
   const generateVideo = cfg.generateVideo === true;
   const videoModelOptions = getPaidModelsForAdapter(configuredProvider, 'image-to-video');

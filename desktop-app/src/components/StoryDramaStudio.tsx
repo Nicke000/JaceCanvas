@@ -13,7 +13,7 @@ import { workflowFields } from '@/utils/workflowNode';
 import { cachePaidMedia } from '@/stores/canvasStore';
 import { addGenerationHistory } from '@/utils/generationHistory';
 import { downloadMedia } from '@/utils/downloadMedia';
-import { getPaidProvidersForCapability, getPaidModelsForAdapter, PAID_API_ADAPTERS } from '@/config/paidApiAdapters';
+import { getPaidProvidersForCapability, getPaidModelsForAdapter, getPaidAdapter, PAID_API_ADAPTERS } from '@/config/paidApiAdapters';
 import { getAllStyles } from '@/config/stylePresets';
 import { CINEMATOGRAPHY_EFFECTS, EFFECT_GROUPS, formatEffects } from '@/config/cinematographyKnowledge';
 import { CAMERA_MOTIONS, cameraMotionPrompt } from '@/config/cameraMotions';
@@ -581,7 +581,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
       const model = usedModel || imgProviderOptions[0]?.id || profile.selectedModel || '';
       if (!model) throw new Error('请选择图片模型');
       const refImage = refImageOverride || charRefs[0] || undefined;
-      const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, refImage ? { type: 'image-to-image', imageUrl: refImage, prompt } : { type: 'text-to-image', prompt });
+      const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: getPaidAdapter(String(profile.provider))?.authMode }, refImage ? { type: 'image-to-image', imageUrl: refImage, prompt } : { type: 'text-to-image', prompt });
       if (!result.url) throw new Error('图片接口未返回地址');
       const url = await cachePaidMedia(result.url, 'image');
       addGenerationHistory({ id: 'studio-img-' + Date.now(), nodeId: 'story-drama-studio', nodeName: '短剧工作室·' + tag, nodeType: 'studioImage', params: { prompt: prompt.slice(0, 120), model }, resultUrl: url, results: [{ type: 'image', url }], status: 'success', timestamp: Date.now() });
@@ -724,7 +724,7 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     const endImageUrl = vidMode === 'first-last' ? (endShot?.remoteUrl || endShot?.imageUrl || '') : '';
     const camPrompt = cameraMotionPrompt(vidCameraMotion);
     const finalPrompt = camPrompt ? `${prompt}, ${camPrompt}` : prompt;
-    const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer' }, imageUrl ? (endImageUrl ? { type: 'image-to-video', imageUrl, lastImageUrl: endImageUrl, prompt: finalPrompt, duration } : { type: 'image-to-video', imageUrl, prompt: finalPrompt, duration }) : { type: 'text-to-video', prompt: finalPrompt, duration });
+    const result = await callPaidApi({ provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model, region: profile.region, workspaceId: profile.workspaceId, authMode: getPaidAdapter(String(profile.provider))?.authMode }, imageUrl ? (endImageUrl ? { type: 'image-to-video', imageUrl, lastImageUrl: endImageUrl, prompt: finalPrompt, duration } : { type: 'image-to-video', imageUrl, prompt: finalPrompt, duration }) : { type: 'text-to-video', prompt: finalPrompt, duration });
     if (!result.url) throw new Error('视频接口未返回地址');
     const cachedV2 = await cachePaidMedia(result.url, 'video');
     addGenerationHistory({ id: 'studio-vid-' + Date.now(), nodeId: 'story-drama-studio', nodeName: '短剧工作室·逐镜视频', nodeType: 'studioVideo', params: { prompt: prompt.slice(0, 120), model }, resultUrl: cachedV2, results: [{ type: 'video', url: cachedV2 }], status: 'success', timestamp: Date.now() });

@@ -38,7 +38,7 @@ export interface PaidApiNodeSettings {
   videoPath?: string;
   taskPath?: string;
   capabilityPath?: string;
-  authMode?: 'bearer' | 'x-api-key' | 'query-key' | 'none';
+  authMode?: 'bearer' | 'x-api-key' | 'query-key' | 'x-key' | 'key' | 'none';
   /** 仅 custom/gateway 使用：用户明确声明该接口可用的扩展能力。 */
   enabledCapabilities?: string[];
   selectedCapability?: string;
@@ -214,6 +214,22 @@ function load(): ApiSettings {
       const current = loaded.paidApiProviders?.[provider];
       return [provider, { ...DEFAULT_PAID_PROVIDERS[provider], ...(current && typeof current === 'object' ? current : {}) }];
     })) as ApiSettings['paidApiProviders'];
+    // 旧「付费 API 档案」迁移到节点读取的 paidApiProviders（打通新旧两套配置；'custom'/'gateway' 视作 OpenAI 兼容）
+    const LEGACY_TO_ADAPTER: Record<string, PaidProviderId> = {
+      custom: 'openaiCompatible', gateway: 'openaiCompatible', openai: 'openai', google: 'gemini',
+      kling: 'kling', minimax: 'minimax', jimeng: 'volcengine', tongyi: 'bailian',
+    };
+    for (const prof of loaded.paidApiProfiles || []) {
+      const adapter = LEGACY_TO_ADAPTER[String(prof?.provider || '')];
+      const t = adapter ? (loaded.paidApiProviders as Record<string, any>)?.[adapter] : undefined;
+      if (adapter && t && !t.apiKey && prof?.apiKey) {
+        (loaded.paidApiProviders as any)[adapter] = {
+          ...t, apiKey: prof.apiKey, baseUrl: String(prof.baseUrl || t.baseUrl || ''),
+          models: Array.isArray(prof.models) && prof.models.length ? prof.models : t.models,
+          selectedModel: String(prof.selectedModel || t.selectedModel || ''),
+        };
+      }
+    }
     loaded.runningHub = {
       ...DEFAULT.runningHub,
       ...(loaded.runningHub && typeof loaded.runningHub === 'object' ? loaded.runningHub : {}),

@@ -6,11 +6,12 @@ import { NODE_CONFIGS } from '@/types';
 import { generate, pollResult, uploadFile, getApiBase, bridgeMediaToInput, cancelComfyTask, submitLocalWorkflow, uploadImageToComfy, uploadMediaToComfy, pollLocalWorkflow, type ResultItem } from '@/services/comfyui.service';
 import { createStandardTask, createComfyWorkflowTask, prepareRunningHubInputs, waitRunningHubTask } from '@/services/runninghub.service';
 import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
-import { getPaidModelsForAdapter } from '@/config/paidApiAdapters';
+import { getPaidModelsForAdapter, getPaidAdapter } from '@/config/paidApiAdapters';
 import { generateId, expandPromptVariants } from '@/utils';
 import { applyWorkflowParams, workflowImageInputs, workflowPorts, isPositivePromptField, isNegativePromptField } from '@/utils/comfyWorkflow';
 import { portTypeColor } from '@/utils/portColor';
 import { NODE_MAP } from '@/config/registry';
+import { playNodeDoneSound } from '@/utils/nodeSound';
 import { mediaTypeForFile } from '@/utils/fileDrop';
 import { sendChat, type ChatTurn } from '@/services/chat.service';
 import { formatEffects, CINEMATOGRAPHY_EFFECTS } from '@/config/cinematographyKnowledge';
@@ -277,7 +278,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
     // 连线颜色按端口数据类型区分（与连接点一致）；查不到类型时回退到源节点色
     const sPortType = source ? getDynamicPortType(source, c.sourceHandle, true) : undefined;
     const edgeColor = sPortType ? portTypeColor(sPortType) : (source?.data.color || '#7c6df2');
-    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', className: `edge--${String(sPortType || 'default')}`, animated: true, style: { stroke: edgeColor, strokeWidth: 2.2 }, markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: edgeColor } } as Edge;
+    const edge = { ...c, id: `e-${c.source}-${c.target}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type:'deletable', className: `edge--${String(sPortType || 'default')}`, animated: true, style: { stroke: edgeColor, strokeWidth: 2.2 } } as Edge;
     const sourceValues=source?.data.outputValues||{};
     const sourceKey=c.sourceHandle||''; const targetKey=c.targetHandle||sourceKey||'input';
     const scriptId=sourceKey.startsWith('script-')?sourceKey.slice(7):'';
@@ -336,8 +337,37 @@ export const useCanvasStore = create<Store>((set, get) => ({
     return nodeId;
   },
 
-  updateNodeData: (id, d) => set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, ...d, inputValues: d.inputValues ? { ...(n.data.inputValues || {}), ...d.inputValues } : n.data.inputValues, updatedAt: Date.now() } } : n) }),
-  updateNodeStyle: (id, style) => set({ nodes: get().nodes.map(n => n.id === id ? { ...n, style: { ...n.style, ...style } } : n) }),
+  updateNodeData: (id, d) => set({ nodes: get().nodes.map(n => {
+    if (n.id !== id) return n;
+    const nextStatus = d.status;
+    // 状态切换为 success/error 时播放完成提示音（仅在真正发生变更时，避免重复渲染误触发）。
+    if ((nextStatus === 'success' || nextStatus === 'error') && n.data.status !== nextStatus) playNodeDoneSound();
+    return { ...n, data: { ...n.data, ...d, inputValues: d.inputValues ? { ...(n.data.inputValues || {}), ...d.inputValues } : n.data.inputValues, updatedAt: Date.now() } };
+  }) }),
+  updateNodeStyle: (id, style) => set({ nodes: get().nodes.map(n => {
+    if (n.id !== id) return n;
+    const next = { ...n, style: { ...n.style, ...style } };
+    // React Flow 的外层用 measured/width/height 决定节点盒子；同步更新它，否则自动高度/手动缩放不会反映到节点盒子上。
+    // 传入 height/width 为 undefined 时清空固定尺寸，让 React Flow 回退到 DOM 内容原生测量（用于自动高度）。
+    const clearH = style.height == null;
+    const clearW = style.width == null;
+    if (clearH || clearW) {
+      const m = { ...(next.measured || {}) };
+      const st = { ...next.style };
+      if (clearH) { delete next.height; delete next.initialHeight; delete m.height; delete st.height; }
+      if (clearW) { delete next.width; delete next.initialWidth; delete m.width; delete st.width; }
+      next.measured = m;
+      next.style = st;
+    } else {
+      const w = Number(style.width);
+      const h = Number(style.height);
+      next.measured = { ...(next.measured || {}), ...(style.width != null ? { width: w } : {}), ...(style.height != null ? { height: h } : {}) };
+      // React Flow 外层盒子的最终尺寸取自 node.width/node.height 顶层字段，必须同步。
+      if (style.width != null) next.width = w;
+      if (style.height != null) next.height = h;
+    }
+    return next;
+  }) as AppNode[] }),
 
   deleteSelectedNode: () => {
     const { nodes, selectedNodeId } = get();
@@ -498,6 +528,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
 
   setNodeStatus: (id, status, error) => {
     set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, status, error, updatedAt: Date.now() } } : n) });
+    if (status === 'success' || status === 'error') playNodeDoneSound();
   },
 
   pauseNode: (id) => {
@@ -818,7 +849,17 @@ export const useCanvasStore = create<Store>((set, get) => ({
         // 节点未显式选厂商时：自动用第一个已配置 API Key 的厂商（避免默认 openai 但用户配的是别的）
         const configuredProvider = Object.entries((paid.paidApiProviders || {}) as Record<string, { apiKey?: string }>).find(([, p]) => p?.apiKey)?.[0] || '';
         const provider = providerRaw || configuredProvider;
-        const profile = paid.paidApiProviders?.[provider as keyof typeof paid.paidApiProviders];
+        let profile = paid.paidApiProviders?.[provider as keyof typeof paid.paidApiProviders];
+        // 回退：供应商配置为空时，尝试旧「付费 API 档案」或全局单供应商（打通旧面板 & 第三方自定义），避免"配置了但节点读不到"
+        if (!profile?.apiKey) {
+          const legacyMap: Record<string, string> = { custom: 'openaiCompatible', gateway: 'openaiCompatible', openai: 'openai', google: 'gemini', kling: 'kling', minimax: 'minimax', jimeng: 'volcengine', tongyi: 'bailian' };
+          const prof = (paid.paidApiProfiles || []).find(p => p?.apiKey && (legacyMap[p.provider] === provider || p.provider === provider));
+          if (prof) {
+            profile = { provider: provider as any, apiKey: prof.apiKey, baseUrl: String(prof.baseUrl || ''), models: Array.isArray(prof.models) ? prof.models : [], selectedModel: String(prof.selectedModel || '') };
+          } else if (String(paid.paidApiProvider) === provider && paid.paidApiKey) {
+            profile = { provider: provider as any, apiKey: paid.paidApiKey, baseUrl: String(paid.paidApiBaseUrl || ''), models: Array.isArray(paid.paidApiModels) ? paid.paidApiModels : [], selectedModel: String(paid.paidApiSelectedModel || '') } as any;
+          }
+        }
         if (!provider || !profile?.apiKey) throw new Error(`请先在设置 → 付费 API 厂商配置中填写 API Key（当前节点厂商：${providerRaw || '未选择'}${configuredProvider ? `，已配置可用：${configuredProvider}` : ''}）`);
         const variants = Math.max(1, Math.min(8, Number(config.variants) || 1));
         const styleId = String(config.style || '');
@@ -848,11 +889,15 @@ export const useCanvasStore = create<Store>((set, get) => ({
           // 每次执行重新展开占位符 {a|b|c}，得到不同变体
           const prompt = expandPromptVariants(rawPrompt);
           const nodeCfg = (useSettingsStore.getState().paidApiNodes as any)?.[nt];
-          const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: String(config.model || profile.selectedModel || ''), region: profile.region, workspaceId: profile.workspaceId, authMode: profile.provider === 'gemini' ? 'query-key' : 'bearer', ...(nodeCfg?.imagePath ? { imagePath: nodeCfg.imagePath } : {}), ...(nodeCfg?.videoPath ? { videoPath: nodeCfg.videoPath } : {}), ...(nodeCfg?.taskPath ? { taskPath: nodeCfg.taskPath } : {}), ...(nodeCfg?.capabilityPath ? { capabilityPath: nodeCfg.capabilityPath } : {}) }, {
+          const adapterAuthMode = getPaidAdapter(String(profile.provider))?.authMode;
+          const result = await callPaidApi({ provider: profile.provider, apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: String(config.model || profile.selectedModel || ''), region: profile.region, workspaceId: profile.workspaceId, authMode: nodeCfg?.authMode || adapterAuthMode, ...(nodeCfg?.imagePath ? { imagePath: nodeCfg.imagePath } : {}), ...(nodeCfg?.videoPath ? { videoPath: nodeCfg.videoPath } : {}), ...(nodeCfg?.taskPath ? { taskPath: nodeCfg.taskPath } : {}), ...(nodeCfg?.capabilityPath ? { capabilityPath: nodeCfg.capabilityPath } : {}) }, {
             type,
             prompt,
             negativePrompt: String(config.negativePrompt || config.negative_prompt || ''),
             imageUrl: needsImage ? imageUrl : undefined,
+            images: (() => { const iv = node.data.inputValues || {}; return [iv.image, iv.image2, iv.image3, iv.image4, iv.image5, iv.image6, iv.image7, iv.image8].filter((x: unknown): x is string => typeof x === 'string' && !!x).slice(0, 10); })(),
+            videos: (() => { const iv = node.data.inputValues || {}; return [iv.video, iv.video2, iv.video3].filter((x: unknown): x is string => typeof x === 'string' && !!x) || undefined; })(),
+            audios: (() => { const iv = node.data.inputValues || {}; return [iv.audio, iv.audio2].filter((x: unknown): x is string => typeof x === 'string' && !!x) || undefined; })(),
             lastImageUrl: lastImageUrl || undefined,
             videoUrl: videoUrl || undefined,
             audioUrl: audioUrl || undefined,
@@ -864,6 +909,8 @@ export const useCanvasStore = create<Store>((set, get) => ({
             frameRate: isVideo ? Number(config.frameRate) || 24 : undefined,
             seed: v > 0 && variants > 1 ? Math.floor(Math.random() * 1e15) : Number.isFinite(Number(config.seed)) ? Number(config.seed) : undefined,
             voiceId: String(config.voice_id || '') || undefined,
+            cfgScale: typeof config.cfgScale === 'number' ? config.cfgScale : undefined,
+            variants: 1,
           });
           if (!result.url) throw new Error('接口已返回成功状态，但未提供可访问的生成结果地址');
           // 图片/音频/3D 结果自动下载到本地缓存（Flux 等签名 URL 有效期短）；未主动保存 48 小时后由主进程清理
@@ -921,7 +968,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
           for (let v = 0; v < variants; v++) {
             const prompt = expandPromptVariants(String(promptText));
             get().updateNodeData(id, { content: `正在生成第 ${i + 1}/${segments.length} 镜${variants > 1 ? ` · 变体 ${v + 1}/${variants}` : ''}`, status: 'running', progress: Math.round(((i * variants + v) / (segments.length * variants)) * 99) });
-            const result = await callPaidApi({ provider: renderProfile.provider, apiKey: renderProfile.apiKey, baseUrl: renderProfile.baseUrl, model: renderModel, region: renderProfile.region, workspaceId: renderProfile.workspaceId, authMode: renderProfile.provider === 'gemini' ? 'query-key' : 'bearer' }, {
+            const result = await callPaidApi({ provider: renderProfile.provider, apiKey: renderProfile.apiKey, baseUrl: renderProfile.baseUrl, model: renderModel, region: renderProfile.region, workspaceId: renderProfile.workspaceId, authMode: getPaidAdapter(String(renderProfile.provider))?.authMode }, {
               type: 'text-to-image', prompt,
             });
             if (!result.url) throw new Error(`第 ${i + 1} 镜没有返回结果`);
@@ -934,7 +981,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
           if (generateVideo) {
             const videoPrompt = (useEnglish ? (seg?.videoPromptEn || seg?.videoPrompt || '') : (seg?.videoPrompt || '')) || promptText;
             get().updateNodeData(id, { content: `正在生成第 ${i + 1}/${segments.length} 镜视频…`, status: 'running', progress: Math.min(99, Math.round(((i + 1) / segments.length) * 90 + 5)) });
-            const vResult = await callPaidApi({ provider: renderProfile.provider, apiKey: renderProfile.apiKey, baseUrl: renderProfile.baseUrl, model: videoModel, region: renderProfile.region, workspaceId: renderProfile.workspaceId, authMode: renderProfile.provider === 'gemini' ? 'query-key' : 'bearer' }, {
+            const vResult = await callPaidApi({ provider: renderProfile.provider, apiKey: renderProfile.apiKey, baseUrl: renderProfile.baseUrl, model: videoModel, region: renderProfile.region, workspaceId: renderProfile.workspaceId, authMode: getPaidAdapter(String(renderProfile.provider))?.authMode }, {
               type: 'image-to-video', imageUrl: shotResults[0], prompt: String(videoPrompt), duration: Number(seg?.duration) || 5,
             });
             if (!vResult.url) throw new Error(`第 ${i + 1} 镜视频没有返回结果`);
@@ -1183,7 +1230,15 @@ export const useCanvasStore = create<Store>((set, get) => ({
               const m = String(input_values[f.key]).match(/^\s*(-?\d+(?:\.\d+)?)/);
               if (m) n = Number(m[1]);
             }
-            if (Number.isFinite(n)) input_values[f.key] = n;
+            if (Number.isFinite(n)) {
+              input_values[f.key] = n;
+            } else {
+              // 文本被误连到数值字段（如 start_time/end_time 收到文字）：不是合法数字就移除，
+              // 避免把文字传给服务器导致 int() 解析崩溃。回退用字段默认值（若无默认则移除）。
+              const def = (config as any)[f.key];
+              if (def != null && /^\s*-?\d+(?:\.\d+)?\s*$/.test(String(def))) input_values[f.key] = Number(def);
+              else delete input_values[f.key];
+            }
           }
         });
         const fields = (config._apiFields as Array<{key:string;fileType?:string}>) || [];
@@ -1218,6 +1273,17 @@ export const useCanvasStore = create<Store>((set, get) => ({
           return direct==null?[]:[String(direct)];
         });
         textFields.forEach((field,index)=>{const isNeg=/negative/i.test(field.key);const portEdge = get().edges.find(e => e.target === id && (e.sourceHandle === field.key || e.sourceHandle === `text-${index}` || (!isNeg && e.sourceHandle === 'text')));const portSource = portEdge ? get().nodes.find(n => n.id === portEdge.source) : undefined;const portText = portSource ? String(portSource.data.outputValues?.text ?? portSource.data.config?.text ?? '') : '';const value = upstream[field.key] ?? portText ?? (isNeg ? upstream['negative'] : upstream[`text-${index}`] ?? upstream['text']) ?? texts[index];if (value != null && String(value) !== '') input_values[field.key]=`${settingText ? settingText+'\n\n' : ''}${String(value)}`});
+        // 最终安全兜底：数值字段无论从哪条路径（config / 上游文本 / 端口）混入非数字文本，
+        // 一律剔除或回退默认值，避免把文字传给服务器导致 int() 解析崩溃（如 start_time/end_time 收到文字）。
+        ((config._apiFields as Array<{ key: string; field?: string; type?: string }>) || []).forEach((f) => {
+          const kind = String(f.type || '').toLowerCase();
+          const isNum = ['number', 'int', 'float', 'integer'].includes(kind) || /(start_time|end_time|start_end|frame|fps|seed|width|height|count|num_|loop|steps?|cfg|strength|duration|batch)/i.test(String(f.field || f.key));
+          if (isNum && input_values[f.key] != null && !Number.isFinite(Number(String(input_values[f.key]).trim()))) {
+            const def = (config as any)[f.key];
+            if (def != null && /^\s*-?\d+(?:\.\d+)?\s*$/.test(String(def))) input_values[f.key] = Number(def);
+            else delete input_values[f.key];
+          }
+        });
 
 
       } else if (nt === 'imageToImage') {

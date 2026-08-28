@@ -7,13 +7,13 @@ import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.servi
  * 文档只有动态入口、没有可审计接口的厂商，不会因为名称相似而自动获得扩展能力。
  */
 export const VERIFIED_PAID_CAPABILITIES: Record<PaidCapability, string[]> = {
-  'text-to-speech': ['custom', 'gateway', 'minimax', 'elevenlabs'],
+  'text-to-speech': ['custom', 'gateway', 'openaiCompatible', 'minimax', 'elevenlabs'],
   'text-to-3d': ['custom', 'gateway', 'meshy'],
   'image-to-3d': ['custom', 'gateway', 'meshy'],
-  'text-to-image': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
-  'image-to-image': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
-  'text-to-video': ['custom', 'gateway', 'openai', 'google', 'minimax', 'runway', 'kling', 'tongyi', 'zhipu', 'jimeng'],
-  'image-to-video': ['custom', 'gateway', 'openai', 'google', 'minimax', 'runway', 'kling', 'tongyi', 'zhipu', 'jimeng'],
+  'text-to-image': ['custom', 'gateway', 'openaiCompatible', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
+  'image-to-image': ['custom', 'gateway', 'openaiCompatible', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
+  'text-to-video': ['custom', 'gateway', 'openaiCompatible', 'openai', 'google', 'minimax', 'runway', 'kling', 'tongyi', 'zhipu', 'jimeng'],
+  'image-to-video': ['custom', 'gateway', 'openaiCompatible', 'openai', 'google', 'minimax', 'runway', 'kling', 'tongyi', 'zhipu', 'jimeng'],
   'first-frame-to-image': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'stability'],
   'first-frame-to-video': ['custom', 'gateway', 'openai', 'google', 'minimax', 'tongyi', 'zhipu', 'jimeng', 'kling', 'runway'],
   // Runway 与 MiniMax 的本地官方导出明确包含异步视频/首尾帧相关接口；其他厂商等待文档补齐。
@@ -148,7 +148,7 @@ const PAID_MODEL_RULES: Partial<Record<PaidCapability, Partial<Record<string, Re
 export function getPaidModelsForCapability(provider: string, capability: PaidCapability, models: string[]): string[] {
   if (!models.length) return [];
   const normalized = normalizePaidProvider(provider);
-  if (normalized === 'custom' || normalized === 'gateway') return models;
+  if (normalized === 'custom' || normalized === 'gateway' || normalized === 'openaiCompatible') return models;
   const rule = PAID_MODEL_RULES[capability]?.[normalized];
   if (rule) return models.filter(model => rule.test(model));
   // 只有能力规则明确列出模型时才显示。不能仅凭“video/image/wan”等词推断

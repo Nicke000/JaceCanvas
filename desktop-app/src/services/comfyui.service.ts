@@ -184,7 +184,14 @@ async function uploadViaMain(url: string, b64: string, filename: string, fieldNa
 export async function uploadFile(file: File, serverId?: string): Promise<string> {
   const b64 = await blobToB64(file);
   const name = file.name || ('upload_' + Date.now() + '.bin');
-  return await uploadViaMain(getApiBase(serverId) + '/api/comfy/upload/file', b64, name, 'file', file.type || 'application/octet-stream');
+  const base = getApiBase(serverId).replace(/\/+$/, '');
+  try {
+    // 主控平台代理端点（/api/comfy/upload/file）
+    return await uploadViaMain(base + '/api/comfy/upload/file', b64, name, 'file', file.type || 'application/octet-stream');
+  } catch {
+    // 原生 ComfyUI 没有 /api/comfy 代理端点（404），回退官方 /upload/image（该端点可接收任意文件类型）
+    return await uploadViaMain(base + '/upload/image', b64, name, 'image', file.type || 'application/octet-stream');
+  }
 }
 
 const bridgedFileCache = new Map<string, Promise<string>>();

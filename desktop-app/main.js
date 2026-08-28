@@ -886,6 +886,67 @@ ipcMain.handle("ffmpeg-trim-video", async (_event, payload) => {
   return { clip: pathToFileURL(clip).toString(), firstFrame: pathToFileURL(first).toString(), lastFrame: pathToFileURL(last).toString(), clipPath: clip, firstPath: first, lastPath: last };
 });
 
+// 音频剪辑：截取音频片段的起止段时间，输出 MP3（可含/不含原视频画面）。
+ipcMain.handle("ffmpeg-trim-audio", async (_event, payload) => {
+  const binary = findFfmpeg();
+  if (!binary) throw new Error("未找到 FFmpeg。请安装 FFmpeg 并加入 PATH，或将 ffmpeg.exe 放入应用 assets\\ffmpeg 目录");
+  const input = await localMediaPathAny(payload?.input);
+  if (!input || !fs.existsSync(input)) throw new Error("输入音频文件不存在");
+  let startTime = Math.max(0, Number(payload?.startTime) || 0);
+  let endTime = Number(payload?.endTime);
+  if (endTime == null || !Number.isFinite(endTime) || endTime <= startTime) {
+    // 未给出结束时间：探测音频总时长（解析 ffmpeg stderr 的 Duration: HH:MM:SS.xx），默认取到结尾
+    try {
+      const dur = await ffmpegProbeDuration(binary, input);
+      if (dur != null && Number.isFinite(dur)) endTime = dur;
+    } catch { /* 探测失败则要求显式结束时间 */ }
+  }
+  if (endTime == null || !Number.isFinite(endTime) || endTime <= startTime) throw new Error("请设置有效的音频结束时间");
+  const duration = endTime - startTime;
+  const outDir = path.join(app.getPath("userData"), "video-edits");
+  fs.mkdirSync(outDir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clip = path.join(outDir, `${id}-audio.mp3`);
+  // 音频从时间轴截取：-ss 起点、-t 时长；按音频重采样为 stereo mp3。
+  await runFfmpeg(binary, ["-y", "-ss", String(startTime), "-i", input, "-t", String(duration), "-vn", "-c:a", "libmp3lame", "-q:a", "2", clip]);
+  return { clip: pathToFileURL(clip).toString(), clipPath: clip };
+});
+
+// 本地媒体路径：兼容 file/http/data:，data URL 解码到临时文件（ffmpegInput）
+async function localMediaPathAny(value) {
+  if (!value || typeof value !== "string") throw new Error("输入音频路径为空");
+  if (/^data:/i.test(value)) {
+    const comma = value.indexOf(",");
+    if (comma < 0) throw new Error("无效的 data URL");
+    const meta = value.slice(5, comma);
+    const b64 = value.slice(comma + 1);
+    const extMatch = meta.match(/audio\/(\w+)/);
+    const ext = extMatch ? `.${extMatch[1].replace("mpeg", "mp3").replace("x-wav", "wav")}` : ".mp3";
+    const buffer = /;base64/i.test(meta) ? Buffer.from(b64, "base64") : Buffer.from(decodeURIComponent(b64), "utf8");
+    const srcDir = path.join(app.getPath("userData"), "ffmpeg-input");
+    fs.mkdirSync(srcDir, { recursive: true });
+    const local = path.join(srcDir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    fs.writeFileSync(local, buffer);
+    return local;
+  }
+  return localMediaPath(value);
+}
+
+function ffmpegProbeDuration(binary, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, ["-hide_banner", "-i", input], { windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", data => { stderr += String(data); });
+    child.on("error", reject);
+    child.on("close", () => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!m) return resolve(null);
+      const h = Number(m[1]), mm = Number(m[2]), s = Number(m[3]);
+      resolve(h * 3600 + mm * 60 + s);
+    });
+  });
+}
+
 // 时间线合成：分镜视频（+配音）按顺序合成为完整成片
 ipcMain.handle("ffmpeg-compose", async (_event, payload) => {
   const binary = findFfmpeg();
@@ -1112,17 +1173,21 @@ ipcMain.on("open-devtools", () => {
 // ============================================================
 // ⚠️ 未捕获异常处理（全局安全网）
 // ============================================================
+let fatalHandling = false;
 process.on("uncaughtException", (error) => {
-  console.error("[Fatal] 未捕获异常:", error);
-  logCrash({ source: "main", type: "uncaughtException", message: error?.message || String(error), stack: error?.stack });
+  if (fatalHandling) return;
+  fatalHandling = true;
+  try { console.error("[Fatal] 未捕获异常:", error); } catch { /* 避免 EPIPE 递归死循环 */ }
+  try { logCrash({ source: "main", type: "uncaughtException", message: error?.message || String(error), stack: error?.stack }); } catch { /* 记录失败不影响进程 */ }
   if (!isQuitting) {
-    dialog.showErrorBox("应用错误", `发生了意外错误:\n${error.message}\n\n应用将继续运行，但建议保存工作并重启。`);
+    try { dialog.showErrorBox("应用错误", `发生了意外错误:\n${String(error?.message || error)}\n\n应用将继续运行，但建议保存工作并重启。`); } catch { /* 对话框失败忽略 */ }
   }
+  fatalHandling = false;
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("[Fatal] 未处理的 Promise 拒绝:", reason);
-  logCrash({ source: "main", type: "unhandledRejection", reason: String(reason) });
+  try { console.error("[Fatal] 未处理的 Promise 拒绝:", reason); } catch { /* 避免 EPIPE 递归死循环 */ }
+  try { logCrash({ source: "main", type: "unhandledRejection", reason: String(reason) }); } catch { /* 记录失败不影响进程 */ }
 });
 
 const SANDBOX_ROOT = () => path.join(app.getPath("userData"), "source-sandbox");

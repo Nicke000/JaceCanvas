@@ -14,35 +14,47 @@ export const PaidApiSettings: React.FC = () => {
   const [baseUrl, setBaseUrl] = useState('');
   const [region, setRegion] = useState('cn-beijing');
   const [workspaceId, setWorkspaceId] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [liveModels, setLiveModels] = useState<string[]>([]);
+  const availableModels = useMemo(() => Array.from(new Set([
+    ...liveModels,
+    ...(current.models || []),
+    ...adapter.models.map(item => item.id),
+  ])).filter(Boolean), [liveModels, current.models, adapter.models]);
 
   useEffect(() => {
     setApiKey(current.apiKey || '');
     setBaseUrl(current.baseUrl || adapter.defaultBaseUrl);
     setRegion(current.region || 'cn-beijing');
     setWorkspaceId(current.workspaceId || '');
-  }, [provider, current.apiKey, current.baseUrl, current.region, current.workspaceId, adapter.defaultBaseUrl]);
+    setSelectedModel(current.selectedModel || '');
+  }, [provider, current.apiKey, current.baseUrl, current.region, current.workspaceId, current.selectedModel, adapter.defaultBaseUrl]);
 
-  const saveProvider = () => {
-    if (!apiKey.trim()) { message.warning('请填写 API 密钥后再保存'); return; }
+  const persistProvider = (model: string, models = availableModels) => {
     settings.setPaidApiProvider(provider, {
       apiKey: apiKey.replace(/\s+/g, ''),
       baseUrl: baseUrl.trim() || adapter.defaultBaseUrl,
       region: region as any,
       workspaceId: workspaceId.trim(),
-      models: liveModels.length ? liveModels : adapter.models.map(item => item.id),
-      selectedModel: (liveModels.length && current.selectedModel && liveModels.includes(current.selectedModel)) ? current.selectedModel : (liveModels[0] || current.selectedModel || adapter.models[0]?.id || ''),
+      models,
+      selectedModel: model,
     });
-    message.success(`${adapter.label} 配置已保存`);
+  };
+  const saveProvider = () => {
+    if (!apiKey.trim()) { message.warning('请填写 API 密钥后再保存'); return; }
+    const model = selectedModel || availableModels[0] || '';
+    persistProvider(model);
+    setSelectedModel(model);
+    message.success(`${adapter.label} 配置已保存，节点将使用「${model || '默认模型'}」`);
   };
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [liveModels, setLiveModels] = useState<string[]>([]);
   const handleTest = async () => {
     if (!apiKey.trim()) { message.warning('请先填写 API Key'); return; }
     setTesting(true); setTestMsg(null);
     try {
-      const r = await testPaidConnection({ provider, baseUrl: baseUrl.trim() || adapter.defaultBaseUrl, apiKey: apiKey.trim(), model: adapter.models[0]?.id || '' });
+      const r = await testPaidConnection({ provider, baseUrl: baseUrl.trim() || adapter.defaultBaseUrl, apiKey: apiKey.trim(), model: selectedModel || availableModels[0] || '', authMode: adapter.authMode });
       setTestMsg({ ok: r.ok, msg: r.message });
     } catch (e: any) { setTestMsg({ ok: false, msg: e.message || '连接失败' }); }
     finally { setTesting(false); }
@@ -56,11 +68,15 @@ export const PaidApiSettings: React.FC = () => {
       if (!list?.length) message.info('未拉取到模型列表（可能无需拉取或路径不同）');
       else {
         // 当前所选模型不在新列表（已下线/改名）→ 自动切换到列表第一个并保存，避免节点执行 404
-        const curModel = settings.paidApiProviders?.[provider]?.selectedModel || '';
-        if (curModel && list.length && !list.includes(curModel)) {
-          settings.setPaidApiProvider(provider, { ...settings.paidApiProviders[provider], models: list, selectedModel: list[0] });
-          message.warning(`所选模型「${curModel}」已不在列表，已自动切换为「${list[0]}」（可在下方重新选择）`);
-        } else message.success(`拉取到 ${list.length} 个模型`);
+        const curModel = selectedModel || settings.paidApiProviders?.[provider]?.selectedModel || '';
+        const nextModel = curModel && list.includes(curModel) ? curModel : list[0];
+        setSelectedModel(nextModel);
+        settings.setPaidApiProvider(provider, {
+          ...settings.paidApiProviders[provider],
+          apiKey: apiKey.replace(/\s+/g, ''), baseUrl: baseUrl.trim() || adapter.defaultBaseUrl,
+          region: region as any, workspaceId: workspaceId.trim(), models: list, selectedModel: nextModel,
+        });
+        message.success(`拉取到 ${list.length} 个模型，节点默认使用「${nextModel}」`);
       }
     } catch (e: any) { message.error('拉取模型失败：' + (e.message || e)); }
     finally { setFetchingModels(false); }
@@ -82,9 +98,10 @@ export const PaidApiSettings: React.FC = () => {
       <div className="paid-api-provider-card__header"><div><h4>{adapter.label}</h4><p>{adapter.description}</p></div><Tag color={apiKey ? 'green' : 'default'}>{apiKey ? '已配置' : '未配置'}</Tag></div>
       <div className="settings-form-grid">
         <div><label className="paid-api-field-label"><KeyOutlined /> API Key</label><Input.Password value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="填写该厂商自己的 API Key" /></div>
-        <div><label className="paid-api-field-label"><ApiOutlined /> 认证方式</label><Input value={adapter.authMode === 'query-key' ? 'Query 参数 key' : 'Authorization Bearer'} disabled /></div>
+        <div><label className="paid-api-field-label"><ApiOutlined /> 认证方式</label><Input value={({ bearer:'Authorization: Bearer', 'query-key':'Query 参数 key', 'x-api-key':'X-API-Key', 'x-key':'x-key', key:'Authorization: Key' } as const)[adapter.authMode]} disabled /></div>
       </div>
       <div className="paid-api-field"><label className="paid-api-field-label">接口地址</label><Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder={adapter.defaultBaseUrl} /></div>
+      <div className="paid-api-field"><label className="paid-api-field-label">节点执行模型</label><Select showSearch value={selectedModel || undefined} onChange={(value) => { setSelectedModel(value); if (apiKey.trim()) persistProvider(value); }} options={availableModels.map(item => ({ value: item, label: item }))} placeholder="先拉取模型或选择预置模型" style={{ width:'100%' }} /></div>
       {adapter.regions && <div className="settings-form-grid"><div><label className="paid-api-field-label">地域</label><Select value={region} onChange={setRegion} options={adapter.regions.map(item => ({ value:item.value, label:item.label }))} style={{ width:'100%' }} /></div><div><label className="paid-api-field-label">Workspace ID（可选）</label><Input value={workspaceId} onChange={event => setWorkspaceId(event.target.value)} placeholder="百炼业务空间 ID" /></div></div>}
       <div className="paid-api-model-summary"><strong>节点可用模型</strong><div>{adapter.models.map(model => <Tag key={model.id}>{model.label}</Tag>)}</div></div>
       <Space style={{ marginTop:16 }} wrap><Button type="primary" icon={<SaveOutlined />} onClick={saveProvider}>保存 {adapter.shortLabel} 配置</Button><Button icon={<ApiOutlined />} loading={testing} onClick={() => void handleTest()}>测试连接</Button><Button icon={<ReloadOutlined />} loading={fetchingModels} onClick={() => void handleFetchModels()}>拉取模型</Button></Space>

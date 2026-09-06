@@ -84,6 +84,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ffmpegConcatAudio: (payload) => ipcRenderer.invoke('ffmpeg-concat-audio', payload),
   ffmpegInterpolate: (payload) => ipcRenderer.invoke('ffmpeg-interpolate', payload),
 
+  // ===== DeepSeek Harness (DSH) 集成 =====
+  dshApi: {
+    getStatus: () => ipcRenderer.invoke('dsh-get-status'),
+    injectMcpConfig: (opts) => ipcRenderer.invoke('dsh-inject-mcp', opts),
+    runTask: (payload) => ipcRenderer.invoke('dsh-run-task', payload),
+    taskStatus: (taskId) => ipcRenderer.invoke('dsh-task-status', taskId),
+    taskKill: (taskId) => ipcRenderer.invoke('dsh-task-kill', taskId),
+    openWeb: () => ipcRenderer.invoke('dsh-open-panel'),
+    stopWeb: () => ipcRenderer.invoke('dsh-stop-web'),
+    // 渲染进程侧 MCP 桥：主进程把 DSH 的 MCP 工具调用转发过来，执行后回执
+    onCanvasMcpInvoke: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('canvas-mcp-invoke', listener);
+      return () => ipcRenderer.removeListener('canvas-mcp-invoke', listener);
+    },
+    canvasMcpResult: (payload) => ipcRenderer.invoke('canvas-mcp-result', payload),
+    // headless 任务流式日志
+    onTaskLog: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('dsh-task-log', listener);
+      return () => ipcRenderer.removeListener('dsh-task-log', listener);
+    },
+    onTaskDone: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('dsh-task-done', listener);
+      return () => ipcRenderer.removeListener('dsh-task-done', listener);
+    },
+  },
+
   // 窗口控制
   minimizeWindow: () => ipcRenderer.send('minimize-window'),
   toggleMaximizeWindow: () => ipcRenderer.send('toggle-maximize-window'),

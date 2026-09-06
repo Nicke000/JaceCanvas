@@ -78,8 +78,23 @@ export function resolveSourceConfirm(ok: boolean) { confirmResolver?.(ok); confi
 
 function sandboxApi() { return (window as any).electronAPI?.sourceApi; }
 
-async function executeAgentAction(action: string, args: Record<string, any>, onEvent: (e: AgentEvent) => void): Promise<{ ok: boolean; message: string }> {
+/** MCP 桥接可执行的动作白名单（DSH 外部调用）；为安全起见，需要画布内人工确认的
+ *  源码修改类动作（建分支/删版本）不对外暴露，引导用户回到 DevAgent 面板操作。 */
+const MCP_SUPPORTED_ACTIONS = new Set([
+  'list_nodes', 'node_types', 'add_node', 'connect', 'set_config', 'run',
+  'read_errors', 'get_node', 'delete_node', 'select_node',
+  'source_list_versions', 'source_read_file', 'source_build_test', 'source_mark_usable',
+  'source_package', 'source_package_status', 'source_run_command',
+]);
+
+export async function executeAgentAction(action: string, args: Record<string, any>, onEvent: (e: AgentEvent) => void): Promise<{ ok: boolean; message: string }> {
   const st = useCanvasStore.getState();
+  if (!MCP_SUPPORTED_ACTIONS.has(action)) {
+    // 需要用户确认的源码写入/删除类动作在外部调用（DSH/MCP）时拒绝，
+    // 避免 agent 绕过确认机制直接改主版本或删沙盒。
+    const needConfirm = action === 'request_source_access' || action === 'source_delete_version' || action === 'source_write_file';
+    if (needConfirm) return { ok: false, message: `动作 ${action} 需要画布内人工确认，请在 DevAgent 面板执行（MCP/DSH 调用不可用）` };
+  }
   switch (action) {
     case 'list_nodes': {
       const lines = st.nodes.map(n => `${n.id} | ${n.data.label || '未命名'} | ${n.data.nodeType} | ${n.data.status || 'idle'}${n.data.error ? ' | 错误: ' + String(n.data.error).slice(0, 80) : ''}`);
@@ -334,3 +349,30 @@ ${TOOL_DOCS}`;
   onEvent({ kind: 'text', text: finalReply });
   return finalReply;
 }
+
+/* ============ MCP 桥接（DSH 外部调用入口） ============ */
+/**
+ * 注册渲染进程的 MCP 桥：主进程（本地 HTTP bridge）把 DSH agent 的 MCP 工具调用
+ * 转发到这里，复用上面的 executeAgentAction 直接操作画布 store，结果原路返回。
+ * 在 App 挂载时调用一次即可（幂等）。
+ */
+export function registerCanvasMcpBridge(): void {
+  const dshApi = (window as any).electronAPI?.dshApi as {
+    onCanvasMcpInvoke?: (cb: (payload: { id: string; action: string; args: Record<string, any> }) => void) => () => void;
+    canvasMcpResult?: (payload: { id: string; ok: boolean; message: string }) => void;
+  } | undefined;
+  if (!dshApi?.onCanvasMcpInvoke || !dshApi.canvasMcpResult) { console.warn('[DSH] MCP 桥不可用（preload 缺少通道）'); return; }
+  dshApi.onCanvasMcpInvoke(async ({ id, action, args }) => {
+    console.log('[DSH] MCP 桥收到调用:', action, id);
+    try {
+      const result = await executeAgentAction(action, args || {}, () => { /* DSH 调用不触发画布内确认弹窗 */ });
+      console.log('[DSH] MCP 桥执行完成:', action, 'ok=' + result.ok);
+      dshApi.canvasMcpResult!({ id, ok: result.ok, message: result.message });
+    } catch (err: any) {
+      console.error('[DSH] MCP 桥执行异常:', err);
+      dshApi.canvasMcpResult!({ id, ok: false, message: `工具执行异常：${String(err?.message || err).slice(0, 300)}` });
+    }
+  });
+}
+
+/** 导出给其他模块使用的执行器（DevAgent 面板继续用 runCanvasAgent） */

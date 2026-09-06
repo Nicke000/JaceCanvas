@@ -1639,19 +1639,27 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     return lines.join('\n');
   }, []);
 
-  // —— AI 运镜 / 摆姿势（复用全局聊天 AI 配置）——
+  // —— AI 运镜 / 摆姿势（优先走 DSH，未装 DSH 时回退聊天 AI 配置）——
   const runAiMotion = useCallback(async () => {
     const prompt = aiPrompt.trim(); if (!prompt) { message.warning('请描述运镜'); return; }
     setAiLoading(true);
     try {
-      const { sendChat } = await import('@/services/chat.service');
       const sceneCtx = buildSceneContext();
-      const res = await sendChat(prompt, [], [], undefined, { systemPrompt: `你是 3D 导演台的运镜助手。下面是当前场景信息，请据此理解"什么在什么地方、相机在哪"。
+      const sysPrompt = `你是 3D 导演台的运镜助手。下面是当前场景信息，请据此理解"什么在什么地方、相机在哪"。
 
 ${sceneCtx}
 
-把描述转成 JSON：{"type":"orbit"|"dollyIn"|"dollyOut","angle":环绕角度(度,默认360),"duration":时长(秒,默认4)}。环绕/转圈→orbit（围绕相机当前看向的目标）；推近/特写→dollyIn；拉远/全景→dollyOut。只输出 JSON。` });
-      const text = String(res?.text || '').trim();
+把描述转成 JSON：{"type":"orbit"|"dollyIn"|"dollyOut","angle":环绕角度(度,默认360),"duration":时长(秒,默认4)}。环绕/转圈→orbit（围绕相机当前看向的目标）；推近/特写→dollyIn；拉远/全景→dollyOut。只输出 JSON。`;
+      let text = '';
+      const { dshAsk } = await import('@/services/dsh.service');
+      const usable = await dshAsk({ task: prompt, systemPrompt: sysPrompt, timeoutMs: 8 * 60 * 1000 });
+      if (usable.ok && usable.text.trim()) {
+        text = usable.text.trim();
+      } else {
+        const { sendChat } = await import('@/services/chat.service');
+        const res = await sendChat(prompt, [], [], undefined, { systemPrompt: sysPrompt });
+        text = String(res?.text || '').trim();
+      }
       const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI 未返回有效运镜');
       const obj = JSON.parse(m[0].replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'));
       const kind: 'orbit' | 'dollyIn' | 'dollyOut' = obj.type === 'orbit' ? 'orbit' : obj.type === 'dollyOut' ? 'dollyOut' : 'dollyIn';

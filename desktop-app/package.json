@@ -49,6 +49,7 @@
     ],
     "files": [
       "main.js",
+      "dsh-bridge.js",
       "preload.js",
       "server/**/*",
       "dist/**/*",
@@ -67,6 +68,13 @@
       {
         "from": "server/data",
         "to": "server/data"
+      },
+      {
+        "from": "mcp-server",
+        "to": "mcp-server",
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "assets/ffmpeg",

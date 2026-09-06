@@ -5,7 +5,7 @@ import {
   UserRound, Orbit, ZoomIn, Music, PersonStanding, Bot, Lightbulb, BookOpen, Palette, Puzzle,
   Settings2, Waves, Combine, Droplets, Eraser, SquarePlay, FilePen, LayoutGrid, ListVideo, Camera,
   Theater, Upload, Download, Plug, Workflow, MessageSquare, Scissors, Gauge, Crop, ImagePlus,
-  Repeat, Projector, Play, Layers3, Cloud, Boxes, ImageDown, AudioLines, Wand2,
+  Repeat, Projector, Play, Layers3, Cloud, Boxes, ImageDown, AudioLines, Wand2, Brain,
 } from 'lucide-react';
 import type { NodeComponentType } from '@/types';
 
@@ -68,6 +68,7 @@ export const NODE_ICONS: Record<NodeComponentType, LucideIcon> = {
   paidCapability: Layers3,
   bailianTextToImage: Cloud,
   runningHubWorkflow: Cloud,
+  dshAgent: Brain,
 };
 
 /** 便捷渲染：<NodeIcon type="textInput" size={15}/>，类型未知时回退 Wand2 */

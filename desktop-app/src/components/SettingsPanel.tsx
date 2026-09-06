@@ -15,6 +15,7 @@ import { checkForAppUpdate, downloadAppUpdate, installAppUpdate, listenForAppUpd
 import { PaidApiSettings } from '@/components/PaidApiSettings';
 import { LogTab } from './LogTab';
 import { AppearanceSettings } from '@/components/AppearanceSettings';
+import { DshIntegrationTab } from '@/components/DshIntegrationTab';
 
 const providerOptions = [
   { label: 'OpenAI 兼容接口', value: 'openai' },
@@ -47,7 +48,7 @@ const thinkingModeOptions = [
   { label: '深度思考', value: 'deep' },
 ];
 
-type SettingTab = 'connection' | 'runninghub' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'assets' | 'appearance' | 'log' | 'about';
+type SettingTab = 'connection' | 'runninghub' | 'chat' | 'devagent' | 'optimizer' | 'paidapi' | 'performance' | 'assets' | 'appearance' | 'log' | 'dsh' | 'about';
 export const SettingsButton: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -519,6 +520,9 @@ export const SettingsButton: React.FC = () => {
           <div className={'settings-sidebar-item ' + (activeTab === 'log' ? 'active' : '')} onClick={() => setActiveTab('log')}>
             <WarningOutlined /> <span>日志</span>
           </div>
+          <div className={'settings-sidebar-item ' + (activeTab === 'dsh' ? 'active' : '')} onClick={() => setActiveTab('dsh')}>
+            <RobotOutlined /> <span>DSH 集成</span>
+          </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'about' ? 'active' : '')} onClick={() => setActiveTab('about')}>
             <InfoCircleOutlined /> <span>关于</span>
           </div>
@@ -706,6 +710,7 @@ export const SettingsButton: React.FC = () => {
             </div>}
 
             {activeTab === 'log' && <LogTab />}
+            {activeTab === 'dsh' && <DshIntegrationTab />}
             {activeTab === 'about' && <div className="settings-tab-content">
               <h3 className="settings-tab-title">关于 JaceCanvas</h3>
               <div className="settings-about-section">

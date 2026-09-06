@@ -332,20 +332,28 @@ export const StoryDramaStudio: React.FC<{ onClose: () => void }> = ({ onClose })
     message.success('已添加分镜，可填写各提示词');
   };
 
-  // ===== 剧本 AI 扩写 / 润色 / 拆镜头 =====
+  // ===== 剧本 AI 扩写 / 润色 / 拆镜头（优先走 DSH，未装 DSH 时回退聊天 API） =====
   const runScriptAi = async (action: 'expand' | 'polish' | 'shots') => {
     const text = script.trim();
     if (!text) { message.warning('请先填写剧本'); return; }
     setScriptAiLoading(action);
     try {
-      const { sendChat } = await import('@/services/chat.service');
       const preset = action === 'expand'
         ? { sys: '你是资深短剧编剧。把用户给的剧情扩写成更丰满的短剧剧本：补全人物动机、场景细节、情绪转折与冲突钩子，保持原意，只输出可直接用于分镜的连贯剧本正文（不要分镜、不要标题）。', q: `请扩写下面剧情，补全细节与冲突，输出完整剧本：\n${text}` }
         : action === 'polish'
         ? { sys: '你是资深短剧编剧。润色用户剧本：让语言更有画面感和节奏感，修正逻辑，强化情绪与钩子，保持原意不变，只输出润色后的剧本正文。', q: `请润色下面剧本：\n${text}` }
         : { sys: '你是专业影视分镜师。把用户剧本拆成连续镜头描述：每个镜头一行，格式为「景别（远景/中景/近景/特写等）：画面内容 · 人物动作」。只输出镜头列表，不要额外解释。', q: `请把下面剧本拆成镜头列表：\n${text}` };
-      const res = await sendChat(preset.q, [], [], undefined, { systemPrompt: preset.sys });
-      const out = String(res?.text || '').trim();
+      let out = '';
+      const { dshAsk } = await import('@/services/dsh.service');
+      const usable = await dshAsk({ task: preset.q, systemPrompt: preset.sys, timeoutMs: 8 * 60 * 1000 });
+      if (usable.ok && usable.text.trim()) {
+        out = usable.text.trim();
+      } else {
+        // DSH 不可用/失败 → 回退原有聊天 API
+        const { sendChat } = await import('@/services/chat.service');
+        const res = await sendChat(preset.q, [], [], undefined, { systemPrompt: preset.sys });
+        out = String(res?.text || '').trim();
+      }
       if (!out) throw new Error('AI 未返回内容');
       if (action === 'shots') setScript(prev => prev + '\n\n【镜头拆分参考】\n' + out);
       else setScript(out);

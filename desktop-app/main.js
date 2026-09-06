@@ -15,6 +15,8 @@ const http = require("http");
 const fs = require("fs");
 const { pathToFileURL, fileURLToPath } = require("url");
 const { autoUpdater } = require("electron-updater");
+// DeepSeek Harness (DSH) 接入桥：MCP 画布服务 + headless 任务 + DSH Web 面板
+const { initDshBridge } = require("./dsh-bridge.js");
 
 function loadRuntimeSettings() {
   try {
@@ -425,6 +427,9 @@ app.whenReady().then(async () => {
   if (!serverStarted) {
     console.warn("[App] 后端服务未启动，部分功能可能不可用");
   }
+
+  // DSH 接入桥（失败不影响应用启动，DSH 为可选集成）
+  try { await initDshBridge(); } catch (e) { console.warn("[DSH] 初始化失败:", e?.message); }
 
   createWindow();
   configureAutoUpdater();

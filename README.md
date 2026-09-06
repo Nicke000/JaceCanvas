@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="assets/jacecanvas-icon.png" width="120" alt="JaceCanvas Logo" />
 </p>
 
@@ -169,6 +169,45 @@ npm run build         # electron-builder → release-v4.7.4/（内置 opensource
 - 模型选择、附件（本地/资产/画布/历史）、发送选中文本到画布
 - 流式输出独立渲染，历史消息零重渲，滚动流畅
 - 聊天节点（画布内）与全窗口聊天共用「设置 → 聊天 AI」配置
+- **已接入 DeepSeek Harness（DSH）**：安装 dsh 后，顶部「聊天」优先打开 DSH 面板（完整 agent 聊天 + Skills + 文件/终端能力），未安装时回退原聊天窗口
+
+---
+
+## 🧠 DeepSeek Harness（DSH）集成
+
+JaceCanvas 把画布 AI 能力统一交给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）——一个带完整 agent 能力（文件读写、真实终端、Web 搜索、Skills）的 AI 工作台。DSH 为**可选集成**：未安装不影响其它功能，安装后自动获得以下能力。
+
+### 安装 dsh
+
+```powershell
+npm install -g @deepseek-ai/dsh
+```
+
+然后重启 JaceCanvas，打开「设置 → DSH 集成」点击「重新检测」，按提示注入 MCP 配置。
+
+### 四大能力
+
+1. **DSH 全面操作画布（MCP）**：注入 MCP 配置后，在 DSH 对话中直接说「帮我在画布加一个文生图节点并连接预览」——DSH 会通过 `mcp__canvas__*` 工具真实操作你的画布（加节点 / 连线 / 改配置 / 执行 / 查错 / 取素材 / 源码沙盒），无需手动拖拽。
+2. **画布「DSH Agent」节点**：画布节点库 → 管理 → 新增「DSH Agent」节点，输入任务描述（如「分析这段运镜并给建议」「查一下画布为什么报错并修复」）执行，DSH headless 会话跑完把回答/图片/视频回流画布。
+3. **内嵌 DSH 面板**：「设置 → DSH 集成 → 打开 DSH 面板」（或顶部「聊天」）在独立窗口打开 DSH Web GUI，画布内直接使用。
+4. **统一 AI 入口**：短剧剧本扩写/润色/拆镜头、3D 导演台 AI 运镜，均优先走 DSH；未安装时自动回退原有 API 配置。
+
+### 安全边界
+
+- MCP 桥只监听本机回环 `127.0.0.1`，不对外开放。
+- 源码写入 / 删除类动作（`source_write_file` / `request_source_access` / `source_delete_version`）仍需画布内人工确认，DSH 外部调用会被拒绝。
+- bridge 端口文件写在应用 `userData` 目录，不落盘任何凭据。
+
+### 目录（DSH 相关）
+
+| 文件 | 说明 |
+|------|------|
+| `desktop-app/dsh-bridge.js` | 主进程 DSH 桥（MCP 桥 / headless 任务 / Web 面板 / 配置注入） |
+| `desktop-app/mcp-server/canvas-mcp-server.cjs` | 零依赖 MCP stdio server（16 个画布工具） |
+| `desktop-app/src/services/dsh.service.ts` | 渲染进程统一 DSH 服务层（`dshAsk` 等） |
+| `desktop-app/src/components/DshIntegrationTab.tsx` | 设置面板「DSH 集成」页 |
+
+> 手动配置 / 排查参考（含踩坑记录）：[docs/dsh-integration.example.md](./docs/dsh-integration.example.md)
 
 ---
 
@@ -229,17 +268,7 @@ A: 当前仅 Windows x64。如需 macOS/Linux，修改 package.json 的 build �
 
 ## 📝 更新日志
 
-
-## 更新日志
-
 ### v4.7.4（最新）
-- **音频剪辑**：视频剪辑节点新增「音频剪辑」区，截取音频片段输出 MP3。
-- **输入端口过滤**：默认只显示素材/文本端口，隐藏步数/文件名/数值等非素材端口；每个参数后新增「呈现连接点」开关，误过滤可手动补回。
-- **参数编辑迁右面板**：付费/工作流/RunningHub/API 节点参数移入右侧面板，节点更紧凑；修复可缩放节点内容拉伸导致的空白。
-- **工作流节点库**：长名称两列首字显示；RunningHub 选择区字号放大。
-- **任务完成提示音**：节点成功/失败播放提示音。
-- **修复**：端口贴边/同名对齐、apiNode 数值字段防文本误入、渲染崩溃与 EPIPE 递归加固。
-### v4.7.3
 - **RunningHub 标准模型 API**：官方合同驱动的标准模型节点（图生图 / 文生图 / 视频 / 3D / 音频），多图顺序槽位、动态可选输出、端口类型自动配色与状态；本地图片先上传再提交（Bearer 鉴权、数组字段固化）。
 - **运行中心**：新增性能页签，容器打开状态不再依赖队列/历史两个旧布尔值。
 - **3D 导演台**：模型复制、无人机式 FPV 运镜录制（鼠标转向 + 键盘移动）、录制运镜同时采样模型/骨骼、关键帧删除后时间轴自动归一化、运镜速度/灯光/关键帧/机位退出持久化。

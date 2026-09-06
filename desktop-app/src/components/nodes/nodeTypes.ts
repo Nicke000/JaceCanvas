@@ -1,7 +1,7 @@
 import type { NodeTypes } from '@xyflow/react';
 import {
   TextInputNode, ScriptInputNode, SceneSettingsNode, CompareNode, ImageGenerationNode, ImageToImageNode,
-  VideoGenerationNode, AssetNode, UploadNode, PreviewNode, GenericNode, StoryboardPromptNode, StoryboardRenderNode, TimelineRenderNode, CinematographyKnowledgeNode, VideoTrimNode, ChatNode, ImageCropNode, InpaintNode, InterpolateNode, PaidGenerationNode, BailianTextToImageNode, NoteNode, FrameNode, RerouteNode, LocalWorkflowNode,
+  VideoGenerationNode, AssetNode, UploadNode, PreviewNode, GenericNode, StoryboardPromptNode, StoryboardRenderNode, TimelineRenderNode, CinematographyKnowledgeNode, VideoTrimNode, ChatNode, ImageCropNode, InpaintNode, InterpolateNode, PaidGenerationNode, BailianTextToImageNode, NoteNode, FrameNode, RerouteNode, LocalWorkflowNode, DshAgentNode,
 } from './index';
 
 export const nodeTypes: NodeTypes = {
@@ -48,4 +48,5 @@ export const nodeTypes: NodeTypes = {
   paidTextToVideo: PaidGenerationNode, paidImageToVideo: PaidGenerationNode, paidCapability: PaidGenerationNode,
   // 旧画布兼容：百炼文生图现在使用统一的文生图适配器节点，不再单独渲染。
   bailianTextToImage: PaidGenerationNode,
+  dshAgent: DshAgentNode,
 };

@@ -484,11 +484,12 @@ export const VideoTrimNode = memo((p: NodeProps) => {
 });
 
 export const ChatNode = memo((p: NodeProps) => {
-  // AI 聊天已改为右下角悬浮助手（FloatingAssistant），画布节点仅作提示占位
+  // AI 聊天已统一走 DeepSeek Harness（顶部「聊天」按钮直接打开 DSH 面板），
+  // 画布节点仅作提示占位；DSH 未安装时回退原聊天窗口。
   return (
     <div style={{ width: 210, padding: 14, borderRadius: 12, border: '1px dashed rgba(255,255,255,.22)', background: 'rgba(255,255,255,.04)', textAlign: 'center' }}>
       <div style={{ fontSize: 24, color: 'var(--theme-text-3)' }}>…</div>
-      <div style={{ fontSize: 11, color: 'var(--theme-muted)', marginTop: 6, lineHeight: 1.6 }}>AI 聊天已移至右下角悬浮助手<br />（可拖动 · 点击展开）</div>
+      <div style={{ fontSize: 11, color: 'var(--theme-muted)', marginTop: 6, lineHeight: 1.6 }}>AI 聊天已统一接入 DSH<br />（顶部「聊天」打开 DSH 面板）</div>
     </div>
   );
   const d = p.data as unknown as CanvasNodeData;
@@ -606,6 +607,67 @@ export const ChatNode = memo((p: NodeProps) => {
 });
 
 
+/* === DeepSeek Harness Agent 节点：把任务交给 DSH（文件/终端/搜索/skills）执行 === */
+export const DshAgentNode = memo((p: NodeProps) => {
+  const d = p.data as unknown as CanvasNodeData;
+  const update = useCanvasStore(s => s.setNodeConfig);
+  const config = d.config || {};
+  const [draft, setDraft] = useState(String(config.task || ''));
+  const [dshInfo, setDshInfo] = useState<string>('检测中…');
+  const taskIdRef = useRef<string | null>(null);
+  const [taskLog, setTaskLog] = useState<Array<{ type: 'out' | 'err'; line: string }>>([]);
+
+  // 检测 DSH 可用性
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const api = (window as any).electronAPI?.dshApi;
+        if (!api?.getStatus) { if (mounted) setDshInfo('非 Electron 环境'); return; }
+        const st = await api.getStatus();
+        if (!mounted) return;
+        if (!st?.available) setDshInfo('未安装 dsh（npm i -g @deepseek-ai/dsh）');
+        else setDshInfo(`dsh 就绪${st.version ? ' · ' + st.version : ''}${st.bridgePort ? ' · MCP 桥已启动' : ''}`);
+      } catch { if (mounted) setDshInfo('检测失败'); }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // 订阅 headless 任务日志
+  useEffect(() => {
+    const api = (window as any).electronAPI?.dshApi;
+    if (!api) return;
+    const offLog = api.onTaskLog?.((payload: any) => {
+      if (payload?.taskId !== taskIdRef.current) return;
+      setTaskLog(prev => [...prev.slice(-80), { type: payload.type === 'err' ? 'err' : 'out', line: payload.line }]);
+    });
+    const offDone = api.onTaskDone?.((payload: any) => {
+      if (payload?.taskId !== taskIdRef.current) return;
+      taskIdRef.current = null;
+    });
+    return () => { offLog?.(); offDone?.(); };
+  }, []);
+
+  const publishTask = useCallback((text: string) => update(p.id, { task: text }), [p.id, update]);
+
+  return <NodeShell {...p} color="#4f46e5" icon={<WandSparkles size={14} />} inputs={[{ id: 'prompt', label: '任务描述', type: 'text' }]} outputs={[{ id: 'text', label: '回答', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'video', label: '视频', type: 'video' }]} resizable hideExec={false}>
+    <div className="dsh-node-content nodrag" style={{ userSelect: 'text', width: '100%' }}>
+      <div className="dsh-node-status" style={{ fontSize: 10, color: dshInfo.startsWith('dsh 就绪') ? 'var(--theme-success)' : 'var(--theme-warning)', marginBottom: 6 }}>{dshInfo}</div>
+      <textarea className="nodrag" onFocus={() => openTextEditor(p.id, 'task', String(config.task || ''), 'DSH 任务', 'text')} onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} placeholder="告诉 DSH 帮你做什么：例如「在本地拆一个文生图工作流并跑一次，把结果给我」「分析这段运镜并向画布添加分镜节点」…（支持读文件/终端/搜索/skills）" value={draft}
+        onChange={e => { setDraft(e.target.value); publishTask(e.target.value); }}
+        style={{ width: '100%', minHeight: 64, border: '1px solid var(--theme-border)', borderRadius: 6, padding: 6, fontSize: 12, resize: 'vertical', outline: 'none', fontFamily: 'inherit', background: 'var(--theme-input)', color: 'var(--theme-text-2)' }} />
+      <div className="dsh-node-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+        <select className="nodrag" value={String(config.profile || 'headless')} onChange={e => update(p.id, { profile: e.target.value })} style={{ fontSize: 9, padding: '1px 4px', borderRadius: 4, border: '1px solid rgba(79,70,229,.35)', background: '#111827', color: 'var(--theme-accent)', maxWidth: 110 }} title="DSH profile（默认 headless 单任务）">
+          <option value="headless">headless 任务</option>
+        </select>
+        <a className="nodrag" onClick={e => { e.stopPropagation(); void (window as any).electronAPI?.dshApi?.openWeb?.().catch(() => {}); }} style={{ fontSize: 10, color: 'var(--theme-accent)', cursor: 'pointer', marginLeft: 'auto' }}>打开 DSH 面板 ↗</a>
+      </div>
+      {taskLog.length > 0 && <div className="dsh-node-log" style={{ fontSize: 10, color: 'var(--theme-muted)', maxHeight: 120, overflow: 'auto', marginTop: 6, lineHeight: 1.5, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }} onWheel={e => e.stopPropagation()}>
+        {taskLog.map((item, index) => <div key={index} style={{ color: item.type === 'err' ? 'var(--theme-error)' : undefined }}>{item.line}</div>)}
+      </div>}
+    </div>
+  </NodeShell>;
+});
 
 const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = true, hasOutput = true, inputs, outputs, resizable = false, hideExec = false, compactNormal = false, compactBody = false, children }) => {
   const nd = data as CanvasNodeData;

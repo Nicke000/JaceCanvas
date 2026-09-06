@@ -97,6 +97,7 @@ export const NODE_DEFAULTS: Record<NodeComponentType, { label: string; color: st
   uploadNode:{label:'上传文件',color:'#60a5fa'},downloadNode:{label:'下载结果',color:'#f59e0b'},
   imageCrop:{label:'修图裁切',color:'#f97316'}, inpaint:{label:'圈画修图',color:'#22d3ee'}, interpolate:{label:'视频补帧',color:'#34d399'}, apiNode:{label:'API节点',color:'#6366f1'}, chatNode:{label:'AI聊天',color:'#22c55e'}, videoTrim:{label:'视频剪辑',color:'#f97316'},
   paidTextToImage:{label:'付费API·文生图',color:'#a855f7'},paidImageToImage:{label:'付费API·图生图',color:'#0ea5e9'},paidTextToVideo:{label:'付费API·文生视频',color:'#ec4899'},paidImageToVideo:{label:'付费API·图生视频',color:'#f43f5e'},paidCapability:{label:'付费扩展能力',color:'#14b8a6'},bailianTextToImage:{label:'文生图',color:'#ff7a45'},runningHubWorkflow:{label:'RunningHub 工作流',color:'#0ea5e9'},localWorkflow:{label:'本地工作流',color:'#0ea5e9'},
+  dshAgent:{label:'DSH Agent',color:'#4f46e5'},
 };
 
 const INITIAL: AppNode[] = [];
@@ -1062,6 +1063,39 @@ export const useCanvasStore = create<Store>((set, get) => ({
         if (image) get().propagateData(id, 'image', image);
         if (video) get().propagateData(id, 'video', video);
         runningControllers.delete(id); // 提前返回前清理 AbortController（防任务计数泄漏）
+        return true;
+      } else if (nt === 'dshAgent') {
+        // DSH Agent 节点：把任务交给 DeepSeek Harness headless 会话执行（文件/终端/搜索/skills 全能力），结果回流画布。
+        const task = String(config.task || node.data.inputValues?.prompt || node.data.inputValues?.text || '').trim();
+        if (!task) throw new Error('请输入 DSH 任务描述（节点输入框或上游文本）');
+        const dshApi = (window as any).electronAPI?.dshApi;
+        if (!dshApi?.runTask) throw new Error('DSH 集成不可用（非 Electron 环境）');
+        get().updateNodeData(id, { content: '任务已提交给 DeepSeek Harness…', status: 'running', progress: 5 });
+        const started = await dshApi.runTask({ task, profile: String(config.profile || 'headless'), cwd: config.cwd || undefined });
+        if (!started?.ok) { get().setNodeStatus(id, 'error', started?.message || 'DSH 任务启动失败'); runningControllers.delete(id); return false; }
+        const taskId = started.taskId;
+        // 等待 headless 任务完成（事件驱动，超时 15 分钟兜底）
+        const outcome = await new Promise<{ ok: boolean; output: string; error?: string }>((resolve) => {
+          const timeout = window.setTimeout(() => { off(); resolve({ ok: false, output: '', error: 'DSH 任务超时（15 分钟），可在运行中心查看日志' }); }, 15 * 60 * 1000);
+          const off = dshApi.onTaskDone((payload: any) => {
+            if (payload?.taskId !== taskId) return;
+            window.clearTimeout(timeout); off();
+            resolve({ ok: !!payload.ok, output: String(payload.output || ''), error: payload.error ? String(payload.error) : undefined });
+          });
+        });
+        if (controller.signal.aborted) { get().setNodeStatus(id, 'paused', '已中止'); runningControllers.delete(id); return false; }
+        if (!outcome.ok) { get().setNodeStatus(id, 'error', outcome.error || 'DSH 任务失败'); runningControllers.delete(id); return false; }
+        const text = outcome.output;
+        const image = text.match(/https?:\/\/[^\s)]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)]*)?/i)?.[0];
+        const video = text.match(/https?:\/\/[^\s)]+\.(?:mp4|webm|mov)(?:\?[^\s)]*)?/i)?.[0];
+        const outputValues: Record<string, unknown> = { text, output: text };
+        if (image) outputValues.image = image;
+        if (video) outputValues.video = video;
+        get().updateNodeData(id, { content: text.slice(0, 2000), outputValues, results: [{ type: 'text', url: text }], status: 'success', error: undefined, progress: 100 });
+        get().propagateData(id, 'text', text); get().propagateData(id, 'output', text);
+        if (image) get().propagateData(id, 'image', image);
+        if (video) get().propagateData(id, 'video', video);
+        runningControllers.delete(id);
         return true;
       } else if (nt === 'downloadNode') {
         // 下载节点：从 input URL 下载

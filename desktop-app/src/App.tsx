@@ -8,8 +8,8 @@ import { ConfigPanel } from '@/components/ConfigPanel';
 import { ContextMenu } from '@/components/ContextMenu';
 import { SettingsButton } from '@/components/SettingsPanel';
 import { ShortcutHelp } from '@/components/ShortcutHelp';
-import { FloatingAssistant } from '@/components/FloatingAssistant';
 import { AgentPanel } from '@/components/AgentPanel';
+import { registerCanvasMcpBridge } from '@/services/canvasAgent.service';
 import { WorkspaceSidebar } from '@/components/WorkspaceSidebar';
 
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -111,6 +111,20 @@ const App: React.FC = () => {
     return () => window.removeEventListener('ai-canvas-resume-chat', resume);
   }, []);
   const openChat = useCallback(async () => {
+    // DSH 可用时优先打开 DSH 面板（完整 agent 聊天 + skills + 文件/终端能力）；
+    // 否则回退到原有聊天窗口。
+    try {
+      const api = (window as any).electronAPI?.dshApi;
+      if (api?.openWeb && api?.getStatus) {
+        try {
+          const st = await api.getStatus();
+          if (st?.available) {
+            const r = await api.openWeb();
+            if (r?.ok) return;
+          }
+        } catch { /* 忽略探测异常，走回退 */ }
+      }
+    } catch { /* 忽略 */ }
     try {
       const sessions = await loadChatSessions();
       setChatSession(sessions[0] || null);
@@ -136,6 +150,10 @@ const App: React.FC = () => {
     const api = (window as any).electronAPI;
     if (!api?.onWindowStateChange) return;
     return api.onWindowStateChange((state: { maximized?: boolean }) => setWindowMaximized(Boolean(state?.maximized)));
+  }, []);
+  // DSH MCP 桥：主进程转发的 DSH agent 工具调用，复用画布 Agent 执行器
+  useEffect(() => {
+    try { registerCanvasMcpBridge(); } catch (e) { console.warn('[DSH] MCP 桥注册失败', e); }
   }, []);
   const formatUptime = (ms: number) => { const total = Math.floor(ms / 1000); const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60; return `${h}时${String(m).padStart(2, '0')}分${String(s).padStart(2, '0')}秒`; };
 
@@ -351,7 +369,6 @@ const App: React.FC = () => {
     <ConfigProvider locale={zhCN} theme={{algorithm:isLightTheme ? theme.defaultAlgorithm : theme.darkAlgorithm,token:{colorPrimary:antdTokens.colorPrimary,borderRadius:antdTokens.borderRadius,colorBgBase:antdTokens.colorBgBase,colorText:antdTokens.colorText,colorBorder:antdTokens.colorBorder,fontFamily:antdTokens.fontFamily}}}>
       <AntApp>
         <ShortcutHelp />
-        <FloatingAssistant hidden={chatWindowOpen || dramaStudioOpen || directorOpen} />
         <div className={`app-shell ${historyOpen ? 'history-is-open' : ''}`} style={{'--history-height': `${historyHeight}px`, position:'relative',width:'100vw',height:'100vh',overflow:'hidden',background:'var(--theme-bg)'} as React.CSSProperties}>
           {/* 椤堕儴瀵艰埅鏍?*/}
           <div className="app-topbar">

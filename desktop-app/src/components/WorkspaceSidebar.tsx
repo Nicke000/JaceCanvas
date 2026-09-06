@@ -121,7 +121,7 @@ export const WorkspaceSidebar: React.FC = () => {
           <h4>管理</h4>{grid(PAID_MANAGE_NODES)}
           <h4>音频</h4>{grid(PAID_AUDIO_NODES)}
           <h4>3D</h4>{grid(PAID_3D_NODES)}
-          {/* AI 聊天已移至右下角悬浮助手（FloatingAssistant） */}
+          {/* AI 聊天已统一走 DSH（顶部「聊天」打开 DSH 面板） */}
         </div>}
         {nodeTab === 'workflow' && <Toolbar embedded onClose={() => setOpen(false)} />}
         {nodeTab === 'template' && <TemplateLibrary />}

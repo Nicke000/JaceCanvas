@@ -14,7 +14,8 @@ export type NodeComponentType =
   | 'localWorkflow'  // 本地导入的 ComfyUI 工作流 JSON 节点
   | 'chatNode' | 'videoTrim' | 'imageCrop' | 'inpaint' | 'interpolate'
   | 'paidTextToImage' | 'paidImageToImage' | 'paidTextToVideo' | 'paidImageToVideo' | 'paidCapability' | 'bailianTextToImage'
-  | 'runningHubWorkflow';
+  | 'runningHubWorkflow'
+  | 'dshAgent';  // DeepSeek Harness Agent 节点：把任务交给 DSH（文件/终端/搜索/skills）执行
 
 /* ========== IO 定义 ========== */
 export type IOType = 'text' | 'image' | 'video' | 'audio' | 'number' | 'select' | '3d' | 'media';

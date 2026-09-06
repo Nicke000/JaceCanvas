@@ -115,6 +115,10 @@ interface Store {
   enqueueNode: (id: string) => void;
   executeFromNode: (id: string) => Promise<void>;
   pauseNode: (id: string) => void;
+  /** 从本地队列移除任务：清除队列状态与中断请求，但绝不改写节点 content（删除≠修改提示词） */
+  clearQueueEntry: (id: string) => void;
+  /** 在所属端口的执行队列中真正交换相邻任务顺序（direction: -1 上移 / 1 下移） */
+  reorderQueueEntry: (id: string, direction: -1 | 1) => void;
   setNodeStatus: (id: string, status: NodeStatus, error?: string) => void;
   propagateData: (sourceId: string, outputName: string, value: unknown) => void;
   contextMenu: ContextMenuState;
@@ -543,7 +547,38 @@ export const useCanvasStore = create<Store>((set, get) => ({
     if (queuedIndex >= 0) q.splice(queuedIndex, 1);
     if (!q.length) localExecutionQueues.delete(queueKeyOf(node));
     queuedTaskIds.delete(id);
-    set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, status: 'paused', content: '已取消任务，已通知 ComfyUI 中断', error: undefined, updatedAt: Date.now() } } : n) });
+    set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, status: 'paused', content: '已取消任务，已通知 ComfyUI 中断', error: undefined, queuedAt: undefined, queueOrder: undefined, updatedAt: Date.now() } } : n) });
+  },
+
+  clearQueueEntry: (id) => {
+    const node = get().nodes.find(n => n.id === id);
+    const promptId = node?.data.promptId;
+    void cancelComfyTask(promptId, node?.data.serverId as string | undefined).catch(() => undefined);
+    runningControllers.get(id)?.abort();
+    runningControllers.delete(id);
+    const q = localExecutionQueues.get(queueKeyOf(node)) || [];
+    const queuedIndex = q.indexOf(id);
+    if (queuedIndex >= 0) q.splice(queuedIndex, 1);
+    if (!q.length) localExecutionQueues.delete(queueKeyOf(node));
+    queuedTaskIds.delete(id);
+    // 只恢复节点状态，保留 content/配置不动
+    set({ nodes: get().nodes.map(n => n.id === id ? { ...n, data: { ...n.data, status: 'idle', error: undefined, queuedAt: undefined, queueOrder: undefined, updatedAt: Date.now() } } : n) });
+  },
+
+  reorderQueueEntry: (id: string, direction: -1 | 1) => {
+    // 在所属端口的执行队列中真正交换位置（不是只改排序显示值），worker shift 时按新顺序取任务
+    const node = get().nodes.find(item => item.id === id);
+    const key = queueKeyOf(node);
+    const q = localExecutionQueues.get(key);
+    if (!q || q.length < 2) return;
+    const index = q.indexOf(id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= q.length) return;
+    const other = q[nextIndex];
+    q[index] = other; q[nextIndex] = id;
+    localExecutionQueues.set(key, q);
+    // 同步显示排序字段（面板按 queueOrder 排序），保证 UI 顺序与执行顺序一致
+    get().nodes.forEach(n => { if (n.id === id || n.id === other) get().updateNodeData(n.id, { queueOrder: q.indexOf(n.id) }); });
   },
 
   enqueueNode: (id) => {
@@ -573,8 +608,9 @@ export const useCanvasStore = create<Store>((set, get) => ({
             const nextId = localExecutionQueues.get(key)!.shift()!;
             queuedTaskIds.delete(nextId);
             const current = get().nodes.find(item => item.id === nextId);
-            if (!current || current.data.status === 'paused' || current.data.disabled) continue;
+            // 无论是否执行，取出即清理排队标记（否则被跳过/暂停的节点残留排队样式且永远不执行）
             get().updateNodeData(nextId, { queuedAt: undefined, queueOrder: undefined });
+            if (!current || current.data.status === 'paused' || current.data.disabled) continue;
             await get().executeNode(nextId);
           }
         };
@@ -887,6 +923,8 @@ export const useCanvasStore = create<Store>((set, get) => ({
         const paidResults: Array<{ type: typeof outputKind; url: string }> = [];
         let firstUrl = '';
         for (let v = 0; v < variants; v++) {
+          // 取消检查：用户点停止后（pauseNode 已 abort controller），不再继续生成剩余变体并写 success（否则取消会被完成态反噬）
+          if (controller.signal.aborted) throw new DOMException('已取消任务', 'AbortError');
           // 每次执行重新展开占位符 {a|b|c}，得到不同变体
           const prompt = expandPromptVariants(rawPrompt);
           const nodeCfg = (useSettingsStore.getState().paidApiNodes as any)?.[nt];
@@ -962,6 +1000,7 @@ export const useCanvasStore = create<Store>((set, get) => ({
         const results: Array<{ type: 'image' | 'video' | 'audio'; url: string; shot: number; label: string }> = [];
         const outputValues: Record<string, unknown> = {};
         for (let i = 0; i < segments.length; i++) {
+          if (controller.signal.aborted) throw new DOMException('已取消任务', 'AbortError');
           const seg = segments[i];
           const promptText = (useEnglish ? (seg?.firstFrame?.promptEn || seg?.firstFrame?.prompt || '') : (seg?.firstFrame?.prompt || '')) + (charNotes ? `。角色设定：${charNotes}` : '');
           if (!promptText) throw new Error(`第 ${i + 1} 镜没有可用的提示词`);
@@ -1431,8 +1470,13 @@ export const useCanvasStore = create<Store>((set, get) => ({
       get().edges.filter(e => e.source === current).forEach(e => queue.push(e.target));
     }
     // 不再过滤 success：起始节点及下游链路即使已成功也要重跑（改上游后能级联刷新结果）
-    const planNodes = [...planned].filter(tid => get().nodes.some(n => n.id === tid));
+    const planNodes = [...planned].filter(tid => {
+      if (!get().nodes.some(n => n.id === tid)) return false;
+      // 正在执行中的节点不重复提交：等当前任务结束，否则状态被覆盖成 queued 会导致同一节点双重执行
+      return get().nodes.find(n => n.id === tid)?.data.status !== 'running';
+    });
     if (planNodes.length > 1) message.info(`将从该节点重新生成 ${planNodes.length} 个节点（含下游链路，付费节点会再次调用）`);
+    if (!planNodes.length) { message.info('该节点正在执行中，稍后可再次点击重新生成'); return; }
     const indegree = new Map<string, number>();
     planNodes.forEach(tid => {
       const up = get().edges.filter(e => e.target === tid && planNodes.includes(e.source) && e.source !== tid);

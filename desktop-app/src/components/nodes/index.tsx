@@ -37,7 +37,7 @@ import { portTypeColor } from '@/utils/portColor';
 
 const ST: Record<string, { bg: string; icon: string; glow: string }> = {
   idle:    { bg: '#444', icon: '\u25CB', glow: '#444' },
-  queued:  { bg: '#f59e0b', icon: '…', glow: '#f59e0b' },
+  queued:  { bg: '#60a5fa', icon: '…', glow: '#60a5fa' },
   running: { bg: '#6366f1', icon: '\u25CF', glow: '#6366f1' },
   paused:  { bg: '#f59e0b', icon: 'Ⅱ', glow: '#f59e0b' },
   success: { bg: '#22c55e', icon: '\u2713', glow: '#22c55e' },
@@ -492,118 +492,6 @@ export const ChatNode = memo((p: NodeProps) => {
       <div style={{ fontSize: 11, color: 'var(--theme-muted)', marginTop: 6, lineHeight: 1.6 }}>AI 聊天已统一接入 DSH<br />（顶部「聊天」打开 DSH 面板）</div>
     </div>
   );
-  const d = p.data as unknown as CanvasNodeData;
-  const update = useCanvasStore(s => s.setNodeConfig);
-  const config = d.config || {};
-  const [draft, setDraft] = useState(String(config.message || ''));
-  const [busy, setBusy] = useState(false);
-  const history = (Array.isArray(config.history) ? config.history : []) as ChatTurn[];
-  const attachments = (Array.isArray(config.attachments) ? config.attachments : []) as ChatAttachment[];
-  const settings = useSettingsStore();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [chatModels, setChatModels] = useState<string[]>(settings.chatModels || []);
-  const [selectedModel, setSelectedModel] = useState(String(config.selectedModel || settings.chatModel || ''));
-  const thinkingMode = String(config.thinkingMode || settings.chatThinkingMode) as 'auto' | 'fast' | 'deep';
-  const skillsEnabled = settings.skillsEnabled;
-  const [fetching, setFetching] = useState(false);
-  const fetchModels = async () => {
-    setFetching(true);
-    try {
-      const models = await fetchModelsFromApi(settings.chatProvider, settings.chatBaseUrl, settings.chatApiKey);
-      setChatModels(models);
-      if (models.length > 0) { if (!selectedModel || !models.includes(selectedModel)) setSelectedModel(models[0]); message.success('成功获取 ' + models.length + ' 个模型'); }
-      else message.warning('未获取到模型列表');
-    } catch (e: any) { message.error('拉取模型失败: ' + (e.message || '未知错误')); }
-    finally { setFetching(false); }
-  };
-  useEffect(() => {
-    if (selectedModel && selectedModel !== config.selectedModel) update(p.id, { selectedModel });
-  }, [selectedModel, config.selectedModel, p.id, update]);
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [history]);
-  const onFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
-    const attachments = await Promise.all(files.map(file => new Promise<Record<string, string>>(resolve => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, mimeType: file.type || 'application/octet-stream', dataUrl: String(reader.result) }); reader.readAsDataURL(file); })));
-    update(p.id, { attachments: [...(Array.isArray(config.attachments) ? config.attachments : []), ...attachments] });
-    event.target.value = '';
-  };
-  const send = async () => {
-    const message = draft.trim();
-    // 读取上游连接点的输入数据
-    const inputPrompt = String(d.inputValues?.prompt || '');
-    const inputImage = String(d.inputValues?.image || '');
-    const inputFile = String(d.inputValues?.file || d.inputValues?.video || d.inputValues?.audio || d.inputValues?.url || '');
-    const effectiveMessage = message || inputPrompt;
-    if (!effectiveMessage && !attachments.length && !inputImage && !inputFile) return;
-    setBusy(true);
-    const inputHistory = config.memory === false ? [] : history.slice(-Math.max(0, Number(config.historyLimit) || 20));
-    // 将上游图片作为附件加入
-    const allAttachments = [...attachments];
-    if (inputImage && !allAttachments.some(a => a.url === inputImage || a.dataUrl === inputImage)) {
-      allAttachments.push({ name: '上游输入图片', mimeType: 'image/png', url: inputImage });
-    }
-    if (inputFile && !allAttachments.some(a => a.url === inputFile || a.dataUrl === inputFile)) {
-      const isVideo = /\.(mp4|mov|mkv|webm|avi)(?:\?|$)/i.test(inputFile);
-      const isAudio = /\.(mp3|wav|m4a|aac|flac|ogg)(?:\?|$)/i.test(inputFile);
-      allAttachments.push({ name: '上游连接文件', mimeType: isVideo ? 'video/*' : isAudio ? 'audio/*' : 'application/octet-stream', url: inputFile });
-    }
-    try {
-      const userMessage = message || inputPrompt || '请分析我提供的文件。';
-       let skillsContext = '';
-       if (skillsEnabled) { const listing = await (window as any).electronAPI?.getSkillsSettings?.(settings.skillsFolder); const items = Array.isArray(listing?.items) ? listing.items : []; skillsContext = `根据用户需求，选择使用文件夹内合适的skills。\n\n可用 Skills：\n${items.map((item: any) => `--- ${item.relative} ---\n${String(item.content || '').slice(0, 12000)}`).join('\n\n') || '（当前 Skills 文件夹没有 SKILL.md）'}\n\n用户需求：\n`; }
-       const result = await sendChat(skillsContext + userMessage, allAttachments, inputHistory, undefined, { model: selectedModel || undefined, thinkingMode });
-      const nextHistory = [...history, { role: 'user' as const, content: message }, { role: 'assistant' as const, content: result.text }];
-      const outputValues: Record<string, unknown> = { text: result.text, output: result.text };
-      const image = result.text.match(/https?:\/\/[^\s)]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)]*)?/i)?.[0];
-      const video = result.text.match(/https?:\/\/[^\s)]+\.(?:mp4|webm|mov)(?:\?[^\s)]*)?/i)?.[0];
-      if (image) outputValues.image = image;
-      if (video) outputValues.video = video;
-      const attachmentHistory = [...((config.attachmentHistory as ChatAttachment[][]) || []), allAttachments];
-      update(p.id, { message: '', history: nextHistory, attachmentHistory, attachments: [], outputValues, content: result.text, status: 'success', error: undefined });
-      useCanvasStore.getState().propagateData(p.id, 'text', result.text);
-      useCanvasStore.getState().propagateData(p.id, 'output', result.text);
-      if (image) useCanvasStore.getState().propagateData(p.id, 'image', image);
-      if (video) useCanvasStore.getState().propagateData(p.id, 'video', video);
-      const sessionId = String(config.sessionId || generateId());
-      update(p.id, { sessionId });
-      await saveChatSession({ id: sessionId, nodeId: p.id, title: message.slice(0, 36) || '文件分析', messages: nextHistory.map((turn, index) => ({ id: `${p.id}-${index}`, role: turn.role, content: typeof turn.content === 'string' ? turn.content : '[多媒体消息]', nodeId: p.id, timestamp: Date.now() })), updatedAt: Date.now() });
-      setDraft('');
-    } catch (error) {
-      useCanvasStore.getState().updateNodeData(p.id, { status: 'error', error: error instanceof Error ? error.message : '聊天请求失败' });
-    } finally { setBusy(false); }
-  };
-  const removeAttachment = (index: number) => update(p.id, { attachments: attachments.filter((_, itemIndex) => itemIndex !== index) });
-  const modelInitial = (selectedModel || settings.chatModel || 'AI').charAt(0).toUpperCase();
-  const renderAttachThumb = (att: ChatAttachment) => {
-    const url = att.dataUrl || att.url || '';
-    if (att.mimeType?.startsWith('image/') && url) return <img loading="lazy" src={url} alt={att.name} className="chat-bubble-attach-thumb" />;
-    if (att.mimeType?.startsWith('video/') && url) return <span className="chat-bubble-attach-icon"><Video size={12} /></span>;
-    return <span className="chat-bubble-attach-icon"><Paperclip size={12} /></span>;
-  };
-  return <NodeShell {...p} color="#22d3ee" inputs={[{ id: 'prompt', label: '消息', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'file', label: '文件/音视频', type: 'audio' }]} outputs={[{ id: 'text', label: '回复', type: 'text' }, { id: 'image', label: '图片', type: 'image' }, { id: 'video', label: '视频', type: 'video' }]} resizable>
-    <div className="chat-node-content nodrag" style={{ userSelect: 'text' }}>
-      <div className="chat-node-toolbar">
-        <span className="chat-node-status">{busy ? '正在思考…' : '在线对话'}</span>
-        {chatModels.length > 0 ? <select className="chat-node-model-select nodrag" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ fontSize: 9, padding: '1px 4px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: 'var(--theme-accent)', maxWidth: 120 }}>{chatModels.map(m => <option key={m} value={m}>{m}</option>)}</select> : <button className="nodrag" onClick={fetchModels} disabled={fetching} style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: 'transparent', color: 'var(--theme-accent)', cursor: 'pointer' }}>{fetching ? '…' : '拉取模型'}</button>}
-        <select className="chat-node-model-select nodrag" value={thinkingMode} onChange={e => update(p.id,{thinkingMode:e.target.value})} style={{ fontSize: 9, padding: '1px 3px', borderRadius: 4, border: '1px solid rgba(34,211,238,.3)', background: '#0a1628', color: 'var(--theme-accent)', maxWidth: 54 }}><option value="auto">自动</option><option value="fast">快速</option><option value="deep">深度</option></select>
-        <span>{history.length / 2} 轮记忆</span>
-        <button className="chat-node-clear" onClick={() => update(p.id, { history: [], content: '' })}>清空</button>
-      </div>
-      <div className="chat-node-messages" onWheel={e => e.stopPropagation()}>
-        {history.length === 0 && <div className="chat-node-empty"><span>✦</span><b>开始一段创作对话</b><small>支持图片、文档和多轮记忆</small></div>}
-        {history.map((turn, index) => {
-          const messageAttachments = turn.role === 'user' ? ((config.attachmentHistory as ChatAttachment[][] | undefined)?.[Math.floor(index / 2)] || []) : [];
-          return <div key={`${turn.role}-${index}`} className={`chat-bubble chat-bubble--${turn.role}`}><span className="chat-bubble-avatar" style={{ background: turn.role === 'user' ? '#8b5cf6' : '#22d3ee' }}>{turn.role === 'user' ? '你' : modelInitial}</span><div className="chat-bubble-body">{messageAttachments.length > 0 && <div className="chat-bubble-attachments">{messageAttachments.map((attachment, attachmentIndex) => <span className="chat-bubble-attach-item" key={`${attachment.name}-${attachmentIndex}`}>{renderAttachThumb(attachment)}<small>{attachment.name}</small></span>)}</div>}<div className="chat-bubble-text">{typeof turn.content === 'string' ? turn.content : '多媒体消息'}</div></div></div>;
-        })}
-        {busy && <div className="chat-bubble chat-bubble--assistant chat-bubble--typing"><span className="chat-bubble-avatar" style={{ background: '#22d3ee' }}>{modelInitial}</span><div className="chat-bubble-body"><i/><i/><i/></div></div>}
-        <div ref={messagesEndRef} />
-      </div>
-      {attachments.length > 0 && <div className="chat-node-attachments">{attachments.map((attachment, index) => <div className="chat-attachment" key={`${attachment.name}-${index}`}>{attachment.mimeType.startsWith('image/') && attachment.dataUrl ? <img src={attachment.dataUrl} alt={attachment.name}/> : <span>▧</span>}<label title={attachment.name}>{attachment.name}</label><button onClick={() => removeAttachment(index)}>×</button></div>)}</div>}
-      <textarea value={draft} onChange={e => { setDraft(e.target.value); update(p.id, { message: e.target.value }); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} placeholder="输入消息，Enter 发送 · Shift+Enter 换行" />
-      <div className="chat-node-actions"><label className="chat-attach-button"><input type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.doc,.docx,.mp4,.mov" hidden onChange={onFile}/>＋ 添加图片/文件</label><label className="chat-memory"><input type="checkbox" checked={config.memory !== false} onChange={e => update(p.id, { memory: e.target.checked })}/> 记忆</label><button className="chat-send-button" disabled={busy || (!draft.trim() && !attachments.length)} onClick={() => void send()}>{busy ? '…' : '发送 ↗'}</button></div>
-    </div>
-  </NodeShell>;
 });
 
 
@@ -713,18 +601,34 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
     const timer = window.setTimeout(() => { syncNodeGeometry(); updateNodeInternals(id); }, 120);
     return () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [displayMode, id, syncNodeGeometry, updateNodeInternals]);
+  // 低-4 修复：内容（结果/摘要/输入）变化时用 ResizeObserver 触发重测，自动高度不再陈旧（原实现只在挂载/displayMode 变化时测量）
+  useEffect(() => {
+    const el = layoutRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => { if (!manualSize) { syncNodeGeometry(); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [manualSize, syncNodeGeometry]);
   const enqueue = useCanvasStore(u => u.enqueueNode);
   const pause = useCanvasStore(u => u.pauseNode);
+  const clearQueueEntry = useCanvasStore(u => u.clearQueueEntry);
+  const isQueued = !!nd.queuedAt || nd.status === 'queued';
+  const doExec = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    // 低-3 修复：排队中点击执行按钮=取消排队（有明确反馈），不再无响应；running=取消，其余=入队
+    if (isQueued) { clearQueueEntry(id); message.info('已取消排队'); return; }
+    if (nd.status === 'running') { pause(id); return; }
+    enqueue(id);
+  }, [id, enqueue, pause, clearQueueEntry, nd.status, isQueued]);
   const sel = useCanvasStore(u => u.setSelectedNodeId);
   const ctx = useCanvasStore(u => u.showContextMenu);
-  const [now,setNow]=useState(Date.now());
-  useEffect(()=>{if(nd.status!=='running')return;const timer=setInterval(()=>setNow(Date.now()),100);return()=>clearInterval(timer)},[nd.status]);
-  const elapsed=nd.status==='running'&&nd.generationStartedAt?now-nd.generationStartedAt:nd.generationDurationMs;
-  const overallProgress=nd.status==='success'?100:Math.max(0,Math.min(100,nd.progress||0));
-  const stepProgress=nd.status==='success'?100:Math.max(0,Math.min(100,nd.currentNodeProgress ?? 0));
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { if (nd.status !== 'running') return; const timer = setInterval(() => setNow(Date.now()), 100); return () => clearInterval(timer); }, [nd.status]);
+  const elapsed = nd.status === 'running' && nd.generationStartedAt ? now - nd.generationStartedAt : nd.generationDurationMs;
+  const overallProgress = nd.status === 'success' ? 100 : Math.max(0, Math.min(100, nd.progress || 0));
+  const stepProgress = nd.status === 'success' ? 100 : Math.max(0, Math.min(100, nd.currentNodeProgress ?? 0));
   // 只有真实异步节点需要进度条：服务器工作流 / 付费 API / 耗时本地工具；瞬时本地节点与上传节点（有独立进度条）不显示
-  const showProgressBar = ['apiNode','textToSpeech','videoToVideo','audioToVideo','textToAudio','storyboardRender','timelineRender','imageGeneration','imageToImage','videoGeneration','qwenImageGen','qwenImageEdit','cinematographyKnowledge'].includes(nd.nodeType) || nd.nodeType.startsWith('paid');
-  const doExec = useCallback((e: React.MouseEvent) => { e.stopPropagation(); if (nd.status === 'running') { pause(id); return; } enqueue(id); }, [id, enqueue, nd.status, pause]);
+  const showProgressBar = ['apiNode', 'textToSpeech', 'videoToVideo', 'audioToVideo', 'textToAudio', 'storyboardRender', 'timelineRender', 'imageGeneration', 'imageToImage', 'videoGeneration', 'qwenImageGen', 'qwenImageEdit', 'cinematographyKnowledge'].includes(nd.nodeType) || nd.nodeType.startsWith('paid');
   const toggleDisplayMode = useCallback(() => {
     const node = useCanvasStore.getState().nodes.find(item => item.id === id);
     if (displayMode === 'expanded') {
@@ -777,15 +681,19 @@ const NodeShell: React.FC<SP> = ({ data, id, selected, icon, color, hasInput = t
         <button className="node-mode-toggle nodrag" onClick={e => { e.stopPropagation(); toggleDisplayMode(); }} title={displayMode === 'collapsed' ? '展开端口与参数' : '收起为端口摘要'} aria-label="切换节点展开状态">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">{displayMode === 'collapsed' ? <><path d="m6 9 6 6 6-6"/></> : <><path d="m6 15 6-6 6 6"/></>}</svg>
         </button>
-        {!hideExec && <span onClick={doExec} title={nd.status === 'running' ? '点击取消任务' : nd.status + ' - 点击执行'}
+        {!hideExec && <span onClick={doExec} title={isQueued ? '排队中 - 点击取消排队' : (nd.status === 'running' ? '点击取消任务' : nd.status + ' - 点击执行')}
           style={{
-            width: 24, height: 24, borderRadius: '50%', background: s.bg,
+            width: 24, height: 24, borderRadius: '50%', background: isQueued ? '#f59e0b' : s.bg,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: 'pointer', fontSize: 12, color: '#fff',
-            boxShadow: `0 0 10px ${s.glow}`, transition: 'all 0.3s',
+            boxShadow: `0 0 10px ${isQueued ? '#f59e0b88' : s.glow}`, transition: 'all 0.3s',
             animation: nd.status === 'running' ? 'pulse 0.8s infinite' : (nd.status === 'success' ? 'glowPulse 2s infinite' : 'none'),
-          }}>{nd.status === 'running' ? '×' : s.icon}</span>}
+          }}>{nd.status === 'running' ? '\u25A0' : (isQueued ? '\u23F3' : s.icon)}</span>}
+        {/* 低-4 修复：手动拖拽过尺寸后提供「恢复自动尺寸」入口（否则 manualSize 永久 true，自动测量永远关闭） */}
+        {manualSize && <button className="node-mode-toggle nodrag" title="恢复自动尺寸（按内容自适应）" aria-label="恢复自动尺寸"
+          onClick={e => { e.stopPropagation(); setManualSize(false); syncNodeGeometry(); }}>↺</button>}
         </div>
+      {parameterSummary.length > 0 && <div className="node-parameter-summary" title={parameterSummary.join(' · ')}>{parameterSummary.map((part, index) => <span key={`${part}-${index}`}>{part}</span>)}</div>}
       {hasPortGroups && <div className={`node-ports node-ports--${displayMode}`} style={{ minHeight: portRows * 26 + 8 }}>
         {displayMode === 'collapsed' ? Array.from({ length: portRows }, (_, index) => {
           const input = inputGroups[index], output = outputGroups[index];
@@ -1768,6 +1676,8 @@ export const PreviewNode = memo((p: NodeProps) => {
     const element=mediaRef.current;
     if(!element || media==='text')return;
     const resize=()=>{
+      // 中-4 修复：用户手动拖拽过尺寸（NodeShell 标记 manual）时不覆盖，否则一切换结果节点立刻弹回自动尺寸
+      if (mediaRef.current?.closest('.node-shell--manual')) return;
       const width=element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth;
       const height=element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight;
       if(!width||!height)return;

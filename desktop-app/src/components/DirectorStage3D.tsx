@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { Button, Segmented, Switch, message } from 'antd';
+import { Button, Segmented, Switch, Modal, message } from 'antd';
 import { CloseOutlined, CameraOutlined, VideoCameraOutlined, ReloadOutlined, PlusOutlined, DeleteOutlined, CopyOutlined } from '@ant-design/icons';
 import { autoSaveToAssets } from '@/utils/generationHistory';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -64,7 +64,7 @@ const boneSemanticKey = (name: string): string => {
 type PresetKind = 'geometry' | 'humanoid' | 'prop' | 'environment';
 
 // 机位（镜头）：独立的相机视角快照，非场景物体
-type CameraShot = { id: string; name: string; pos: [number, number, number]; target: [number, number, number] };
+type CameraShot = { id: string; name: string; pos: [number, number, number]; target: [number, number, number]; targetId?: string };
 type PresetDef = { key: string; label: string; kind: PresetKind };
 const PRESET_LIBRARY: PresetDef[] = [
   // 人物
@@ -110,6 +110,7 @@ type SceneObj = {
   material?: THREE.MeshStandardMaterial;
   bones?: THREE.Bone[]; boneNames?: string[];
   castShadow: boolean;
+  note?: string;
 };
 
 // 关键帧：记录所有对象 transform + 人形骨骼旋转
@@ -492,6 +493,18 @@ function normalizeKeyframeTimes(kfs: Keyframe[]): Keyframe[] {
   const base = kfs[0].time;
   return kfs.map(k => ({ ...k, time: k.time - base }));
 }
+/** M6 修复：删除前导关键帧导致时间线整体左移时，同步平移 motionPaths 的 startTime/endTime/duration（夹到 ≥0），
+ *  否则人物路径仍从旧绝对时间开始，与关键帧脱节（角色先原地站再走路） */
+function shiftMotionPathsForKeyframes(paths: MotionPath[], oldFirstTime: number, newFirstTime: number): MotionPath[] {
+  if (paths.length === 0 || oldFirstTime <= 0) return paths;
+  const shift = Math.max(0, oldFirstTime - newFirstTime);
+  if (shift <= 0) return paths;
+  return paths.map(p => {
+    const startTime = Math.max(0, p.startTime - shift);
+    const endTime = Math.max(0, p.endTime - shift);
+    return { ...p, startTime, endTime, duration: Math.max(0.01, endTime - startTime) };
+  });
+}
 
 export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = ({ url, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -507,6 +520,10 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const selectedIdRef = useRef<string>('');
   const motionRef = useRef<Motion | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  // M3 修复：运镜录制开始时保存现有时间线快照；录制太短/取消时恢复，不再无条件清空用户已有动画
+  const preCamKeyframesRef = useRef<Keyframe[] | null>(null);
+  // H4 修复：录制动画的停止定时器句柄，卸载/新录制时 clearTimeout，避免旧 timeout 到期后杀掉下一次录制
+  const recordTimeoutRef = useRef<number | null>(null);
   const recordingOutputSizeRef = useRef<{ width: number; height: number } | null>(null);
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
   const pointerRef = useRef<THREE.Vector2>(new THREE.Vector2());
@@ -636,15 +653,16 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [snapToFrames, setSnapToFrames] = useState(true);
   const timelineScrubRef = useRef(false);
-  const keyframeDragRef = useRef<{ index: number; originX: number; originTime: number } | null>(null);
+  const keyframeDragRef = useRef<{ index: number; originX: number; originTime: number; kf?: Keyframe } | null>(null);
+  const keyframeDragMovedRef = useRef(false);
   const [fps, setFps] = useState(30);
   const timelineDragRef = useRef<{ targetId: string; mode: 'move' | 'start' | 'end'; originX: number; start: number; end: number } | null>(null);
-  const timelineDuration = Math.max(4, keyframes[keyframes.length - 1]?.time || 0, ...motionPaths.map(path => path.endTime || path.duration || 0));
+  const timelineDuration = Math.max(0.1, keyframes[keyframes.length - 1]?.time || 0, ...motionPaths.map(path => path.endTime || path.duration || 0));
   const [currentKf, setCurrentKf] = useState(-1);
   // 时间线范围选择（框选裁切）
   const [rangeSel, setRangeSel] = useState<{ start: number; end: number } | null>(null);
   const rangeDragRef = useRef<{ dragging: boolean; start: number } | null>(null);
-  const rangeMoveRef = useRef<{ originX: number; times: number[] } | null>(null);
+  const rangeMoveRef = useRef<{ originX: number; times: number[]; kfs?: Keyframe[] } | null>(null);
   // 机位（镜头）
   const [cameraShots, setCameraShots] = useState<CameraShot[]>([]);
   const cameraShotsRef = useRef<CameraShot[]>([]);
@@ -701,9 +719,14 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
 
   // 序列化场景（对象 preset/transform/color/骨骼旋转 + 材质模式）
+  // H3 修复：保存对象稳定 id，加载场景/恢复时沿用同一 id，避免关键帧/骨骼/路径引用断链（时间线静默失效）
+  // L9 修复：同时保存自定义 name/note，加载后不再还原为预设名/空备注
   const serializeScene = useCallback((): string => {
     const objects = objectsRef.current.map(o => ({
+      id: o.id,
       key: o.presetKey,
+      name: o.name,
+      note: o.note,
       pos: [o.root.position.x, o.root.position.y, o.root.position.z],
       rot: [o.root.rotation.x, o.root.rotation.y, o.root.rotation.z],
       scale: [o.root.scale.x, o.root.scale.y, o.root.scale.z],
@@ -760,9 +783,10 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
       if (item.scale) root.scale.set(item.scale[0], item.scale[1], item.scale[2]);
       if (item.bones && bones) bones.forEach((b, i) => { if (item.bones[i]) b.rotation.set(item.bones[i][0], item.bones[i][1], item.bones[i][2]); });
       scene.add(root);
-      const obj: SceneObj = { id: `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: preset.label, kind: preset.kind, presetKey: preset.key, root, material: mat, bones, boneNames: bones?.map(b => b.name), castShadow: true };
+      // H3 修复：沿用保存的稳定 id（旧场景无 id 时生成新 id）；L9：恢复自定义 name/note
+      const obj: SceneObj = { id: typeof item.id === 'string' && item.id ? item.id : `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: typeof item.name === 'string' && item.name ? item.name : preset.label, kind: preset.kind, presetKey: preset.key, root, material: mat, bones, boneNames: bones?.map(b => b.name), castShadow: true };
       objectsRef.current.push(obj);
-      setObjects(prev => [...prev, { id: obj.id, name: obj.name, kind: obj.kind, note: '' }]);
+      setObjects(prev => [...prev, { id: obj.id, name: obj.name, kind: obj.kind, note: typeof item.note === 'string' ? item.note : '' }]);
     }
   }, []);
 
@@ -818,12 +842,22 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const chatModel = useSettingsStore(s => s.chatModel);
   const hasChatKey = useSettingsStore(s => !!s.chatApiKey);
 
-  // Esc 关闭
+  // Esc 关闭（分层）：FPV 运镜录制中按 Esc 只停止录制并保存采样，
+  // 不关闭整个导演台（原先直接 handleClose 会丢掉已录的运镜数据）
+  // stopCamRecording 定义在其后（useCallback 提升限制），经 ref 间接调用
+  const stopCamRecordingRef = useRef<(() => void) | null>(null);
+  // L5 修复：Esc 同时触发 keydown 处理器与浏览器自动解锁 pointerlockchange，两者都会调 stopCamRecording；
+  // 用防重标记让先到者停止录制并置标记，后到者（keydown 的 handleClose）看到标记直接忽略，避免"只想退出鼠标锁定却关掉导演台"
+  const escStopPendingRef = useRef(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
-      if (e.key === 'Escape') handleClose();
+      if (e.key === 'Escape') {
+        if (camRecordingRef.current) { stopCamRecordingRef.current?.(); return; }
+        if (escStopPendingRef.current) { escStopPendingRef.current = false; return; }
+        handleClose();
+      }
       else if (matchShortcut(e, getShortcuts()['director-move'])) setGizmoMode('translate');
       else if (matchShortcut(e, getShortcuts()['director-rotate'])) setGizmoMode('rotate');
       else if (matchShortcut(e, getShortcuts()['director-scale'])) setGizmoMode('scale');
@@ -831,6 +865,19 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [handleClose]);
+  // pointer lock 被浏览器自动解锁（用户按 Esc 退出鼠标锁定）时，若仍在录制则自动停止保存采样
+  useEffect(() => {
+    const onLockChange = () => {
+      if (document.pointerLockElement === null && camRecordingRef.current) {
+        // L5：解锁触发的停止也置防重标记，避免同一次 Esc 的 keydown 处理器误关导演台
+        escStopPendingRef.current = true;
+        window.setTimeout(() => { escStopPendingRef.current = false; }, 500);
+        stopCamRecordingRef.current?.();
+      }
+    };
+    document.addEventListener('pointerlockchange', onLockChange);
+    return () => document.removeEventListener('pointerlockchange', onLockChange);
+  }, []);
   useEffect(() => { loadSceneList(); }, [loadSceneList]);
 
   // 材质切换：所有对象统一 overrideMaterial
@@ -942,9 +989,28 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
       const obj = objectsRef.current[idx];
       sceneRef.current?.remove(obj.root);
       objectsRef.current.splice(idx, 1);
+      // L3 修复：释放对象几何体/材质（防 GPU 内存累积）；骨骼材质随 traverse 一并 dispose
+      obj.root.traverse(o => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) {
+          (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach(m => { if (m && m !== obj.material) { try { m.dispose(); } catch { /* ignore */ } } });
+          if (mesh.geometry) { try { mesh.geometry.dispose(); } catch { /* ignore */ } }
+        }
+      });
+      try { obj.material?.dispose(); } catch { /* ignore */ }
+      if (transformControlsRef.current?.object === obj.root) transformControlsRef.current.detach();
+      // L3 修复：删除对象时同步清理其 motionPaths，并清除引用该对象的关键帧（防止孤儿路径撑大时间线/prefs 残留）
+      setMotionPaths(prev => prev.filter(p => p.targetId !== id));
+      setKeyframes(prev => prev.map(k => ({ ...k, objects: { ...k.objects }, bones: { ...k.bones } })).map(k => {
+        const objects = { ...k.objects }; delete objects[id];
+        const bones = { ...k.bones }; delete bones[id];
+        return { ...k, objects, bones };
+      }));
+      setCameraShots(prev => prev.filter(s => s.targetId !== id));
     }
     setObjects(prev => prev.filter(o => o.id !== id));
     selectedIdRef.current = ''; setSelectedId(''); setBoneNames([]); setBoneRots({});
+    setCurrentKf(-1);
   }, []);
 
   // 复制选中物体（深拷贝 3D 树 + 独立材质 + 重新收集骨骼），偏移一点避免重叠
@@ -1020,6 +1086,9 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
 
   // —— 相机运镜录制：采样相机轨迹为时间线关键帧 ——
   const startCamRecording = useCallback(() => {
+    // M2 修复：进入运镜录制前先停其它录制（动画录制/运镜录制），避免两个 MediaRecorder 或 motion 与 FPV 同时驱动相机
+    if (recorderRef.current?.state === 'recording') { try { recorderRef.current.stop(); } catch { /* ignore */ } }
+    motionRef.current = null;
     // 停止旧动画播放（否则 playStateRef 会让 FPV 镜头动不了）
     playStateRef.current = null; setPlaying(false);
     camSamplesRef.current = [];
@@ -1027,7 +1096,13 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     camLastSampleRef.current = 0;
     camRecordingRef.current = true;
     setCamRecording(true);
-    setKeyframes([]);
+    setCamRecordSecs(0);
+    // M3 修复：不再无条件清空关键帧——保存快照，录制太短时恢复；已有时间线时合并采样而非全量替换
+    preCamKeyframesRef.current = keyframes;
+    if (keyframes.length) message.info(`将录制运镜（现有 ${keyframes.length} 个关键帧会与录制结果合并，可录制后删除不需要的帧）`);
+    // M2 修复：人物视角/轨道视角下 FPV 会失效（相机被钉在角色上），强制切回自由视角录制
+    setViewMode('free');
+    viewModeRef.current = 'free';
     // 进入无人机（FPV）模式：从当前相机朝向初始化 yaw/pitch，禁用 OrbitControls，隐藏并捕获鼠标
     const cam = cameraRef.current, ctl = controlsRef.current;
     if (cam && ctl) {
@@ -1037,24 +1112,60 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
       ctl.enabled = false;
       fpvActiveRef.current = true;
       const el = rendererRef.current?.domElement;
-      if (el) { el.style.cursor = 'none'; try { el.requestPointerLock?.(); } catch { /* 部分环境不支持 pointer lock */ } }
+      if (el) {
+        el.style.cursor = 'none';
+        try {
+          // M4 修复：requestPointerLock 可能是 promise 式失败（距上次解锁太近/非用户手势），失败时回滚 FPV 状态而不是残留隐藏光标
+          const ret = (el as any).requestPointerLock?.();
+          if (ret && typeof ret.catch === 'function') ret.catch(() => {
+            fpvActiveRef.current = false;
+            camRecordingRef.current = false;
+            setCamRecording(false);
+            el.style.cursor = '';
+            message.warning('无法锁定鼠标（浏览器限制），已退出录制模式');
+          });
+        } catch { /* 部分环境不支持 pointer lock */ }
+      }
     }
     message.info('录制运镜（无人机模式）：鼠标移动=朝向，WASD/QE=前后左右上下移动，Esc 退出鼠标锁定，点「停止运镜」结束');
-  }, []);
+  }, [keyframes]);
 
   const stopCamRecording = useCallback(() => {
     camRecordingRef.current = false;
     setCamRecording(false);
+    setCamRecordSecs(0);
     fpvActiveRef.current = false;
     if (controlsRef.current) controlsRef.current.enabled = true;
     const el = rendererRef.current?.domElement;
     if (el) { el.style.cursor = ''; if (document.pointerLockElement === el) { try { document.exitPointerLock?.(); } catch { /* ignore */ } } }
     const samples = camSamplesRef.current;
-    if (samples.length < 2) { message.warning('录制太短，请先移动相机再停止'); setKeyframes([]); return; }
+    if (samples.length < 2) {
+      message.warning('录制太短，请先移动相机再停止');
+      // M3 修复：恢复录制前的关键帧，而不是清空用户已有的时间线
+      setKeyframes(prev => preCamKeyframesRef.current ?? prev);
+      preCamKeyframesRef.current = null;
+      return;
+    }
     const kfs: Keyframe[] = samples.map(s => ({ time: s.time, objects: s.objects, bones: s.bones, camera: { pos: s.pos, target: s.target } }));
-    setKeyframes(kfs);
+    // M2 修复：合并进现有时间线（按时间排序）而非全量替换，保留录制前用户手动打的 K 帧
+    setKeyframes(prev => {
+      const before = preCamKeyframesRef.current ?? prev;
+      preCamKeyframesRef.current = null;
+      return [...before, ...kfs].sort((a, b) => a.time - b.time);
+    });
     message.success(`运镜录制完成：${kfs.length} 帧，时长 ${samples[samples.length - 1].time.toFixed(2)}s，可在时间线播放/变速/裁切`);
   }, []);
+  // 挂载 Esc 分层退出所需的稳定回调引用（避免 useCallback 提升顺序问题）
+  useEffect(() => { stopCamRecordingRef.current = stopCamRecording; }, [stopCamRecording]);
+  // 运镜录制时长计时（每 100ms 刷新一次显示，停止后归零）
+  const [camRecordSecs, setCamRecordSecs] = useState(0);
+  useEffect(() => {
+    if (!camRecording) return;
+    const timer = window.setInterval(() => {
+      setCamRecordSecs(camRecordStartRef.current ? (performance.now() - camRecordStartRef.current) / 1000 : 0);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [camRecording]);
 
   const setObjectColor = useCallback((hex: string) => {
     const obj = objectsRef.current.find(o => o.id === selectedIdRef.current);
@@ -1067,6 +1178,9 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
 
   // 修改选中对象备注
   const setObjectNote = useCallback((id: string, note: string) => {
+    // L9 一致性：同步 SceneObj.note，否则序列化保存场景时备注丢失
+    const obj = objectsRef.current.find(o => o.id === id);
+    if (obj) obj.note = note;
     setObjects(prev => prev.map(o => o.id === id ? { ...o, note } : o));
   }, []);
 
@@ -1139,21 +1253,34 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   // 删除当前选中的关键帧（裁切）
   const deleteCurrentKf = useCallback(() => {
     if (currentKf < 0) return;
-    setKeyframes(prev => normalizeKeyframeTimes(prev.filter((_, i) => i !== currentKf)));
+    const oldFirst = keyframes[0]?.time ?? 0;
+    setKeyframes(prev => {
+      const next = normalizeKeyframeTimes(prev.filter((_, i) => i !== currentKf));
+      const newFirst = next[0]?.time ?? 0;
+      // M6：同步平移 motionPaths，保持人物路径与关键帧轨道对齐
+      if (oldFirst > 0 && newFirst < oldFirst) setMotionPaths(paths => shiftMotionPathsForKeyframes(paths, oldFirst, newFirst));
+      return next;
+    });
     setCurrentKf(-1);
     message.success('已删除该关键帧');
-  }, [currentKf]);
+  }, [currentKf, keyframes]);
 
   // 删除框选范围的关键帧（批量裁切）
   const deleteRangeKfs = useCallback(() => {
     if (!rangeSel) return;
     const s = Math.min(rangeSel.start, rangeSel.end);
     const e = Math.max(rangeSel.start, rangeSel.end);
-    setKeyframes(prev => normalizeKeyframeTimes(prev.filter((_, i) => i < s || i > e)));
+    const oldFirst = keyframes[0]?.time ?? 0;
+    setKeyframes(prev => {
+      const next = normalizeKeyframeTimes(prev.filter((_, i) => i < s || i > e));
+      const newFirst = next[0]?.time ?? 0;
+      if (oldFirst > 0 && newFirst < oldFirst) setMotionPaths(paths => shiftMotionPathsForKeyframes(paths, oldFirst, newFirst));
+      return next;
+    });
     setRangeSel(null);
     setCurrentKf(-1);
     message.success(`已裁掉第 ${s + 1}~${e + 1} 帧（共 ${e - s + 1} 帧）`);
-  }, [rangeSel]);
+  }, [rangeSel, keyframes]);
 
   // 记录导演台素材（截图/录制成品入库）
   const addDirectorAsset = useCallback((media: { type: 'image' | 'video'; url: string; name: string }) => {
@@ -1340,24 +1467,47 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const dragKeyframe = useCallback((event: React.PointerEvent, index: number) => {
     const rect = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
     if (!rect) return;
-    keyframeDragRef.current = { index, originX: event.clientX, originTime: keyframes[index].time };
+    // 记录被拖帧的对象引用：结束排序后按引用找回它，避免索引漂移（updateKeyframe/删除等按 currentKf 操作时改错帧）
+    keyframeDragRef.current = { index, originX: event.clientX, originTime: keyframes[index].time, kf: keyframes[index] };
+    // 拖动结束若发生了实际位移（>2px），本次点击视为拖动而非选中跳转
+    keyframeDragMovedRef.current = false;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }, [keyframes]);
   const moveKeyframe = useCallback((event: React.PointerEvent) => {
     const drag = keyframeDragRef.current;
     const rect = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
     if (!drag || !rect) return;
+    if (Math.abs(event.clientX - drag.originX) > 2) keyframeDragMovedRef.current = true;
     const delta = ((event.clientX - drag.originX) / rect.width) * timelineDuration / timelineZoom;
     const raw = Math.max(0, drag.originTime + delta);
     const time = snapToFrames ? Math.round(raw * fps) / fps : raw;
-    setKeyframes(prev => prev.map((kf, index) => index === drag.index ? { ...kf, time } : kf).sort((a, b) => a.time - b.time));
+    // 拖动期间不排序：被拖帧始终停留在 drag.index，避免越过邻帧后 sort 导致索引漂移（拖到邻居帧身上）
+    setKeyframes(prev => prev.map((kf, index) => index === drag.index ? { ...kf, time } : kf));
   }, [fps, snapToFrames, timelineDuration, timelineZoom]);
-  const endKeyframeDrag = useCallback(() => { keyframeDragRef.current = null; }, []);
+  const endKeyframeDrag = useCallback(() => {
+    const drag = keyframeDragRef.current;
+    keyframeDragRef.current = null;
+    if (!drag || !drag.kf) return;
+    // 拖动结束统一按时间排序一次，恢复时间线有序（期间不排序，索引稳定）
+    const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+    setKeyframes(sorted);
+    // 排序后同步 currentKf：被拖帧可能已不在原索引，按对象引用找回（避免 updateKeyframe/删除改错帧）
+    if (currentKf === drag.index) {
+      const newIndex = sorted.indexOf(drag.kf);
+      if (newIndex >= 0) setCurrentKf(newIndex);
+    }
+  }, [keyframes, currentKf]);
+  const onKeyframeClick = useCallback((index: number) => {
+    if (keyframeDragMovedRef.current) { keyframeDragMovedRef.current = false; return; }
+    jumpToKeyframe(index);
+  }, [jumpToKeyframe]);
   const beginRangeMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!rangeSel || keyframes.length === 0) return;
     const s = Math.min(rangeSel.start, rangeSel.end);
     const e = Math.max(rangeSel.start, rangeSel.end);
-    rangeMoveRef.current = { originX: event.clientX, times: keyframes.slice(s, e + 1).map(kf => kf.time) };
+    // 记录区间内帧的时间与引用快照：拖动期间按快照身份修改，越过邻帧后排序也不会把范围外的帧拖进来
+    const selKfs = keyframes.slice(s, e + 1);
+    rangeMoveRef.current = { originX: event.clientX, times: selKfs.map(kf => kf.time), kfs: selKfs };
     event.currentTarget.setPointerCapture(event.pointerId);
   }, [keyframes, rangeSel]);
   const moveRange = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -1367,10 +1517,17 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     const rawDelta = ((event.clientX - drag.originX) / rect.width) * timelineDuration / timelineZoom;
     const minTime = Math.min(...drag.times);
     const delta = Math.max(-minTime, snapToFrames ? Math.round(rawDelta * fps) / fps : rawDelta);
-    const s = Math.min(rangeSel.start, rangeSel.end), e = Math.max(rangeSel.start, rangeSel.end);
-    setKeyframes(prev => prev.map((kf, index) => index >= s && index <= e ? { ...kf, time: Math.max(0, kf.time + delta) } : kf).sort((a, b) => a.time - b.time));
+    // 按身份（引用快照内的帧）修改，而不是按 [s,e] 索引区间（排序后索引会漂移）
+    setKeyframes(prev => prev.map(kf => drag.kfs!.includes(kf) ? { ...kf, time: Math.max(0, kf.time + delta) } : kf));
   }, [fps, rangeSel, snapToFrames, timelineDuration, timelineZoom]);
-  const endRangeMove = useCallback(() => { rangeMoveRef.current = null; }, []);
+  const endRangeMove = useCallback(() => {
+    const drag = rangeMoveRef.current;
+    rangeMoveRef.current = null;
+    if (!drag) return;
+    // 拖动结束后统一按时间排序，恢复有序；排序会改变区间索引，同时清除选择高亮避免错位
+    setKeyframes(prev => [...prev].sort((a, b) => a.time - b.time));
+    setRangeSel(null);
+  }, []);
   const selectedPath = motionPaths.find(path => path.targetId === (selectedId || selectedHumanoid?.id));
   const updateMotionPath = useCallback((patch: Partial<MotionPath>, explicitTargetId?: string) => {
     const targetId = explicitTargetId || selectedId || selectedHumanoid?.id;
@@ -1472,7 +1629,8 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
     playKeyframes();
     setPlayTime(0);
     const total = timelineDuration / speedFactorRef.current;
-    setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); stopPlay(); }, total * 1000 + 100);
+    if (recordTimeoutRef.current != null) window.clearTimeout(recordTimeoutRef.current);
+    recordTimeoutRef.current = window.setTimeout(() => { recordTimeoutRef.current = null; if (recorder.state === 'recording') recorder.stop(); stopPlay(); }, total * 1000 + 100);
   }, [keyframes, playKeyframes, stopPlay, persistBlob, addDirectorAsset, fps, timelineDuration]);
 
   // —— 运镜 ——
@@ -1552,6 +1710,9 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
       motion.onDone = () => { if (recorder.state === 'recording') recorder.stop(); };
     } catch (e: any) {
       console.warn('MediaRecorder 启动失败，仅运镜不录制', e);
+      // M1 修复：录制失败也要让运镜跑起来（此前只设 onDone，motion 从未进入动画循环 → 无运镜也无提示）
+      motion.startTime = performance.now();
+      motionRef.current = motion;
       motion.onDone = () => { message.info('运镜完成（当前环境录制不可用）'); };
     }
   }, [buildMotion, persistBlob, addDirectorAsset, fps]);
@@ -1791,7 +1952,10 @@ ${boneDetails}
     tc.setMode('translate');
     transformControlsRef.current = tc;
     gizmoScene.add(tc.getHelper());
-    tc.addEventListener('dragging-changed', (e: any) => { controls.enabled = !e.value; });
+    tc.addEventListener('dragging-changed', (e: any) => {
+      // M4 修复：FPV/运镜录制期间不恢复 OrbitControls（否则与 FPV 帧循环打架、相机被 orbit 拉走）
+      controls.enabled = !e.value && !fpvActiveRef.current && !camRecordingRef.current;
+    });
     tc.addEventListener('objectChange', () => {
       const obj = objectsRef.current.find(o => o.id === selectedIdRef.current);
       if (obj) {
@@ -2060,7 +2224,7 @@ ${boneDetails}
       if (!point || !targetId) return;
       setMotionPaths(prev => prev.map(path => path.targetId === targetId ? { ...path, points: path.points.map((value, index) => index === drag.index ? [point.x, 0, point.z] : value) } : path));
     };
-    const onPathPointerUp = () => { if (pathDragRef.current) controls.enabled = true; pathDragRef.current = null; };
+    const onPathPointerUp = () => { if (pathDragRef.current && !fpvActiveRef.current && !camRecordingRef.current) controls.enabled = true; pathDragRef.current = null; };
     renderer.domElement.addEventListener('mousedown', onPathPointerDown);
     renderer.domElement.addEventListener('contextmenu', event => { if (pathEditModeRef.current) event.preventDefault(); });
     window.addEventListener('mousemove', onPathPointerMove);
@@ -2154,9 +2318,10 @@ ${boneDetails}
             if (item.scale) root.scale.set(item.scale[0], item.scale[1], item.scale[2]);
             if (item.bones && bones) bones.forEach((b, i) => { if (item.bones[i]) b.rotation.set(item.bones[i][0], item.bones[i][1], item.bones[i][2]); });
             scene.add(root);
-            const obj: SceneObj = { id: `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: preset.label, kind: preset.kind, presetKey: preset.key, root, material: mat, bones, boneNames: bones?.map(b => b.name), castShadow: true };
+            // H3 修复：沿用保存的稳定 id（旧场景无 id 时生成新 id）；L9：恢复自定义 name/note
+            const obj: SceneObj = { id: typeof item.id === 'string' && item.id ? item.id : `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: typeof item.name === 'string' && item.name ? item.name : preset.label, kind: preset.kind, presetKey: preset.key, root, material: mat, bones, boneNames: bones?.map(b => b.name), castShadow: true };
             objectsRef.current.push(obj);
-            setObjects(prev => [...prev, { id: obj.id, name: obj.name, kind: obj.kind, note: '' }]);
+            setObjects(prev => [...prev, { id: obj.id, name: obj.name, kind: obj.kind, note: typeof item.note === 'string' ? item.note : '' }]);
             restored++;
           }
         }
@@ -2170,6 +2335,10 @@ ${boneDetails}
 
     return () => {
       disposed = true; cancelAnimationFrame(animationId);
+      // H4 修复：卸载时停止录制器/退出鼠标锁定/取消录制停止定时器，避免 MediaRecorder 继续采集与卸载后 setState
+      if (recordTimeoutRef.current != null) { window.clearTimeout(recordTimeoutRef.current); recordTimeoutRef.current = null; }
+      if (recorderRef.current?.state === 'recording') { try { recorderRef.current.stop(); } catch { /* ignore */ } }
+      if (document.pointerLockElement) { try { document.exitPointerLock?.(); } catch { /* ignore */ } }
       window.removeEventListener('resize', onResize);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('click', onClick);
@@ -2182,6 +2351,19 @@ ${boneDetails}
       window.removeEventListener('mousemove', onFpvMouseMove);
       window.removeEventListener('keydown', onCamKeyDown);
       window.removeEventListener('keyup', onCamKeyUp);
+      // L4 修复：释放场景内所有对象的几何体/材质/纹理（含地面、灯光、overrideMaterial），防长期开关导演台累积 GPU 内存
+      try {
+        sceneRef.current?.traverse(obj => {
+          const mesh = obj as THREE.Mesh;
+          if (mesh.isMesh) {
+            if (Array.isArray(mesh.material)) mesh.material.forEach(m => { try { m.dispose(); } catch { /* ignore */ } });
+            else if (mesh.material) { try { mesh.material.dispose(); } catch { /* ignore */ } }
+            if (mesh.geometry) { try { mesh.geometry.dispose(); } catch { /* ignore */ } }
+          }
+        });
+        if (sceneRef.current?.overrideMaterial) { try { sceneRef.current.overrideMaterial.dispose(); } catch { /* ignore */ } }
+        sceneRef.current?.clear();
+      } catch { /* ignore */ }
       controls.dispose(); transformControlsRef.current?.dispose(); transformControlsRef.current = null; renderer.dispose(); rendererRef.current = null;
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement);
     };
@@ -2305,12 +2487,12 @@ ${boneDetails}
           </div>
           <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
             <Button size="small" onClick={loadSceneList} style={{ fontSize: 10, flex: 1 }}>刷新列表</Button>
-            <Button size="small" danger onClick={newScene} style={{ fontSize: 10 }}>新场地</Button>
+            <Button size="small" danger onClick={() => Modal.confirm({ title: '开始新场地？', content: '将清空当前场景的全部对象、机位与关键帧（素材库中的成品保留），此操作不可撤销。建议先「保存」场景。', okText: '开始新场地', okButtonProps: { danger: true }, cancelText: '取消', onOk: newScene })} style={{ fontSize: 10 }}>新场地</Button>
           </div>
           {savedScenes.map(s => (
             <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 6px', borderRadius: 4, marginBottom: 3, fontSize: 10, background: 'rgba(255,255,255,.05)' }}>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => loadScene(s.name)}>{s.name}</span>
-              <DeleteOutlined style={{ fontSize: 11, color: '#f87171', cursor: 'pointer' }} onClick={() => deleteScene(s.name)} />
+              <DeleteOutlined style={{ fontSize: 11, color: '#f87171', cursor: 'pointer' }} onClick={() => Modal.confirm({ title: `删除场景「${s.name}」？`, content: '删除后不可恢复。', okText: '删除', okButtonProps: { danger: true }, cancelText: '取消', onOk: () => deleteScene(s.name) })} />
             </div>
           ))}
           {savedScenes.length === 0 && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.35)', marginBottom: 6 }}>暂无保存的场景（输入名字点保存）</div>}
@@ -2348,7 +2530,7 @@ ${boneDetails}
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.name}</span>
                     {o.note && <span style={{ fontSize: 9, color: 'rgba(255,255,255,.4)', maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.note}</span>}
                     {selectedId === o.id && <CopyOutlined title="复制" style={{ fontSize: 12, color: 'rgba(255,255,255,.6)' }} onClick={e => { e.stopPropagation(); duplicateObject(); }} />}
-                    {selectedId === o.id && <DeleteOutlined style={{ fontSize: 12, color: '#f87171' }} onClick={e => { e.stopPropagation(); deleteObject(); }} />}
+                    {selectedId === o.id && <DeleteOutlined style={{ fontSize: 12, color: '#f87171' }} onClick={e => { e.stopPropagation(); Modal.confirm({ title: `删除「${o.name}」？`, content: '删除后不可撤销。', okText: '删除', okButtonProps: { danger: true }, cancelText: '取消', onOk: deleteObject }); }} />}
                   </div>
                 ))}
               </div>
@@ -2444,27 +2626,29 @@ ${boneDetails}
             <option value="4:3">4:3</option>
             <option value="21:9">21:9</option>
           </select>
-          <Button size="small" icon={<CameraOutlined />} onClick={() => void capture()}>截图</Button>
+          <Button size="small" icon={<CameraOutlined />} loading={capturing} onClick={() => void capture()}>截图</Button>
           {lastMedia && <Button size="small" type="primary" onClick={() => sendToCanvas()} title={`发送「${lastMedia.name}」到主画布`}>发布到画布</Button>}
-          <Button size="small" icon={<VideoCameraOutlined />} disabled={recording} onClick={() => void startRecording('orbit')}>环绕录制</Button>
-          <Button size="small" icon={<VideoCameraOutlined />} disabled={recording} onClick={() => void startRecording('dollyIn')}>推近录制</Button>
+          {/* M2 修复：四类录制互斥——任一录制进行中禁用其它录制/关键帧入口，避免两个 MediaRecorder 或 motion 与 FPV 同时驱动相机 */}
+          <Button size="small" icon={<VideoCameraOutlined />} disabled={recording || camRecording} onClick={() => void startRecording('orbit')}>环绕录制</Button>
+          <Button size="small" icon={<VideoCameraOutlined />} disabled={recording || camRecording} onClick={() => void startRecording('dollyIn')}>推近录制</Button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>运镜:</span>
-          <Button size="small" type={camRecording ? 'primary' : 'default'} danger={camRecording} onClick={camRecording ? stopCamRecording : startCamRecording}>{camRecording ? '⏹ 停止运镜' : '⏺ 录制运镜'}</Button>
+          <Button size="small" type={camRecording ? 'primary' : 'default'} danger={camRecording} onClick={camRecording ? stopCamRecording : startCamRecording} disabled={recording}>{camRecording ? '⏹ 停止运镜' : '⏺ 录制运镜'}</Button>
+          {camRecording && <span style={{ fontSize: 11, color: '#f87171', fontVariantNumeric: 'tabular-nums' }}>● {camRecordSecs.toFixed(1)}s</span>}
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>关键帧:</span>
-          <Button size="small" icon={<PlusOutlined />} onClick={addKeyframe}>记录关键帧</Button>
+          <Button size="small" icon={<PlusOutlined />} onClick={addKeyframe} disabled={recording || camRecording}>记录关键帧</Button>
            <Button size="small" onClick={undoTimeline}>撤销</Button>
            <Button size="small" onClick={redoTimeline}>重做</Button>
            <Button size="small" onClick={copyTimelineSelection}>复制</Button>
            <Button size="small" onClick={pasteTimelineSelection}>粘贴</Button>
            <Button size="small" onClick={saveActionClip}>保存片段</Button>
-          <Button size="small" onClick={playing ? stopPlay : playKeyframes} disabled={keyframes.length < 2}>{playing ? '暂停' : '播放'}</Button>
-          <Button size="small" icon={<VideoCameraOutlined />} onClick={() => void recordKeyframes()} disabled={recording || keyframes.length < 2}>录制动画</Button>
+          <Button size="small" onClick={playing ? stopPlay : playKeyframes} disabled={keyframes.length < 2 || camRecording}>{playing ? '暂停' : '播放'}</Button>
+          <Button size="small" icon={<VideoCameraOutlined />} onClick={() => void recordKeyframes()} disabled={recording || camRecording || keyframes.length < 2}>录制动画</Button>
           <Button size="small" onClick={updateKeyframe} disabled={currentKf < 0}>更新关键帧</Button>
           <Button size="small" danger onClick={deleteCurrentKf} disabled={currentKf < 0}>删除此帧</Button>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>速度:</span>
-          <input type="range" min={0.25} max={4} step={0.05} value={speedFactor} onChange={e => setSpeedFactor(Number(e.target.value))} style={{ width: 70 }} title="播放/导出速度" />
+          <input type="range" min={0.25} max={4} step={0.05} value={speedFactor} disabled={recording} onChange={e => setSpeedFactor(Number(e.target.value))} style={{ width: 70, opacity: recording ? 0.4 : 1 }} title={recording ? '录制中不可修改速度（否则视频时长与播放错位）' : '播放/导出速度'} />
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.6)' }}>{speedFactor.toFixed(2)}x</span>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,.55)' }}>平滑:</span>
           <Switch size="small" checked={smoothCam} onChange={setSmoothCam} />
@@ -2506,7 +2690,7 @@ ${boneDetails}
             )}
             {keyframes.map((kf, i) => {
               const total = keyframes[keyframes.length - 1].time || 1;
-              return <span key={`${i}-${kf.time}`} onPointerDown={event => { event.stopPropagation(); dragKeyframe(event, i); }} onPointerMove={moveKeyframe} onPointerUp={endKeyframeDrag} onClick={() => jumpToKeyframe(i)} title={`关键帧 ${i + 1}（第 ${Math.round(kf.time * fps)} 帧 / ${kf.time.toFixed(2)}s）· 拖动调整时间`} style={{ position: 'absolute', left: `${(kf.time / total) * 100}%`, top: '50%', transform: 'translate(-50%,-50%)', width: currentKf === i ? 16 : 12, height: currentKf === i ? 16 : 12, borderRadius: '50%', background: currentKf === i ? '#f59e0b' : '#60a5fa', border: '2px solid #1e293b', cursor: 'grab', zIndex: 2, touchAction: 'none' }} />;
+              return <span key={`${i}-${kf.time}`} onPointerDown={event => { event.stopPropagation(); dragKeyframe(event, i); }} onPointerMove={moveKeyframe} onPointerUp={endKeyframeDrag} onClick={() => onKeyframeClick(i)} title={`关键帧 ${i + 1}（第 ${Math.round(kf.time * fps)} 帧 / ${kf.time.toFixed(2)}s）· 拖动调整时间`} style={{ position: 'absolute', left: `${(kf.time / total) * 100}%`, top: '50%', transform: 'translate(-50%,-50%)', width: currentKf === i ? 16 : 12, height: currentKf === i ? 16 : 12, borderRadius: '50%', background: currentKf === i ? '#f59e0b' : '#60a5fa', border: '2px solid #1e293b', cursor: 'grab', zIndex: 2, touchAction: 'none' }} />;
             })}
             {playing && <span style={{ position: 'absolute', left: `${(playTime / (keyframes[keyframes.length - 1].time || 1)) * 100}%`, top: 0, bottom: 0, width: 2, background: '#f87171', transition: 'left .1s linear' }} />}
           </div>

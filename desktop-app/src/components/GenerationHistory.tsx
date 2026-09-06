@@ -3,7 +3,7 @@ import { Checkbox } from 'antd';
 import { Modal } from 'antd';
 import { Popover } from 'antd';
 import { Button, Tag, Tooltip } from 'antd';
-import { HistoryOutlined, ReloadOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined, InfoOutlined } from '@ant-design/icons';
+import { HistoryOutlined, ReloadOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined, InfoOutlined, ClearOutlined } from '@ant-design/icons';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { Lightbox, type LightboxItem } from '@/components/Lightbox';
@@ -15,7 +15,7 @@ import { addGenerationHistory, GENERATION_HISTORY_EVENT, readGenerationHistory, 
 
 type HistoryItem = GenerationHistoryItem;
 
-export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; onHeightChange?: (height:number)=>void; embedded?: boolean }> = ({ onOpenChange, onHeightChange, embedded = false }) => {
+export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; onHeightChange?: (height:number)=>void; embedded?: boolean; onClose?: () => void }> = ({ onOpenChange, onHeightChange, embedded = false, onClose }) => {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [visibleCount, setVisibleCount] = useState(30); // 增量渲染：默认只渲染 30 条，滚动到底加载更多，避免 50 条媒体全部加载卡顿
@@ -32,7 +32,9 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
   const [showFailed, setShowFailed] = useState(() => useSettingsStore.getState().showFailedHistory);
-  const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
+  // 与设置面板「素材管理 → 显示失败记录」双向同步：订阅 store，切 tab 重挂载前本页也即时生效
+  const showFailedFromStore = useSettingsStore(s => s.showFailedHistory);
+  useEffect(() => { setShowFailed(showFailedFromStore); }, [showFailedFromStore]);
   const [popoverItemId, setPopoverItemId] = useState<string | null>(null);
   const [selResults, setSelResults] = useState<Map<string, Set<number>>>(new Map());
   const formatTrace = (it: any) => {
@@ -67,7 +69,8 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
     setItems(readGenerationHistory());
     setVisibleCount(30);
     void loadChatSessions().then(setChatSessions).catch(() => setChatSessions([]));
-    const refresh = () => { setItems(readGenerationHistory()); setVisibleCount(30); };
+    // 刷新时保留当前渲染条数：用户正在看深处时新记录到达不瞬间截断列表（原实现每次重置 30 造成滚动跳变）
+    const refresh = () => { setItems(readGenerationHistory()); setVisibleCount(count => Math.max(count, 30)); };
     window.addEventListener(GENERATION_HISTORY_EVENT, refresh);
     return () => window.removeEventListener(GENERATION_HISTORY_EVENT, refresh);
   }, []);
@@ -123,6 +126,8 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
   };
 
   const changeOpen=(next:boolean)=>{setOpen(next);onOpenChange?.(next)};
+  // embedded（运行中心内嵌）模式下 ✕ 应关闭整个运行中心（本面板不能单独收起）
+  const closePanel = () => { if (embedded) { onClose?.(); } else changeOpen(false); };
   if (!open && !embedded) return (
     <div className="generation-history-toggle" style={{position:'fixed',bottom:'calc(10px + env(safe-area-inset-bottom))',right:174,left:'auto',zIndex:1002}}>
       <Tooltip title="生成历史"><Button type="text" icon={<HistoryOutlined/>} onClick={()=>changeOpen(true)}
@@ -134,10 +139,10 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
     <div className={embedded ? 'generation-history generation-history--embedded' : 'generation-history'} style={{position:'absolute',bottom:0,left:0,right:0,height,background:'var(--theme-panel)',borderTop:'1px solid var(--theme-border)',zIndex:25,display:'flex',flexDirection:'column'}}>
       <div className="generation-history__resize" title="上下拖动调整历史栏高度" onPointerDown={startResize}><span/></div>
       <div style={{padding:'8px 14px',borderBottom:'1px solid var(--theme-border)',display:'flex',alignItems:'center',gap:8}}>
-        <HistoryOutlined style={{color:'var(--theme-primary)'}}/><span className="generation-history__title">运行中心</span><Button type="text" size="small" className="generation-history__queue-link" onClick={() => window.dispatchEvent(new Event('ai-canvas-open-taskqueue'))}>查看队列</Button>
+        <HistoryOutlined style={{color:'var(--theme-primary)'}}/><span className="generation-history__title">生成历史</span><Button type="text" size="small" className="generation-history__queue-link" onClick={() => window.dispatchEvent(new Event('ai-canvas-open-taskqueue'))}>查看队列</Button>
         <div className="history-tabs"><button className={tab === 'generation' ? 'is-active' : ''} onClick={() => setTab('generation')}>生成历史</button><button className={tab === 'chat' ? 'is-active' : ''} onClick={() => { setTab('chat'); void loadChatSessions().then(setChatSessions).catch(() => undefined); }}>聊天记录</button></div>
         {tab === 'generation' && <label style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 10, color: 'var(--theme-muted)', cursor: 'pointer' }}><Checkbox checked={showFailed} onChange={e => { setShowFailed(e.target.checked); try { useSettingsStore.getState().setAssets({ showFailedHistory: e.target.checked }); } catch { /* ignore */ } }} />显示失败记录</label>}
-        <Button type="text" size="small" onClick={()=>changeOpen(false)} style={{color:'var(--theme-muted)'}}><CloseOutlined/></Button>
+        <Button type="text" size="small" onClick={closePanel} style={{color:'var(--theme-muted)'}}><CloseOutlined/></Button>
       </div>
       <div ref={scrollRef} onScroll={onHistoryScroll} style={{flex:1,overflow:'auto',padding:8,display:'flex',gap:8,flexWrap:'wrap'}}>
         {tab === 'generation' && displayItems.length === 0 && <div style={{color:'var(--theme-muted)',fontSize:12,padding:16}}>暂无生成记录</div>}
@@ -145,11 +150,14 @@ export const GenerationHistory: React.FC<{ onOpenChange?: (open:boolean)=>void; 
           <div key={it.id} draggable={Boolean(it.resultUrl||it.results?.length)} onDragStart={e=>dragHistory(e,it)} onDoubleClick={() => { const r = it.results?.[0] || (it.resultUrl ? { type: /video/i.test(it.nodeType) ? 'video' as const : 'image' as const, url: it.resultUrl } : null); if (r?.url) setLightbox({ url: r.url, type: resultType(r), name: it.nodeName }); }}
           style={{width:120,background:'var(--theme-surface)',borderRadius:8,padding:8,fontSize:11,color:'var(--theme-text)',cursor:it.resultUrl||it.results?.length?'grab':'pointer',border:'1px solid var(--theme-border)'}}
             onClick={()=>sel(it.nodeId)}>
-            {(it.results?.length && it.results.length > 1) ? (
-              <div style={{ position: 'relative', marginBottom: 4 }}>
-                <MediaThumb url={it.results[0].url} type={resultType(it.results[0]) === 'video' ? 'video' : 'image'} style={{ width: '100%', aspectRatio: '1', borderRadius: 4 }} />
-<Popover open={popoverItemId === it.id} onOpenChange={(o) => { if (!o) setPopoverItemId(null); }} content={(<div style={{ maxHeight: 300, overflow: 'auto', width: 360 }}><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 5 }}>{(it.results || []).map((r, ri) => { const selected = selResults.get(it.id)?.has(ri);return <div key={ri} onClick={e => { e.stopPropagation(); setSelResults(cur => { const next = new Map(cur); const st = new Set(next.get(it.id) || []); st.has(ri) ? st.delete(ri) : st.add(ri); next.set(it.id, st); return next; }); }} onDoubleClick={e => { e.stopPropagation(); setLightbox({ url: r.url, type: resultType(r), name: `${it.nodeName} ${ri + 1}` }); }} draggable onDragStart={e => { e.dataTransfer.setData('asset-url', r.url); e.dataTransfer.setData('application/ai-asset', JSON.stringify({ name: it.nodeName, type: resultType(r), url: r.url })); e.dataTransfer.effectAllowed = 'copy'; }} title="单击选中 · 双击放大 · 可拖到画布/资产库" style={{ border: selected ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)', borderRadius: 6, overflow: 'hidden', position: 'relative', cursor: 'pointer', background: 'var(--theme-surface)' }}><MediaThumb url={r.url} type={resultType(r) === 'video' ? 'video' : 'image'} style={{ width: '100%', aspectRatio: '1', display: 'block' }} /><span style={{ position: 'absolute', left: 2, top: 2, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,.55)', borderRadius: 3, padding: '0 4px' }}>{ri + 1}</span>{selected && <span style={{ position: 'absolute', right: 2, top: 2, width: 13, height: 13, borderRadius: '50%', background: 'var(--theme-primary)', color: '#fff', fontSize: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</span>}</div>; })}</div><div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}><Button size="small" type="primary" icon={<DownloadOutlined />} disabled={!selResults.get(it.id)?.size} onClick={e => { e.stopPropagation(); (it.results || []).filter((_, ri) => selResults.get(it.id)?.has(ri)).forEach((r, i) => void downloadMedia(r.url, r.filename || `${it.nodeName}-${Date.now()}-${i + 1}`, r.type)); }}>下载选中({selResults.get(it.id)?.size || 0})</Button><span style={{ fontSize: 9, color: 'var(--theme-muted)', marginLeft: 'auto' }}>选中 · 拖动 · 双击放大</span></div></div>)} trigger="click" placement="right">                <button onClick={e => { e.stopPropagation(); setPopoverItemId(cur => cur === it.id ? null : it.id); }} title="展开全部结果" style={{ position: 'absolute', right: 4, top: 4, border: 'none', background: 'rgba(0,0,0,.55)', color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 9, cursor: 'pointer' }}>{it.results.length} 个 ▾</button></Popover>
-              </div>
+{(it.results?.length && it.results.length > 1) ? (
+              <Popover open={popoverItemId === it.id} onOpenChange={(o) => setPopoverItemId(o ? it.id : null)} trigger="click" placement="bottomRight"
+                content={(<div style={{ maxHeight: 300, overflow: 'auto', width: 360 }}><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 5 }}>{(it.results || []).map((r, ri) => { const selected = selResults.get(it.id)?.has(ri);return <div key={ri} onClick={e => { e.stopPropagation(); setSelResults(cur => { const next = new Map(cur); const st = new Set(next.get(it.id) || []); st.has(ri) ? st.delete(ri) : st.add(ri); next.set(it.id, st); return next; }); }} onDoubleClick={e => { e.stopPropagation(); setLightbox({ url: r.url, type: resultType(r), name: `${it.nodeName} ${ri + 1}` }); }} draggable onDragStart={e => { e.dataTransfer.setData('asset-url', r.url); e.dataTransfer.setData('application/ai-asset', JSON.stringify({ name: it.nodeName, type: resultType(r), url: r.url })); e.dataTransfer.effectAllowed = 'copy'; }} title="单击选中 · 双击放大 · 可拖到画布/资产库" style={{ border: selected ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)', borderRadius: 6, overflow: 'hidden', position: 'relative', cursor: 'pointer', background: 'var(--theme-surface)' }}><MediaThumb url={r.url} type={resultType(r) === 'video' ? 'video' : 'image'} style={{ width: '100%', aspectRatio: '1', display: 'block' }} /><span style={{ position: 'absolute', left: 2, top: 2, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,.55)', borderRadius: 3, padding: '0 4px' }}>{ri + 1}</span>{selected && <span style={{ position: 'absolute', right: 2, top: 2, width: 13, height: 13, borderRadius: '50%', background: 'var(--theme-primary)', color: '#fff', fontSize: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</span>}</div>; })}</div><div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}><Button size="small" type="primary" icon={<DownloadOutlined />} disabled={!selResults.get(it.id)?.size} onClick={e => { e.stopPropagation(); (it.results || []).filter((_, ri) => selResults.get(it.id)?.has(ri)).forEach((r) => void saveItem({ ...it, resultUrl: r.url, results: [{ type: resultType(r), url: r.url }] })); setSelResults(cur => { const next = new Map(cur); next.delete(it.id); return next; }); }}>批量下载</Button><Button size="small" icon={<ClearOutlined />} onClick={e => { e.stopPropagation(); setSelResults(cur => { const next = new Map(cur); next.delete(it.id); return next; }); }}>清空选择</Button></div></div>)}>
+                <div style={{ position: 'relative', marginBottom: 4, cursor: 'pointer' }} title={`点击查看全部 ${(it.results || []).length} 个结果`}>
+                  <MediaThumb url={it.results[0].url} type={resultType(it.results[0]) === 'video' ? 'video' : 'image'} style={{ width: '100%', aspectRatio: '1', borderRadius: 4 }} />
+                  <span style={{ position: 'absolute', right: 2, bottom: 2, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,.6)', borderRadius: 3, padding: '0 4px' }}>+{(it.results || []).length - 1}</span>
+                </div>
+              </Popover>
             ) : (it.results?.[0]?.url||it.resultUrl) ? <MediaThumb url={String(it.results?.[0]?.url||it.resultUrl)} type={resultType(it.results?.[0] || { url: it.resultUrl, type: it.results?.[0]?.type }) === 'video' ? 'video' : 'image'} style={{ width: '100%', borderRadius: 4, aspectRatio: '1', marginBottom: 4 }} /> :
              <div style={{width:'100%',aspectRatio:'1',background:'var(--theme-input)',borderRadius:4,marginBottom:4,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--theme-text-3)',fontSize:10}}>无预览</div>}
             <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{it.nodeName}</div>

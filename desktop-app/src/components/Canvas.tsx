@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, SelectionMode, type ReactFlowInstance, type Edge } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ConnectionLineType, SelectionMode, MarkerType, type ReactFlowInstance, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Lightbox, type LightboxItem } from '@/components/Lightbox';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 // 稳定 props（避免每次 render 新建对象引用导致 ReactFlow 重渲染）
-const DEFAULT_EDGE_OPTIONS = { type: 'deletable' as const, animated: true, style: { stroke: 'var(--theme-edge)', strokeWidth: 2.2 } };
+// 统一在默认选项加箭头：visibleEdges 不再剥除 markerEnd/Start，连线始终渲染方向箭头（loadCanvas 的颜色补全才真正生效）
+const DEFAULT_EDGE_OPTIONS = { type: 'deletable' as const, animated: true, markerEnd: MarkerType.ArrowClosed, style: { stroke: 'var(--theme-edge)', strokeWidth: 2.2 } };
 
 import { nodeTypes } from '@/components/nodes/nodeTypes';
 import { DeletableEdge } from '@/components/edges/DeletableEdge';
@@ -13,7 +14,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { getShortcuts, matchShortcut } from '@/utils/shortcuts';
 import { useThemeStore } from '@/stores/themeStore';
 import { Button, Dropdown, Modal, Input, Popover, Tooltip, message } from 'antd';
-import { DeleteOutlined, SaveOutlined , EyeOutlined, PushpinOutlined } from '@ant-design/icons';
+import { DeleteOutlined, SaveOutlined , EyeOutlined, PushpinOutlined, PlusOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { getModels, testConnection } from '@/services/comfyui.service';
 import { comfyWS } from '@/services/comfyui-ws.service';
 import { CommandPalette } from '@/components/CommandPalette';
@@ -78,9 +79,10 @@ export const Canvas: React.FC = () => {
     finally { setBatchAiBusy(false); }
   };
   const edges = useCanvasStore(s => s.edges);
+  // 只滤掉隐藏节点相关的边，保留 markerEnd/markerStart（箭头由 DEFAULT_EDGE_OPTIONS + loadCanvas 颜色补全提供）
   const visibleEdges = useMemo(() => {
     const idSet = new Set(nodes.filter(n => !n.data.hidden).map(n => n.id));
-    return edges.filter(e => idSet.has(e.source) && idSet.has(e.target)).map(({ markerEnd: _markerEnd, markerStart: _markerStart, ...edge }) => edge);
+    return edges.filter(e => idSet.has(e.source) && idSet.has(e.target));
   }, [edges, nodes]);
   const onNodesChange = useCanvasStore(s => s.onNodesChange);
   const pushHistory = useCanvasStore(s => s._pushHistory);
@@ -222,8 +224,28 @@ export const Canvas: React.FC = () => {
     useCanvasStore.getState().showContextMenu(e.clientX, e.clientY, null);
   }, []);
   useEffect(()=>{const close=(event:PointerEvent)=>{if((event.target as HTMLElement).closest('.canvas-text-editor'))return;window.dispatchEvent(new Event('ai-canvas-close-text-editor'))};window.addEventListener('pointerdown',close);return()=>window.removeEventListener('pointerdown',close)},[]);
+  // 智能连线 ghost 预告：拖线中在鼠标位置显示虚线框提示「松开创建结果节点」（仅当源节点有输出且开关开启时）
+  const [connectGhost, setConnectGhost] = useState<{ x: number; y: number } | null>(null);
+  const onConnectStart = useCallback((_event: unknown, params: { nodeId: string | null; handleType: 'source' | 'target' | null }) => {
+    if (params?.handleType !== 'source' || !useSettingsStore.getState().smartConnect) { setConnectGhost(null); return; }
+    const node = useCanvasStore.getState().nodes.find(n => n.id === params.nodeId);
+    const results = (node?.data.results || []) as Array<{ type: string; url: string }>;
+    if (!node?.data?.resultUrl && !results.length) { setConnectGhost(null); return; }
+    setConnectGhost({ x: 0, y: 0 });
+  }, []);
+  const onConnectMove = useCallback((event: unknown) => {
+    if (!connectGhost || !event || typeof event !== 'object') return;
+    const e = event as { changedTouches?: ArrayLike<{ clientX: number; clientY: number }>; clientX?: number; clientY?: number };
+    const point = e.changedTouches?.length ? e.changedTouches[0] : e;
+    if (typeof point.clientX !== 'number' || typeof point.clientY !== 'number') return;
+    const pos = rfRef.current?.screenToFlowPosition({ x: point.clientX, y: point.clientY });
+    if (pos) setConnectGhost({ x: pos.x, y: pos.y });
+  }, [connectGhost]);
   const onConnectEnd=useCallback((event:MouseEvent|TouchEvent,state:any)=>{
+    setConnectGhost(null);
     if(state?.toNode||!state?.fromNode||state?.fromHandle?.type==='target')return;
+    // 智能补建节点开关：设置-性能/画布可关闭（用户明确不想要时松手只连线）
+    if (!useSettingsStore.getState().smartConnect) return;
     const sourceId=state.fromNode.id as string;const source=useCanvasStore.getState().nodes.find(node=>node.id===sourceId);
     const results=(source?.data.results||[]) as Array<{type:'text'|'image'|'video'|'audio'|'3d';url:string}>;
     if(!source?.data.resultUrl&&!results.length)return;
@@ -236,7 +258,9 @@ export const Canvas: React.FC = () => {
     const paidType=String((source?.data?.config as any)?.type||'');
     const isWorkflow=nt==='apiNode'||nt==='localWorkflow';
     const isMediaToMedia=nt==='imageToImage'||nt==='videoToVideo'||paidType.includes('image-to-image')||paidType.includes('image-to-video')||paidType.includes('video-to-video')||paidType.includes('image-editing')||paidType.includes('inpainting');
-    const useCompare=!isWorkflow&&isMediaToMedia&&(firstType==='image'||firstType==='video');
+    const useCompare=!isWorkflow&&isMediaToMedia&&firstType==='image';
+    // 端口兼容性护栏：compare 节点 original 端口仅接受 image（types/index.ts），
+    // 视频/音频/3D 输出自动回退到 preview 的 media 通用端口，避免创建后因端口不匹配被 onConnect 拒成孤儿节点
     const position=rfRef.current.screenToFlowPosition({x:point.clientX,y:point.clientY});
     const nodeType=useCompare?'compare':'preview';
     const newId=addNode(nodeType,{x:position.x-120,y:position.y-90},{label:nodeType==='compare'?'前后对比':'结果预览'});
@@ -360,6 +384,7 @@ export const Canvas: React.FC = () => {
       const layer = layers.get(n.id) || 0; const group = groups.get(layer) || []; const index = group.findIndex(item => item.id === n.id);
       return { ...n, position: { x: 120 + layer * xGap, y: 100 + index * yGap } };
     });
+    useCanvasStore.getState()._pushHistory();
     useCanvasStore.setState({ nodes: updated as any });
     setTimeout(() => rfRef.current?.fitView({ duration: 400 }), 80);
   }, []);
@@ -490,6 +515,10 @@ export const Canvas: React.FC = () => {
                 </div>
               ))}
             </div>
+            <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'center', pointerEvents: 'auto' }}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => { window.dispatchEvent(new CustomEvent('ai-canvas-open-node-library')); }}>从节点库添加</Button>
+              <Button icon={<AppstoreOutlined />} onClick={() => { window.dispatchEvent(new CustomEvent('ai-canvas-open-node-library')); window.dispatchEvent(new CustomEvent('ai-canvas-open-templates')); }}>载入模板工作流</Button>
+            </div>
           </div>
         </div>
       )}
@@ -516,11 +545,12 @@ export const Canvas: React.FC = () => {
         </div>
       )}
       <ReactFlow nodes={visibleNodes} edges={visibleEdges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} edgeTypes={edgeTypes}
-        onConnect={onConnect} onConnectEnd={onConnectEnd} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onNodeDoubleClick={onNodeDoubleClick} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes} snapToGrid snapGrid={[20, 20]}
-        fitView fitViewOptions={{ maxZoom: 1 }} minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} selectionKeyCode="Control" multiSelectionKeyCode="Shift" selectionMode={SelectionMode.Partial}
+        onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} onMove={onConnectMove} onInit={onInit} onSelectionChange={onSel} onNodeDragStop={pushHistory} onNodeDoubleClick={onNodeDoubleClick} onPaneClick={onPaneClick} onPaneContextMenu={onPaneCtx} nodeTypes={nodeTypes} snapToGrid snapGrid={[20, 20]}
+        fitView fitViewOptions={{ maxZoom: 1 }} minZoom={0.02} maxZoom={8} zoomOnDoubleClick={false} deleteKeyCode={null} selectionKeyCode="Shift" multiSelectionKeyCode="Control" selectionMode={SelectionMode.Partial}
         connectionLineType={ConnectionLineType.Bezier} connectionRadius={48}
         defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}>
         {showGrid && <Background variant={gridVariant} gap={20} size={1} color="var(--theme-grid)" />}
+        {connectGhost && <div className="connect-ghost" style={{ left: connectGhost.x, top: connectGhost.y }}><span>松开创建结果节点</span></div>}
         <Controls position="top-right" showFitView showZoom showInteractive={false} />
         {showMiniMap && <MiniMap position="bottom-right" nodeColor={n=>(n.data?.color as string)??'#6366f1'} maskColor="rgba(0,0,0,0.5)" />}
         <Popover trigger="click" placement="topRight" content={<div style={{ width: 230 }}>

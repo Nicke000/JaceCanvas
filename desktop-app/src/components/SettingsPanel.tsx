@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Form, Input, InputNumber, Button, Space, Divider, message, Select, Switch, Tag } from 'antd';
 import { SettingOutlined, ApiOutlined, CheckCircleOutlined, CloseCircleOutlined, GithubOutlined, QqOutlined, RobotOutlined, CodeOutlined, KeyOutlined, LinkOutlined, ThunderboltOutlined, InfoCircleOutlined, BgColorsOutlined, PlusOutlined, WarningOutlined, ReloadOutlined, FolderOpenOutlined, CopyOutlined , DatabaseOutlined } from '@ant-design/icons';
 import { useSettingsStore, PAID_API_NODE_KINDS, parseSshCommand, type PaidApiProfile, type PaidApiNodeKind, type ServerProfile } from '@/stores/settingsStore';
 import { testConnection, getModels } from '@/services/comfyui.service';
 import { fetchModelsFromApi } from '@/services/chat.service';
 import { fetchPaidModels as fetchPaidModelsFromApi, testPaidConnection } from '@/services/paidApi.service';
-import { BAILIAN_REGION_OPTIONS, callBailianTextToImage } from '@/services/bailianTextToImage.service';
 import { PAID_CAPABILITIES, type PaidCapability } from '@/services/paidApi.service';
 import { getPaidModelsForCapability, getSupportedPaidCapabilities, PAID_CAPABILITY_LABELS } from '@/config/paidCapabilityCatalog';
 import { DEFAULT_STORYBOARD_SYSTEM_PROMPT } from '@/services/storyboard.service';
@@ -66,8 +65,6 @@ export const SettingsButton: React.FC = () => {
   const [testingChat, setTestingChat] = useState(false);
   const [testingOptimizer, setTestingOptimizer] = useState(false);
   const [testingPaid, setTestingPaid] = useState(false);
-  const [testingBailian, setTestingBailian] = useState(false);
-  const [bailianTestResult, setBailianTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [paidNodeModels, setPaidNodeModels] = useState<Record<string, string[]>>({});
   const [paidNodeBusy, setPaidNodeBusy] = useState<Record<string, boolean>>({});
   const [paidNodeResults, setPaidNodeResults] = useState<Record<string, { ok: boolean; message: string } | null>>({});
@@ -126,7 +123,12 @@ export const SettingsButton: React.FC = () => {
   const [activePaidNodeKind, setActivePaidNodeKind] = useState<PaidApiNodeKind>('paidTextToImage');
   const [activePaidCapability, setActivePaidCapability] = useState<PaidCapability>('text-to-image');
   useEffect(() => {
-    const open = () => openSettings();
+    // 用最新快照的 openSettings，避免闭包持有首帧陈旧 settings（先改设置再经"关于"打开会回填旧值）
+    const open = (event?: Event) => {
+      const detail = (event as CustomEvent | undefined)?.detail as { tab?: string } | undefined;
+      if (detail?.tab && ['connection', 'runninghub', 'paidapi', 'performance', 'assets', 'chat', 'devagent', 'optimizer', 'appearance', 'log', 'dsh', 'about'].includes(detail.tab)) setActiveTab(detail.tab as SettingTab);
+      openSettingsRef.current();
+    };
     window.addEventListener('ai-canvas-open-settings', open);
     const openAppearance = () => { setActiveTab('appearance'); setOpen(true); };
     window.addEventListener('ai-canvas-open-appearance', openAppearance);
@@ -135,7 +137,6 @@ export const SettingsButton: React.FC = () => {
       window.removeEventListener('ai-canvas-open-appearance', openAppearance);
     };
   }, []);
-
   const openSettings = () => {
     const firstProfile = settings.paidApiProfiles[0];
     form.setFieldsValue({ ...settings, ...(firstProfile ? { paidApiProfileName:firstProfile.name, paidApiProvider:firstProfile.provider, paidApiKey:firstProfile.apiKey, paidApiBaseUrl:firstProfile.baseUrl, paidApiSelectedModel:firstProfile.selectedModel } : {}) });
@@ -156,6 +157,9 @@ export const SettingsButton: React.FC = () => {
     setActivePaidCapability('text-to-image');
     setUnsaved(false); setOpen(true);
   };
+  // 保证 openSettings 引用最新 settings（每次渲染更新 ref，监听器里调用的就是最新版）
+  const openSettingsRef = useRef(openSettings);
+  openSettingsRef.current = openSettings;
   const readPaidNodeValues = (kind: PaidApiNodeKind) => {
     const values = form.getFieldsValue();
     const node = settings.paidApiNodes?.[kind];
@@ -172,6 +176,7 @@ export const SettingsButton: React.FC = () => {
       taskPath: field(`${kind}TaskPath`, node?.taskPath || ''),
       capabilityPath: field(`${kind}CapabilityPath`, node?.capabilityPath || ''),
       authMode: field(`${kind}AuthMode`, node?.authMode || 'bearer') as 'bearer' | 'x-api-key' | 'query-key' | 'none',
+      selectedCapability: field(`${kind}SelectedCapability`, node?.selectedCapability || ''),
       enabledCapabilities: Array.isArray(values[`${kind}EnabledCapabilities`]) ? values[`${kind}EnabledCapabilities`] : (node?.enabledCapabilities || []),
     };
   };
@@ -352,20 +357,6 @@ export const SettingsButton: React.FC = () => {
     finally { setTestingPaid(false); }
   };
 
-  const testBailianConnection = async () => {
-    const values = form.getFieldsValue();
-    const apiKey = String(values.bailianApiKey || settings.bailianTextToImage?.apiKey || '').trim();
-    const region = values.bailianRegion || settings.bailianTextToImage?.region || 'cn-beijing';
-    const workspaceId = String(values.bailianWorkspaceId || '').trim();
-    const baseUrl = String(values.bailianBaseUrl || '').trim();
-    setTestingBailian(true); setBailianTestResult(null);
-    try {
-      const result = await callBailianTextToImage({ apiKey, region, workspaceId, baseUrl }, { prompt: '一张简洁的彩色几何图形，白色背景', ratio: '1:1', resolution: 1024, seed: 1 });
-      setBailianTestResult({ ok: Boolean(result.url), message: result.url ? '百炼接口调用成功，已返回图片地址' : '接口响应成功，但没有图片地址' });
-    } catch (error) { setBailianTestResult({ ok: false, message: error instanceof Error ? error.message : '百炼接口调用失败' }); }
-    finally { setTestingBailian(false); }
-  };
-
   const [assetFolder, setAssetFolder] = useState('');
   const [skillsFolder, setSkillsFolder] = useState('');
   const [skills, setSkills] = useState<Array<{ relative: string; name: string; content: string }>>([]);
@@ -436,9 +427,11 @@ export const SettingsButton: React.FC = () => {
       message.success('连接设置已保存');
     }
     if (section === 'assets') {
+      // 无 electronAPI 环境（Web 构建）下 assetFolder 恒为空：回退读 store 已有路径，避免把已有配置覆盖为空
+      const fallbackFolder = String(settings.assetSavePath || values.assetSavePath || '');
       store.setAssets({
         assetAutoSave: Boolean(values.assetAutoSave),
-        assetSavePath: assetFolder || String(values.assetSavePath || ''),
+        assetSavePath: assetFolder || fallbackFolder,
         assetRetentionDays: Math.max(1, Number(values.assetRetentionDays) || 7),
         assetMaxSizeGB: Number(values.assetMaxSizeGB) || 0,
         showFailedHistory: Boolean(values.showFailedHistory),
@@ -466,21 +459,20 @@ export const SettingsButton: React.FC = () => {
       message.success('DevAgent 设置已保存');
     }
     if (section === 'optimizer') {
-      store.setOptimizerProvider(values.optimizerProvider); store.setOptimizerBaseUrl(values.optimizerBaseUrl || '');
+      // 其它分支均有兜底，此处保持一致的防御：清空选择时回退 openai，避免破坏 ProviderType
+      store.setOptimizerProvider(values.optimizerProvider || 'openai'); store.setOptimizerBaseUrl(values.optimizerBaseUrl || '');
       store.setOptimizerApiKey(values.optimizerApiKey || ''); store.setOptimizerModel(values.optimizerModel || '');
       store.setOptimizerModels(fetchedOptimizerModels.length ? fetchedOptimizerModels : store.optimizerModels);
       store.setOptimizerPromptOverrides(values.optimizerPromptOverrides || {});
       store.setStoryboardSystemPrompt(values.storyboardSystemPrompt || '');
       message.success('提示词 AI 设置已保存');
     }
-    if (section === 'paidapi') {
-      store.setPaidApi({ paidApiProvider: values.paidApiProvider || '', paidApiKey: values.paidApiKey || '', paidApiBaseUrl: values.paidApiBaseUrl || '', paidApiModels: fetchedPaidModels.length ? fetchedPaidModels : store.paidApiModels, paidApiSelectedModel: values.paidApiSelectedModel || '' });
-      for (const kind of PAID_API_NODE_KINDS) store.setPaidApiNode(kind, readPaidNodeValues(kind));
-      store.setBailianTextToImage({ apiKey: values.bailianApiKey || '', region: values.bailianRegion || 'cn-beijing', workspaceId: values.bailianWorkspaceId || '', baseUrl: values.bailianBaseUrl || '' });
-      message.success('付费 API 设置已保存');
-    }
+    // P2-8 修复：删除不可达的 paidapi 保存分支——付费 API 页签由独立组件 PaidApiSettings 用本地 state 直写 store，
+    // 没有任何按钮调用 save(values,'paidapi')；保留该分支只会留下「以空值覆盖 paidApi* 配置/清空 bailian*」的事故隐患
     if (section === 'performance') {
       await (window as any).electronAPI?.saveGpuSetting?.(Boolean(values.gpuAcceleration));
+      useSettingsStore.getState().setSmartConnect(Boolean(values.smartConnect));
+      useSettingsStore.getState().setGpuAcceleration(Boolean(values.gpuAcceleration));
       message.success('性能设置已保存');
     }
     setUnsaved(false);
@@ -490,21 +482,13 @@ export const SettingsButton: React.FC = () => {
     <Modal className="settings-modal" title={<span className="settings-modal__title">⚙ JaceCanvas 设置</span>} open={open} onCancel={() => { if (unsaved) setConfirmClose(true); else setOpen(false); }} footer={null} width={860} styles={{ body: { padding: 0 } }}>
       <div className="settings-layout">
         <div className="settings-sidebar">
+          <div className="settings-sidebar-group">生成服务</div>
           <div className={'settings-sidebar-item ' + (activeTab === 'connection' ? 'active' : '')} onClick={() => setActiveTab('connection')}>
             <LinkOutlined /> <span>连接设置</span>
           </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'runninghub' ? 'active' : '')} onClick={() => setActiveTab('runninghub')}>
              <ApiOutlined /> <span>RunningHub</span>
            </div>
-           <div className={'settings-sidebar-item ' + (activeTab === 'chat' ? 'active' : '')} onClick={() => setActiveTab('chat')}>
-            <RobotOutlined /> <span>聊天 AI</span>
-          </div>
-          <div className={'settings-sidebar-item ' + (activeTab === 'devagent' ? 'active' : '')} onClick={() => setActiveTab('devagent')}>
-            <CodeOutlined /> <span>DevAgent</span>
-          </div>
-          <div className={'settings-sidebar-item ' + (activeTab === 'optimizer' ? 'active' : '')} onClick={() => setActiveTab('optimizer')}>
-            <ThunderboltOutlined /> <span>提示词 AI</span>
-          </div>
           <div className={'settings-sidebar-item ' + (activeTab === 'paidapi' ? 'active' : '')} onClick={() => setActiveTab('paidapi')}>
             <KeyOutlined /> <span>付费 API</span>
           </div>
@@ -514,6 +498,17 @@ export const SettingsButton: React.FC = () => {
           <div className={'settings-sidebar-item ' + (activeTab === 'assets' ? 'active' : '')} onClick={() => setActiveTab('assets')}>
             <DatabaseOutlined /> <span>素材管理</span>
           </div>
+          <div className="settings-sidebar-group">AI 能力</div>
+          <div className={'settings-sidebar-item ' + (activeTab === 'chat' ? 'active' : '')} onClick={() => setActiveTab('chat')}>
+            <RobotOutlined /> <span>聊天 AI</span>
+          </div>
+          <div className={'settings-sidebar-item ' + (activeTab === 'devagent' ? 'active' : '')} onClick={() => setActiveTab('devagent')}>
+            <CodeOutlined /> <span>DevAgent</span>
+          </div>
+          <div className={'settings-sidebar-item ' + (activeTab === 'optimizer' ? 'active' : '')} onClick={() => setActiveTab('optimizer')}>
+            <ThunderboltOutlined /> <span>提示词 AI</span>
+          </div>
+          <div className="settings-sidebar-group">系统</div>
           <div className={'settings-sidebar-item ' + (activeTab === 'appearance' ? 'active' : '')} onClick={() => setActiveTab('appearance')}>
             <BgColorsOutlined /> <span>外观</span>
           </div>
@@ -678,6 +673,7 @@ export const SettingsButton: React.FC = () => {
             {activeTab === 'performance' && <div className="settings-tab-content">
               <h3 className="settings-tab-title">性能设置</h3>
               <Form.Item name="gpuAcceleration" label="启用 GPU 硬件加速" valuePropName="checked"><Switch onChange={() => message.info('GPU 设置将在点击「保存性能设置」并重启应用后生效')} /></Form.Item>
+              <Form.Item name="smartConnect" label="智能连线补建节点" valuePropName="checked" extra="从输出端口拖线到空白处松手时，自动补建「结果预览 / 前后对比」节点并连好。关闭后仅保留手动连线。"><Switch /></Form.Item>
               <Space wrap style={{ marginTop: 12 }}>
                  <Button type="primary" onClick={() => void form.validateFields().then(values => save(values, 'performance'))}>保存性能设置</Button>
               </Space>

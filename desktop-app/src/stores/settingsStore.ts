@@ -99,6 +99,8 @@ export interface ApiSettings {
   assetRetentionDays: number;
   assetMaxSizeGB: number;
   showFailedHistory: boolean;
+  /** 画布智能连线：松手空白自动补建「预览/对比」节点（默认开，可在设置中关闭） */
+  smartConnect: boolean;
   dramaAiApiKey: string;
   dramaAiModel: string;
   dramaAiModels: string[];
@@ -147,6 +149,7 @@ const DEFAULT: ApiSettings = {
   devAgentProvider: 'openai', devAgentBaseUrl: '', devAgentApiKey: '', devAgentModel: '', devAgentModels: [],
   dramaAiProvider: 'openai', dramaAiBaseUrl: '', dramaAiApiKey: '', dramaAiModel: '', dramaAiModels: [],
   assetAutoSave: true, assetSavePath: '', assetRetentionDays: 7, assetMaxSizeGB: 5, showFailedHistory: false,
+  smartConnect: true,
   paidApiProvider: '', paidApiKey: '', paidApiBaseUrl: '', paidApiModels: [], paidApiSelectedModel: '', paidApiAspectRatio: '1:1', paidApiWidth: 1024, paidApiHeight: 1024, paidApiProfiles: [], paidApiProviders: DEFAULT_PAID_PROVIDERS,
   paidApiNodes: {
     paidTextToImage: EMPTY_PAID_NODE(), paidImageToImage: EMPTY_PAID_NODE(),
@@ -254,6 +257,7 @@ function load(): ApiSettings {
     if (typeof loaded.assetMaxSizeGB !== 'number' || Number.isNaN(loaded.assetMaxSizeGB)) loaded.assetMaxSizeGB = 5;
     if (typeof loaded.assetSavePath !== 'string') loaded.assetSavePath = '';
     if (typeof loaded.showFailedHistory !== 'boolean') loaded.showFailedHistory = false;
+    if (typeof loaded.smartConnect !== 'boolean') loaded.smartConnect = true;
     if (!loaded.sshCommand && loaded.sshHost) loaded.sshCommand = `ssh -p ${loaded.sshPort || 22} ${loaded.sshUsername ? `${loaded.sshUsername}@` : ''}${loaded.sshHost}`;
     if (!loaded.paidApiAspectRatio) loaded.paidApiAspectRatio = '1:1';
     if (!loaded.paidApiWidth) loaded.paidApiWidth = 1024;
@@ -293,6 +297,8 @@ interface SettingsStore extends ApiSettings {
   setSsh: (value: Pick<ApiSettings,'sshCommand'|'sshHost'|'sshPort'|'sshUsername'|'sshPassword'>) => void;
   setChat: (value: Partial<Pick<ApiSettings,'chatProvider'|'chatBaseUrl'|'chatApiKey'|'chatModel'|'chatModels'|'chatSystemPrompt'|'chatThinkingMode'|'skillsEnabled'|'skillsFolder'>>) => void;
   setAssets: (value: Partial<Pick<ApiSettings,'assetAutoSave'|'assetSavePath'|'assetRetentionDays'|'assetMaxSizeGB'|'showFailedHistory'>>) => void;
+  setSmartConnect: (value: boolean) => void;
+  setGpuAcceleration: (value: boolean) => void;
   setDevAgent: (value: Partial<Pick<ApiSettings,'devAgentProvider'|'devAgentBaseUrl'|'devAgentApiKey'|'devAgentModel'|'devAgentModels'>>) => void;
   setDramaAi: (value: Partial<Pick<ApiSettings,'dramaAiProvider'|'dramaAiBaseUrl'|'dramaAiApiKey'|'dramaAiModel'|'dramaAiModels'>>) => void;
   setPaidApi: (value: Partial<Pick<ApiSettings,'paidApiProvider'|'paidApiKey'|'paidApiBaseUrl'|'paidApiModels'|'paidApiSelectedModel'>>) => void;
@@ -336,6 +342,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setSsh: (value) => { set(value); save({ ...get(), ...value }); },
   setChat: (value) => { set(value as any); save({ ...get(), ...value }); },
   setAssets: (value) => { set(value as any); save({ ...get(), ...value }); },
+  setSmartConnect: (smartConnect) => { set({ smartConnect }); save({ ...get(), smartConnect }); },
+  setGpuAcceleration: (gpuAcceleration) => { set({ gpuAcceleration }); save({ ...get(), gpuAcceleration }); },
   setDevAgent: (value) => { set(value as any); save({ ...get(), ...value }); },
   setDramaAi: (value) => { set(value as any); save({ ...get(), ...value }); },
   setPaidApi: (value) => { set(value as any); save({ ...get(), ...value }); },

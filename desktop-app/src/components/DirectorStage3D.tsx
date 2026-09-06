@@ -79,6 +79,10 @@ const PRESET_LIBRARY: PresetDef[] = [
   { key: 'capsule', label: '胶囊', kind: 'geometry' },
   { key: 'torus', label: '圆环', kind: 'geometry' },
   { key: 'plane', label: '平板', kind: 'geometry' },
+  { key: 'pyramid', label: '金字塔', kind: 'geometry' },
+  { key: 'torusknot', label: '环面结', kind: 'geometry' },
+  { key: 'dodecahedron', label: '十二面体', kind: 'geometry' },
+  { key: 'octahedron', label: '八面体', kind: 'geometry' },
   // 道具
   { key: 'table', label: '桌子', kind: 'prop' },
   { key: 'chair', label: '椅子', kind: 'prop' },
@@ -96,11 +100,43 @@ const PRESET_LIBRARY: PresetDef[] = [
   { key: 'rock', label: '岩石', kind: 'prop' },
   { key: 'pillar', label: '柱子', kind: 'prop' },
   { key: 'stairs', label: '台阶', kind: 'prop' },
+  { key: 'bench', label: '长凳', kind: 'prop' },
+  { key: 'streetlamp', label: '路灯', kind: 'prop' },
+  { key: 'trashcan', label: '垃圾桶', kind: 'prop' },
+  { key: 'fountain', label: '喷泉', kind: 'prop' },
+  { key: 'statue', label: '雕像', kind: 'prop' },
+  { key: 'bridge', label: '小桥', kind: 'prop' },
+  { key: 'boat', label: '小船', kind: 'prop' },
+  { key: 'house', label: '小屋', kind: 'prop' },
+  { key: 'well', label: '水井', kind: 'prop' },
+  { key: 'campfire', label: '篝火', kind: 'prop' },
+  { key: 'barrel', label: '木桶', kind: 'prop' },
+  { key: 'crate', label: '木箱', kind: 'prop' },
+  { key: 'umbrella', label: '遮阳伞', kind: 'prop' },
+  { key: 'ladder', label: '梯子', kind: 'prop' },
+  { key: 'desk', label: '书桌', kind: 'prop' },
+  { key: 'counter', label: '柜台', kind: 'prop' },
+  { key: 'car', label: '汽车', kind: 'prop' },
+  { key: 'tent', label: '帐篷', kind: 'prop' },
   // 环境
   { key: 'room', label: '房间', kind: 'environment' },
   { key: 'stage', label: '舞台', kind: 'environment' },
   { key: 'corridor', label: '走廊', kind: 'environment' },
   { key: 'forest', label: '森林', kind: 'environment' },
+  { key: 'beach', label: '海滩', kind: 'environment' },
+  { key: 'mountain', label: '山丘', kind: 'environment' },
+  { key: 'plaza', label: '广场', kind: 'environment' },
+  { key: 'garden', label: '花园', kind: 'environment' },
+  { key: 'office', label: '办公室', kind: 'environment' },
+  { key: 'classroom', label: '教室', kind: 'environment' },
+  { key: 'street', label: '街道', kind: 'environment' },
+  { key: 'bedroom', label: '卧室', kind: 'environment' },
+  { key: 'kitchen', label: '厨房', kind: 'environment' },
+  { key: 'bathroom', label: '浴室', kind: 'environment' },
+  { key: 'restaurant', label: '餐厅', kind: 'environment' },
+  { key: 'hospital', label: '诊室', kind: 'environment' },
+  { key: 'parking', label: '停车场', kind: 'environment' },
+  { key: 'warehouse', label: '仓库', kind: 'environment' },
 ];
 
 // 场景对象（运行时）
@@ -324,6 +360,10 @@ function makeGeometry(key: string, mat: THREE.Material): THREE.Object3D {
     : key === 'cone' ? new THREE.ConeGeometry(0.3, 0.7, 20)
     : key === 'capsule' ? new THREE.CapsuleGeometry(0.18, 0.4, 4, 12)
     : key === 'torus' ? new THREE.TorusGeometry(0.28, 0.08, 12, 24)
+    : key === 'pyramid' ? new THREE.ConeGeometry(0.34, 0.5, 4)
+    : key === 'torusknot' ? new THREE.TorusKnotGeometry(0.22, 0.07, 64, 12)
+    : key === 'dodecahedron' ? new THREE.DodecahedronGeometry(0.28, 0)
+    : key === 'octahedron' ? new THREE.OctahedronGeometry(0.3, 0)
     : new THREE.PlaneGeometry(1, 1);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true; mesh.receiveShadow = true;
@@ -378,6 +418,100 @@ function makeProp(key: string, mat: THREE.Material): THREE.Object3D {
   else if (key === 'rock') { const r1 = mesh(new THREE.DodecahedronGeometry(0.32, 0), 0, 0.2, 0); r1.scale.set(1.2, 0.7, 0.9); g.add(r1); const r2 = mesh(new THREE.DodecahedronGeometry(0.18, 0), 0.28, 0.1, 0.12); g.add(r2); }
   else if (key === 'pillar') { g.add(box(0.22, 1.6, 0.22, 0, 0.8, 0)); g.add(box(0.32, 0.08, 0.32, 0, 1.66, 0)); g.add(box(0.32, 0.08, 0.32, 0, 0.04, 0)); }
   else if (key === 'stairs') { for (let i = 0; i < 4; i++) g.add(box(0.9, 0.14, 0.3, 0, 0.07 + i * 0.14, -i * 0.28)); }
+  else if (key === 'bench') {
+    g.add(box(1.1, 0.06, 0.42, 0, 0.45, 0));
+    g.add(box(1.1, 0.05, 0.06, 0, 0.62, -0.2));
+    g.add(box(0.09, 0.45, 0.09, -0.46, 0.225, -0.16)); g.add(box(0.09, 0.45, 0.09, 0.46, 0.225, -0.16));
+    g.add(box(0.09, 0.45, 0.09, -0.46, 0.225, 0.16)); g.add(box(0.09, 0.45, 0.09, 0.46, 0.225, 0.16));
+  }
+  else if (key === 'streetlamp') {
+    g.add(cyl(0.035, 0.045, 2.3, 0, 1.15, 0));
+    g.add(box(0.03, 0.03, 0.75, 0.32, 2.28, 0));
+    g.add(box(0.3, 0.05, 0.55, 0.32, 2.28, 0)); // 灯罩
+  }
+  else if (key === 'trashcan') {
+    g.add(cyl(0.16, 0.14, 0.55, 0, 0.28, 0));
+    g.add(box(0.28, 0.04, 0.28, 0, 0.56, 0));
+  }
+  else if (key === 'fountain') {
+    g.add(cyl(0.75, 0.85, 0.22, 0, 0.11, 0)); // 底座水池
+    g.add(cyl(0.55, 0.6, 0.16, 0, 0.3, 0));
+    g.add(cyl(0.06, 0.1, 1.0, 0, 0.9, 0)); // 中心柱
+    g.add(ball(0.16, 0, 1.42, 0));
+  }
+  else if (key === 'statue') {
+    g.add(box(0.6, 0.18, 0.6, 0, 0.09, 0)); // 基座
+    g.add(box(0.34, 0.9, 0.34, 0, 0.63, 0)); // 身体
+    g.add(ball(0.17, 0, 1.32, 0)); // 头
+    g.add(box(0.3, 0.1, 0.14, 0.28, 0.95, 0)); // 伸出的手臂
+  }
+  else if (key === 'bridge') {
+    g.add(box(1.8, 0.16, 0.7, 0, 0.45, 0)); // 桥面
+    g.add(box(0.12, 0.5, 0.7, -0.88, 0.25, 0)); g.add(box(0.12, 0.5, 0.7, 0.88, 0.25, 0));
+    // 弧形扶手
+    for (let i = 0; i < 5; i++) g.add(box(0.03, 0.03, 0.03, -0.8 + i * 0.4, 0.68 + Math.sin((i / 4) * Math.PI) * 0.18, -0.33));
+    for (let i = 0; i < 5; i++) g.add(box(0.03, 0.03, 0.03, -0.8 + i * 0.4, 0.68 + Math.sin((i / 4) * Math.PI) * 0.18, 0.33));
+  }
+  else if (key === 'boat') {
+    const hull = ball(0.3, 0, 0.16, 0); hull.scale.set(1.6, 0.5, 0.5); g.add(hull); // 船身
+    g.add(cyl(0.02, 0.02, 0.9, 0, 0.62, 0)); // 桅杆
+    g.add(box(0.55, 0.4, 0.02, 0, 0.75, 0)); // 帆
+  }
+  else if (key === 'house') {
+    g.add(box(1.6, 1.2, 1.4, 0, 0.6, 0)); // 屋身
+    g.add(cone(1.2, 0.8, 0, 1.55, 0)); // 屋顶
+    g.add(box(0.4, 0.5, 0.02, 0, 0.5, 0.71)); // 门
+    g.add(box(0.3, 0.3, 0.02, 0.4, 0.85, 0.71)); // 窗
+  }
+  else if (key === 'well') {
+    g.add(cyl(0.28, 0.32, 0.45, 0, 0.22, 0));
+    g.add(box(0.06, 0.35, 0.55, 0, 0.62, 0)); // 顶架
+    g.add(box(0.55, 0.06, 0.06, 0, 0.78, 0));
+    g.add(box(0.35, 0.05, 0.35, 0, 0.48, 0)); // 井盖
+  }
+  else if (key === 'campfire') {
+    g.add(cyl(0.3, 0.36, 0.18, 0, 0.09, 0)); // 石圈
+    g.add(cone(0.14, 0.34, 0, 0.28, 0)); // 火堆
+    g.add(box(0.5, 0.04, 0.04, -0.22, 0.1, 0)); g.add(box(0.04, 0.04, 0.5, 0.22, 0.1, 0)); // 柴火
+  }
+  else if (key === 'barrel') {
+    g.add(cyl(0.2, 0.24, 0.6, 0, 0.3, 0));
+    g.add(box(0.5, 0.03, 0.5, 0, 0.6, 0));
+    g.add(box(0.5, 0.03, 0.5, 0, 0.02, 0));
+  }
+  else if (key === 'crate') {
+    g.add(box(0.45, 0.45, 0.45, 0, 0.225, 0));
+    g.add(box(0.5, 0.03, 0.03, 0, 0.225, 0.23)); g.add(box(0.03, 0.5, 0.03, 0.23, 0.225, 0));
+  }
+  else if (key === 'umbrella') {
+    g.add(cyl(0.025, 0.03, 1.5, 0, 0.75, 0));
+    g.add(cone(0.55, 0.3, 0, 1.62, 0)); // 伞面
+    g.add(ball(0.02, 0, 1.8, 0));
+  }
+  else if (key === 'ladder') {
+    g.add(box(0.05, 1.9, 0.05, -0.14, 0.95, 0)); g.add(box(0.05, 1.9, 0.05, 0.14, 0.95, 0));
+    for (let i = 0; i < 5; i++) g.add(box(0.34, 0.04, 0.05, 0, 0.2 + i * 0.38, 0));
+  }
+  else if (key === 'desk') {
+    g.add(box(1.0, 0.05, 0.5, 0, 0.72, 0)); // 桌面
+    g.add(box(0.05, 0.72, 0.45, -0.45, 0.36, 0)); g.add(box(0.05, 0.72, 0.45, 0.45, 0.36, 0));
+    g.add(box(0.48, 0.05, 0.45, 0.25, 0.4, 0)); // 抽屉
+    g.add(ball(0.015, 0.32, 0.4, 0.23));
+  }
+  else if (key === 'counter') {
+    g.add(box(1.5, 0.9, 0.65, 0, 0.45, 0)); // 柜台体
+    g.add(box(1.55, 0.05, 0.7, 0, 0.92, 0)); // 台面
+  }
+  else if (key === 'car') {
+    g.add(box(0.85, 0.32, 1.7, 0, 0.42, 0)); // 车身
+    g.add(box(0.8, 0.3, 0.75, 0, 0.62, -0.15)); // 驾驶舱
+    g.add(ball(0.16, -0.4, 0.16, -0.6)); g.add(ball(0.16, 0.4, 0.16, -0.6));
+    g.add(ball(0.16, -0.4, 0.16, 0.6)); g.add(ball(0.16, 0.4, 0.16, 0.6));
+  }
+  else if (key === 'tent') {
+    g.add(cone(0.85, 0.95, 0, 0.47, 0)); // 帐篷身
+    g.add(box(0.7, 0.4, 0.02, 0, 0.25, 0.3)); // 门帘
+  }
   return g;
 }
 
@@ -419,6 +553,83 @@ function makeEnvironment(key: string, mat: THREE.Material): THREE.Object3D {
     };
     addTree(-1.2, -1, 1); addTree(1.1, 0.6, 1.2); addTree(0.2, -1.4, 0.8);
     addRock(-0.8, 0.9, 1); addRock(1.3, -0.9, 0.8);
+  } else if (key === 'beach') {
+    g.add(box(4.5, 0.06, 4.5, 0, 0.03, 0)); // 沙滩
+    const w = box(4.5, 0.04, 1.6, 0, 0.02, 2.2); // 海面
+    g.add(w);
+    g.add(ball(0.06, 0.8, 0.1, 0.6)); g.add(ball(0.05, -0.6, 0.08, 0.4)); g.add(ball(0.08, 0.2, 0.1, -0.7));
+  } else if (key === 'mountain') {
+    g.add(box(4, 0.05, 4, 0, 0.03, 0));
+    const peak = (x: number, z: number, r: number, h: number) => { const c = cone(r, h, x, h / 2, z); c.position.y = h / 2; g.add(c); };
+    peak(-1.2, -0.6, 1.1, 1.8); peak(1.0, 0.8, 1.3, 2.2); peak(0.1, -1.3, 0.8, 1.2); peak(1.6, -1.2, 0.6, 0.9);
+  } else if (key === 'plaza') {
+    g.add(box(4.5, 0.05, 4.5, 0, 0.025, 0)); // 广场地面
+    g.add(cyl(0.5, 0.55, 0.3, 0, 0.15, 0)); // 中央喷泉底座
+    g.add(cyl(0.08, 0.08, 1.4, 0, 1.0, 0));
+    g.add(ball(0.14, 0, 1.55, 0));
+    g.add(box(0.5, 0.08, 0.08, 1.5, 0.04, -1)); g.add(box(0.08, 0.08, 0.5, 1.5, 0.04, -1)); // 地砖
+    g.add(box(0.5, 0.08, 0.08, -1.5, 0.04, 1)); g.add(box(0.08, 0.08, 0.5, -1.5, 0.04, 1));
+  } else if (key === 'garden') {
+    g.add(box(4, 0.05, 4, 0, 0.025, 0)); // 草地
+    const flower = (x: number, z: number) => { const s = new THREE.Group(); s.add(cyl(0.015, 0.015, 0.18, 0, 0.09, 0)); s.add(ball(0.05, 0, 0.2, 0)); s.position.set(x, 0.03, z); g.add(s); };
+    flower(-0.8, -0.8); flower(0.9, -0.5); flower(0.2, 0.9); flower(-1.1, 0.6); flower(1.2, 0.7);
+    g.add(box(0.03, 0.25, 0.03, -0.3, 0.13, -0.9)); g.add(box(0.03, 0.25, 0.03, 0.5, 0.13, 0.3));
+  } else if (key === 'office') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    g.add(box(1.2, 0.05, 0.6, -1.0, 0.72, -0.8)); // 办公桌
+    g.add(box(0.05, 0.72, 0.55, -1.6, 0.36, -0.8)); g.add(box(0.05, 0.72, 0.55, -0.4, 0.36, -0.8));
+    g.add(box(0.45, 0.45, 0.45, 1.0, 0.4, -0.8)); // 文件柜
+    g.add(box(0.5, 1.0, 0.06, 1.2, 0.55, -1.92)); // 窗
+    g.add(box(0.45, 0.8, 0.08, 0.1, 0.4, -1.92)); // 门
+  } else if (key === 'classroom') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    g.add(box(3.2, 0.08, 1.2, 0, 1.5, -1.3)); // 讲台/黑板
+    const seat = (x: number, z: number) => { g.add(box(0.5, 0.04, 0.35, x, 0.42, z)); g.add(box(0.5, 0.4, 0.04, x, 0.64, z - 0.14)); };
+    seat(-1.2, 0.6); seat(0, 0.6); seat(1.2, 0.6); seat(-1.2, -0.3); seat(0, -0.3); seat(1.2, -0.3);
+  } else if (key === 'street') {
+    g.add(box(4.5, 0.05, 4.5, 0, 0.025, 0)); // 路面
+    g.add(box(0.12, 0.02, 4.5, 0, 0.06, 0)); // 中线
+    g.add(box(0.08, 0.7, 0.08, -1.8, 0.35, -1.6)); g.add(box(0.08, 0.7, 0.08, 1.8, 0.35, 1.6)); // 路灯杆
+    g.add(box(1.4, 0.05, 0.05, 0.2, 0.1, 1.7)); // 人行道
+  } else if (key === 'bedroom') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    g.add(box(1.2, 0.25, 1.8, -0.8, 0.13, 0)); // 床
+    g.add(box(0.5, 0.12, 0.42, -0.8, 0.29, 0.5)); // 枕头
+    g.add(box(0.45, 0.45, 0.45, 0.9, 0.35, -0.5)); // 床头柜
+    g.add(box(0.7, 1.4, 0.05, 0.9, 1.1, -1.92)); // 窗
+  } else if (key === 'kitchen') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    g.add(box(1.6, 0.9, 0.6, -0.9, 0.45, -1.3)); // 橱柜
+    g.add(box(1.6, 0.05, 0.65, -0.9, 0.92, -1.3)); // 台面
+    g.add(cyl(0.18, 0.18, 0.85, 0.9, 0.5, -1.2)); // 冰箱
+    g.add(box(0.8, 0.04, 0.5, 0.9, 0.74, -1.2)); // 桌面
+  } else if (key === 'bathroom') {
+    g.add(box(2.6, 0.05, 2.6, 0, 0.025, 0)); // 地面
+    g.add(box(2.6, 0.04, 0.1, 0, 0.5, -1.25)); // 后墙
+    g.add(box(0.75, 0.55, 0.85, -0.75, 0.28, 0.3)); // 浴缸
+    g.add(cyl(0.16, 0.18, 0.75, 0.7, 0.38, 0.3)); // 马桶
+    g.add(box(0.4, 0.8, 0.3, 0.75, 0.4, -0.6)); // 洗手台
+  } else if (key === 'restaurant') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    const table = (x: number, z: number) => { g.add(box(0.8, 0.06, 0.8, x, 0.72, z)); g.add(cyl(0.05, 0.05, 0.72, x, 0.36, z)); };
+    table(-1.1, -0.4); table(0.4, -0.4); table(1.4, 0.5);
+    const chair = (x: number, z: number) => { g.add(box(0.35, 0.05, 0.35, x, 0.42, z)); g.add(box(0.35, 0.45, 0.05, x, 0.62, z - 0.14)); };
+    chair(-1.1, 0.5); chair(0.4, 0.5);
+  } else if (key === 'hospital') {
+    g.add(box(4, 2.7, 0.1, 0, 1.35, -1.95)); g.add(box(0.1, 2.7, 4, -1.95, 1.35, 0)); g.add(box(0.1, 2.7, 4, 1.95, 1.35, 0));
+    g.add(box(0.9, 0.3, 1.9, 0, 0.3, 0.2)); // 病床
+    g.add(box(0.5, 0.1, 0.3, 0, 0.4, 0.6)); // 床头
+    g.add(box(0.4, 0.8, 0.35, 1.2, 0.4, -0.5)); // 仪器柜
+    g.add(cyl(0.05, 0.05, 0.9, 1.3, 0.5, 0.8)); // 输液架
+  } else if (key === 'parking') {
+    g.add(box(4.5, 0.06, 4.5, 0, 0.03, 0)); // 地面
+    g.add(box(0.05, 0.02, 1.1, -1.2, 0.07, 0)); g.add(box(0.05, 0.02, 1.1, -0.4, 0.07, 0)); g.add(box(0.05, 0.02, 1.1, 0.4, 0.07, 0)); g.add(box(0.05, 0.02, 1.1, 1.2, 0.07, 0)); // 车位线
+    g.add(box(0.85, 0.32, 1.7, -1.6, 0.3, 0.6)); // 一辆车
+  } else if (key === 'warehouse') {
+    g.add(box(4.5, 3.2, 0.1, 0, 1.6, -2.2)); g.add(box(0.1, 3.2, 4.5, -2.2, 1.6, 0)); g.add(box(0.1, 3.2, 4.5, 2.2, 1.6, 0));
+    g.add(box(4.5, 0.1, 4.5, 0, 3.25, 0)); // 屋顶
+    g.add(box(0.45, 0.45, 0.45, -1.2, 0.225, 0.8)); g.add(box(0.45, 0.45, 0.45, -1.2, 0.225, 0)); g.add(box(0.45, 0.45, 0.45, 0.9, 0.225, -0.8)); // 货箱
+    g.add(box(1.6, 0.06, 0.8, 0.4, 0.03, 1.4)); // 托盘
   }
   return g;
 }
@@ -570,6 +781,12 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   const [aiLoading, setAiLoading] = useState(false);
   const [posePrompt, setPosePrompt] = useState('');
   const [poseLoading, setPoseLoading] = useState(false);
+  // —— AI 导演面板（DSH 深度操作：布置场景/动作/动画/运镜）——
+  const [aiDirectorOpen, setAiDirectorOpen] = useState(false);
+  const [aiDirectorTask, setAiDirectorTask] = useState('');
+  const [aiDirectorBusy, setAiDirectorBusy] = useState(false);
+  const [aiDirectorLog, setAiDirectorLog] = useState<Array<{ ok: boolean; text: string }>>([]);
+  const [aiDirectorJson, setAiDirectorJson] = useState('');
   const [boneNames, setBoneNames] = useState<string[]>([]);
   const [boneLabels, setBoneLabels] = useState<string[]>([]);
   // 展开骨骼：每个骨骼的实时旋转值 + 折叠状态
@@ -1783,13 +2000,27 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
   // 构建场景上下文字符串：让 AI 知道"什么在什么地方、哪个模型是什么、相机在哪"
   const buildSceneContext = useCallback((): string => {
     const lines: string[] = [];
-    lines.push('【场景物体】（坐标单位米，y 轴向上，地面在 y=0）');
+    lines.push('【场景物体】（坐标单位米，y 轴向上，地面在 y=0；每个物体有稳定 id，可用 id 或名称精确指代）');
     if (!objectsRef.current.length) lines.push('（空场景，没有任何物体）');
     objectsRef.current.forEach((o, i) => {
-      const p = o.root.position;
+      const p = o.root.position, r = o.root.rotation, s = o.root.scale;
       const kindLabel = o.kind === 'humanoid' ? '人物' : o.kind === 'prop' ? '道具' : o.kind === 'environment' ? '环境' : '几何体';
-      lines.push(`${i + 1}.「${o.name}」（${kindLabel}）位置 x=${p.x.toFixed(1)}, y=${p.y.toFixed(1)}, z=${p.z.toFixed(1)}`);
+      const preset = PRESET_LIBRARY.find(item => item.key === o.presetKey);
+      lines.push(`${i + 1}. id="${o.id}" 名称「${o.name}」（${kindLabel}${preset ? ':' + preset.label : ''}）位置 x=${p.x.toFixed(1)}, y=${p.y.toFixed(1)}, z=${p.z.toFixed(1)}；旋转(弧度) x=${r.x.toFixed(2)}, y=${r.y.toFixed(2)}, z=${r.z.toFixed(2)}；缩放 x=${s.x.toFixed(2)}, y=${s.y.toFixed(2)}, z=${s.z.toFixed(2)}${o.note ? `；备注：${o.note}` : ''}`);
     });
+    lines.push('');
+    lines.push('【可用模型清单】（添加物体时用 key 字段）');
+    const groups: Record<string, PresetDef[]> = { geometry: [], humanoid: [], prop: [], environment: [] };
+    PRESET_LIBRARY.forEach(p => groups[p.kind]?.push(p));
+    (['humanoid', 'geometry', 'prop', 'environment'] as PresetKind[]).forEach(kind => {
+      const label = kind === 'humanoid' ? '人物' : kind === 'prop' ? '道具' : kind === 'environment' ? '环境' : '几何体';
+      lines.push(`${label}：${groups[kind].map(p => `${p.key}(${p.label})`).join('、')}`);
+    });
+    lines.push('');
+    lines.push('【时间线】');
+    lines.push(`关键帧 ${keyframes.length} 帧（时间索引 ${timelineDuration.toFixed(1)}s）`);
+    if (motionPaths.length) lines.push(`运镜路径 ${motionPaths.length} 条：${motionPaths.map(path => { const target = objectsRef.current.find(o => o.id === path.targetId); return `「${target?.name || path.targetId}」${path.points.length} 点/时长 ${path.duration.toFixed(1)}s`; }).join('；')}`);
+    if (cameraShots.length) lines.push(`机位 ${cameraShots.length} 个：${cameraShots.map(shot => `「${shot.name}」pos(${shot.pos.map(v => v.toFixed(1)).join(',')}) target(${shot.target.map(v => v.toFixed(1)).join(',')})`).join('；')}`);
     const cam = cameraRef.current, ctl = controlsRef.current;
     if (cam && ctl) {
       lines.push('');
@@ -1798,7 +2029,7 @@ export const DirectorStage3D: React.FC<{ url?: string; onClose: () => void }> = 
       lines.push(`看向目标 x=${ctl.target.x.toFixed(1)}, y=${ctl.target.y.toFixed(1)}, z=${ctl.target.z.toFixed(1)}`);
     }
     return lines.join('\n');
-  }, []);
+  }, [keyframes, timelineDuration, motionPaths, cameraShots]);
 
   // —— AI 运镜 / 摆姿势（优先走 DSH，未装 DSH 时回退聊天 AI 配置）——
   const runAiMotion = useCallback(async () => {
@@ -1831,6 +2062,220 @@ ${sceneCtx}
     finally { setAiLoading(false); }
   }, [aiPrompt, startRecording, buildSceneContext]);
 
+  // —— AI 导演指令执行器：把 DSH/聊天 AI 返回的结构化指令逐条应用到场景 ——
+  const executeAiCommands = useCallback((commands: any[]): Array<{ ok: boolean; text: string }> => {
+    const logs: Array<{ ok: boolean; text: string }> = [];
+    const resolveTarget = (ref: unknown) => {
+      if (typeof ref !== 'string' || !ref) return null;
+      const idMatch = String(ref).match(/^id="([^"]+)"$/) || String(ref).match(/^obj-[\w-]+$/);
+      if (idMatch) return objectsRef.current.find(o => o.id === idMatch[1] || o.id === ref) || null;
+      const byId = objectsRef.current.find(o => o.id === ref);
+      if (byId) return byId;
+      return objectsRef.current.find(o => o.name === ref) || null;
+    };
+    for (const raw of commands) {
+      const cmd = raw && typeof raw === 'object' ? raw : {};
+      const op = String(cmd.op || cmd.action || '');
+      const push = (ok: boolean, text: string) => logs.push({ ok, text });
+      try {
+        if (op === 'addObject' || op === 'add') {
+          const key = String(cmd.key || cmd.model || '');
+          const preset = PRESET_LIBRARY.find(p => p.key === key || p.label === key);
+          if (!preset) { push(false, `addObject 失败：未知模型 key「${key}」（可用模型见场景上下文清单）`); continue; }
+          addObject(preset);
+          const obj = objectsRef.current[objectsRef.current.length - 1];
+          if (obj) {
+            const p = Array.isArray(cmd.pos) ? cmd.pos : Array.isArray(cmd.position) ? cmd.position : null;
+            const r = Array.isArray(cmd.rot) ? cmd.rot : Array.isArray(cmd.rotation) ? cmd.rotation : null;
+            const s = cmd.scale != null ? (typeof cmd.scale === 'number' ? [cmd.scale, cmd.scale, cmd.scale] : cmd.scale) : null;
+            if (p) obj.root.position.set(Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0);
+            if (r) obj.root.rotation.set(Number(r[0]) || 0, Number(r[1]) || 0, Number(r[2]) || 0);
+            if (s) obj.root.scale.set(Number(s[0]) || 1, Number(s[1]) || 1, Number(s[2]) || 1);
+            if (cmd.name) { obj.root.name = String(cmd.name); setObjects(prev => prev.map(x => x.id === obj.id ? { ...x, name: String(cmd.name) } : x)); }
+            push(true, `已添加「${preset.label}」（id=${obj.id}${p ? `，位置(${p.map((v: unknown) => Number(v).toFixed(1)).join(',')})` : ''}）`);
+          } else push(false, 'addObject 失败：对象创建后未找到');
+        } else if (op === 'moveObject' || op === 'move' || op === 'transform') {
+          const obj = resolveTarget(cmd.target ?? cmd.id ?? cmd.name);
+          if (!obj) { push(false, `${op} 失败：找不到对象「${String(cmd.target ?? cmd.id ?? cmd.name)}」`); continue; }
+          const p = Array.isArray(cmd.pos) ? cmd.pos : Array.isArray(cmd.position) ? cmd.position : null;
+          const r = Array.isArray(cmd.rot) ? cmd.rot : Array.isArray(cmd.rotation) ? cmd.rotation : null;
+          const s = cmd.scale != null ? (typeof cmd.scale === 'number' ? [cmd.scale, cmd.scale, cmd.scale] : cmd.scale) : null;
+          if (p) obj.root.position.set(Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0);
+          if (r) obj.root.rotation.set(Number(r[0]) || 0, Number(r[1]) || 0, Number(r[2]) || 0);
+          if (s) obj.root.scale.set(Number(s[0]) || 1, Number(s[1]) || 1, Number(s[2]) || 1);
+          push(true, `已移动「${obj.name}」${p ? `到(${p.map((v: unknown) => Number(v).toFixed(1)).join(',')})` : ''}${r ? `，旋转(${r.map((v: unknown) => Number(v).toFixed(2)).join(',')})` : ''}${s ? `，缩放(${s.map((v: unknown) => Number(v).toFixed(2)).join(',')})` : ''}`);
+        } else if (op === 'deleteObject' || op === 'delete') {
+          const obj = resolveTarget(cmd.target ?? cmd.id ?? cmd.name);
+          if (!obj) { push(false, `deleteObject 失败：找不到对象「${String(cmd.target ?? cmd.id ?? cmd.name)}」`); continue; }
+          const name = obj.name; const id = obj.id;
+          selectedIdRef.current = id; setSelectedId(id);
+          deleteObject();
+          push(true, `已删除「${name}」（id=${id}）`);
+        } else if (op === 'renameObject' || op === 'rename') {
+          const obj = resolveTarget(cmd.target ?? cmd.id);
+          if (!obj) { push(false, `renameObject 失败：找不到对象「${String(cmd.target ?? cmd.id)}」`); continue; }
+          const newName = String(cmd.name || cmd.newName || '');
+          if (!newName) { push(false, 'renameObject 失败：缺少新名称 name'); continue; }
+          obj.root.name = newName;
+          setObjects(prev => prev.map(x => x.id === obj.id ? { ...x, name: newName } : x));
+          push(true, `已将「${obj.name}」重命名为「${newName}」`);
+        } else if (op === 'setColor' || op === 'color') {
+          const obj = resolveTarget(cmd.target ?? cmd.id ?? cmd.name);
+          if (!obj) { push(false, `setColor 失败：找不到对象「${String(cmd.target ?? cmd.id ?? cmd.name)}」`); continue; }
+          const color = String(cmd.color || '#cccccc');
+          if (obj.material) { obj.material.color.set(color); if (obj.material.roughness == null) obj.material.roughness = 0.6; }
+          push(true, `已将「${obj.name}」颜色设为 ${color}`);
+        } else if (op === 'applyPose' || op === 'pose') {
+          const obj = resolveTarget(cmd.target ?? cmd.id ?? cmd.name);
+          if (!obj || !obj.bones) { push(false, 'applyPose 失败：目标不是人物（无人形骨骼）'); continue; }
+          const bones = Array.isArray(cmd.bones) ? cmd.bones : [];
+          let applied = 0;
+          for (const item of bones) {
+            const idx = (obj.boneNames || []).indexOf(String(item?.name || ''));
+            if (idx < 0) continue;
+            const bone = obj.bones[idx]; if (!bone) continue;
+            const rr = item.rotation || item.rot || {};
+            bone.rotation.x = Number(rr.x) || 0; bone.rotation.y = Number(rr.y) || 0; bone.rotation.z = Number(rr.z) || 0;
+            applied++;
+          }
+          const rots: Record<string, [number, number, number]> = {};
+          obj.bones.forEach((b, i) => { rots[obj.boneNames?.[i] || b.name] = [b.rotation.x, b.rotation.y, b.rotation.z]; });
+          setBoneRots(rots);
+          push(applied > 0, applied > 0 ? `已为「${obj.name}」摆姿势（${applied} 个骨骼）` : `applyPose 失败：骨骼名不匹配（可用骨骼：${(obj.boneNames || []).join('、')}）`);
+        } else if (op === 'recordKeyframe' || op === 'keyframe') {
+          addKeyframe();
+          push(true, `已记录关键帧（当前第 ${keyframes.length + 1} 帧）`);
+        } else if (op === 'jumpToKeyframe') {
+          const idx = Math.max(0, Math.min(keyframes.length - 1, Math.floor(Number(cmd.index ?? cmd.frame ?? 0))));
+          if (keyframes[idx]) { jumpToKeyframe(idx); push(true, `已跳到关键帧 ${idx + 1}`); }
+          else push(false, `jumpToKeyframe 失败：没有第 ${idx + 1} 帧（共 ${keyframes.length} 帧）`);
+        } else if (op === 'setCamera' || op === 'camera') {
+          const cam = cameraRef.current, ctl = controlsRef.current;
+          if (!cam || !ctl) { push(false, 'setCamera 失败：相机未就绪'); continue; }
+          const p = Array.isArray(cmd.pos) ? cmd.pos : Array.isArray(cmd.position) ? cmd.position : null;
+          const t = Array.isArray(cmd.target) ? cmd.target : null;
+          if (p) cam.position.set(Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0);
+          if (t) ctl.target.set(Number(t[0]) || 0, Number(t[1]) || 0, Number(t[2]) || 0);
+          ctl.update(); setViewMode('free');
+          push(true, `相机已定位${p ? `到(${p.map((v: unknown) => Number(v).toFixed(1)).join(',')})` : ''}${t ? `，看向(${t.map((v: unknown) => Number(v).toFixed(1)).join(',')})` : ''}`);
+        } else if (op === 'cameraMove' || op === 'moveCamera' || op === 'orbit' || op === 'dollyIn' || op === 'dollyOut') {
+          const type: 'orbit' | 'dollyIn' | 'dollyOut' = cmd.type === 'dollyOut' || op === 'dollyOut' ? 'dollyOut' : cmd.type === 'dollyIn' || op === 'dollyIn' ? 'dollyIn' : 'orbit';
+          const angle = Math.max(30, Math.min(720, Number(cmd.angle) || 360));
+          const durationMs = Math.max(2000, Math.min(15000, (Number(cmd.duration) || 4) * 1000));
+          void startRecording(type, { angle, duration: durationMs });
+          push(true, `运镜已开始：${type === 'orbit' ? `环绕 ${angle}°` : type === 'dollyIn' ? '推近特写' : '拉远全景'}（${(durationMs / 1000).toFixed(1)}s）`);
+        } else if (op === 'recordShot') {
+          recordShot();
+          push(true, `已记录当前机位「机位 ${cameraShots.length + 1}」`);
+        } else if (op === 'saveScene') {
+          const prev = sceneName;
+          if (cmd.name) setSceneName(String(cmd.name));
+          saveScene();
+          if (cmd.name) setSceneName(prev);
+          push(true, `已保存场景「${String(cmd.name || `场景 ${savedScenes.length + 1}`)}」`);
+        } else if (op === 'newScene' || op === 'clearScene') {
+          newScene();
+          push(true, '已清空场景（新场地）');
+        } else if (op === 'addMotionPath' || op === 'motionPath' || op === 'walkTo' || op === 'moveAlong') {
+          const obj = resolveTarget(cmd.target ?? cmd.id ?? cmd.name);
+          if (!obj) { push(false, `addMotionPath 失败：找不到目标「${String(cmd.target ?? cmd.id ?? cmd.name)}」`); continue; }
+          const points: Array<[number, number, number]> = Array.isArray(cmd.points) ? cmd.points.map((pt: unknown) => Array.isArray(pt) ? [Number(pt[0]) || 0, Number(pt[1]) || 0, Number(pt[2]) || 0] as [number, number, number] : null).filter(Boolean) as Array<[number, number, number]> : [];
+          if (points.length < 2) { push(false, 'addMotionPath 失败：需要至少 2 个路径点 points'); continue; }
+          const duration = Math.max(0.5, Number(cmd.duration) || points.length * 1.5);
+          const path: MotionPath = {
+            targetId: obj.id,
+            points,
+            duration,
+            startTime: Number(cmd.startTime) || 0,
+            endTime: (Number(cmd.startTime) || 0) + duration,
+            speed: 1,
+            loop: !!cmd.loop,
+            closed: !!cmd.closed,
+            smooth: true,
+            autoOrient: true,
+            turnSmoothing: 0.5,
+            gait: cmd.gait === 'run' ? 'run' : cmd.gait === 'walk' ? 'walk' : 'none',
+            gaitAmount: 0.6,
+          };
+          setMotionPaths(prev => [...prev.filter(item => item.targetId !== obj.id), path]);
+          setActivePathTargetId(obj.id);
+          push(true, `已为「${obj.name}」创建运动路径（${points.length} 点，${duration.toFixed(1)}s${cmd.gait ? '，' + cmd.gait + ' 步态' : ''}）`);
+        } else if (op === 'undo') {
+          push(true, '撤销请使用导演台左下角撤销按钮');
+        } else if (op === 'message' || op === 'say' || op === 'explain') {
+          push(true, `💬 ${String(cmd.text || cmd.message || '')}`);
+        } else {
+          push(false, `未知指令 op="${op}"（已跳过）`);
+        }
+      } catch (e: any) {
+        push(false, `指令 ${op} 执行异常：${String(e?.message || e)}`);
+      }
+    }
+    return logs;
+  }, [addObject, deleteObject, addKeyframe, jumpToKeyframe, recordShot, saveScene, newScene, startRecording, cameraShots.length, keyframes.length, savedScenes.length, sceneName]);
+
+  // —— AI 导演：DSH 深度操作导演台（布置场景/动作/动画/运镜），未装 DSH 时回退聊天 AI ——
+  const runAiDirector = useCallback(async () => {
+    const task = aiDirectorTask.trim();
+    if (!task) { message.warning('请描述想让 AI 导演做什么'); return; }
+    setAiDirectorBusy(true);
+    setAiDirectorLog([]);
+    setAiDirectorJson('');
+    try {
+      const sceneCtx = buildSceneContext();
+      const sysPrompt = `你是 3D 导演台的「AI 导演」。用户用自然语言描述想做的导演工作（布置场景、摆放/移动/删除物体、给人摆姿势、记录关键帧、设置/移动相机、运镜录制、记录机位、保存或清空场景等）。请把用户意图转成一组有序指令 JSON，只输出 JSON。
+
+【当前场景】
+${sceneCtx}
+
+【指令协议】输出形如 {"commands":[...]} 的数组，每条指令是 {"op":"...","字段":值}。可用指令：
+- addObject：{"op":"addObject","key":"模型key","pos":[x,y,z],"rot":[x,y,z]弧度,"scale":1,"name":"可选自定义名"}——添加物体（key 必须来自上面「可用模型清单」）
+- moveObject：{"op":"moveObject","target":"名称或id","pos":[x,y,z],"rot":[x,y,z],"scale":1}——移动/旋转/缩放已有物体（target 用上面的名称或 id="..." 原文）
+- deleteObject：{"op":"deleteObject","target":"名称或id"}
+- renameObject：{"op":"renameObject","target":"名称或id","name":"新名称"}
+- setColor：{"op":"setColor","target":"名称或id","color":"#rrggbb"}——改颜色（原色模式可见）
+- applyPose：{"op":"applyPose","target":"人物名称或id","bones":[{"name":"骨骼英文名","rotation":{"x":弧度,"y":弧度,"z":弧度}}]}——给人摆姿势。人物骨骼名如 Hips/Spine/Chest/Neck/Head/LeftUpperArm/RightUpperArm/LeftLowerArm/RightLowerArm/LeftUpperLeg/RightUpperLeg/LeftLowerLeg/RightLowerLeg 等；x=前后摆（正=向前），y=左右转，z=侧抬；弧度制（90°≈1.57）
+- recordKeyframe：{"op":"recordKeyframe"}——把当前所有物体/骨骼/相机状态记录为一个关键帧（做动画时：先摆好姿势→记录→再摆下一姿势→再记录…）
+- jumpToKeyframe：{"op":"jumpToKeyframe","index":0}——跳到第 N 帧编辑
+- addMotionPath：{"op":"addMotionPath","target":"人物名称或id","points":[[x,y,z],[x,y,z],...],"duration":秒,"gait":"none|walk|run","loop":false}——让人物沿路径移动（做"走路/跑步"类动画；points 至少 2 个，坐标单位米，y 一般保持 0 贴地）
+- setCamera：{"op":"setCamera","pos":[x,y,z],"target":[x,y,z]}——直接移动相机与看点
+- cameraMove：{"op":"cameraMove","type":"orbit|dollyIn|dollyOut","angle":360,"duration":4}——运镜录制（环绕角度/推近/拉远，duration 秒）
+- recordShot：{"op":"recordShot"}——把当前相机记录为一个机位
+- saveScene：{"op":"saveScene","name":"场景名"}
+- newScene：{"op":"newScene"}——清空并开新场地
+- message：{"op":"message","text":"给用户的一句话说明"}
+
+【规则】① 多条指令按顺序输出，一次任务可组合布置场景+摆姿势+运镜；② 布置室内场景时先加环境（如 room/office）再摆家具；③ 地面在 y=0，物体放桌上要抬高 y；④ 人物要面朝镜头时旋转 y 设 0（面朝 -Z）；⑤ 未知的模型 key 不要用，先查清单；⑥ 只输出 JSON，不要输出解释文字。`;
+
+      let text = '';
+      const { dshAsk } = await import('@/services/dsh.service');
+      const usable = await dshAsk({ task, systemPrompt: sysPrompt, timeoutMs: 8 * 60 * 1000 });
+      if (usable.ok && usable.text.trim()) {
+        text = usable.text.trim();
+      } else {
+        const { sendChat } = await import('@/services/chat.service');
+        const res = await sendChat(task, [], [], undefined, { systemPrompt: sysPrompt });
+        text = String(res?.text || '').trim();
+      }
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error('AI 未返回有效指令 JSON');
+      const obj = JSON.parse(m[0].replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'));
+      const commands = Array.isArray(obj.commands) ? obj.commands : Array.isArray(obj) ? obj : (obj.commands ? Object.values(obj.commands) : []);
+      if (!commands.length) throw new Error('AI 返回的指令数组为空');
+      setAiDirectorJson(JSON.stringify(obj, null, 2));
+      const logs = executeAiCommands(commands);
+      setAiDirectorLog(logs);
+      const okCount = logs.filter(l => l.ok).length;
+      message.success(`AI 导演执行完成：${okCount}/${logs.length} 条指令成功`);
+      if (logs.some(l => !l.ok)) message.warning('部分指令失败，见下方日志');
+    } catch (e: any) {
+      setAiDirectorLog(prev => [...prev, { ok: false, text: '任务失败：' + String(e?.message || e) }]);
+      message.error('AI 导演执行失败：' + String(e?.message || e));
+    } finally {
+      setAiDirectorBusy(false);
+    }
+  }, [aiDirectorTask, buildSceneContext, executeAiCommands]);
+
   const applyPosePreset = useCallback((preset: 'idle' | 'walk' | 'run' | 'point') => {
     const obj = objectsRef.current.find(o => o.id === selectedIdRef.current);
     if (!obj?.bones || obj.kind !== 'humanoid') { message.info('请先选择一个人物'); return; }
@@ -1859,7 +2304,6 @@ ${sceneCtx}
     if (!boneNames.length) { message.warning('请先选中一个人物对象'); return; }
     setPoseLoading(true);
     try {
-      const { sendChat } = await import('@/services/chat.service');
       const sceneCtx = buildSceneContext();
       const selObj = objectsRef.current.find(o => o.id === selectedIdRef.current);
       const selName = selObj?.name || '选中人物';
@@ -1871,7 +2315,7 @@ ${sceneCtx}
         return `${b}（${boneLabels[i] || b}）：${cur}`;
       }).join('\n');
       const list = boneNames.map((b, i) => boneLabels[i] ? `${b}（${boneLabels[i]}）` : b).join('、');
-      const res = await sendChat(prompt, [], [], undefined, { systemPrompt: `你是 3D 摆姿势助手。下面是当前场景信息，请据此理解"什么在什么地方"。
+      const sysPrompt = `你是 3D 摆姿势助手。下面是当前场景信息，请据此理解"什么在什么地方"。
 
 ${sceneCtx}
 
@@ -1883,8 +2327,18 @@ ${boneDetails}
 骨骼层级：Hips(骨盆)→Spine(躯干)→Chest(胸)→Neck(颈)→Head(头)；左右上臂→左右小臂→左右手；左右大腿→左右小腿→左右脚。
 旋转语义：x=绕身体左右轴前后摆（正=向前）；y=绕竖直轴左右转（正=向身体外侧）；z=绕身体前后轴侧抬。
 重要：描述里的"左/右"要相对人物朝向（人物面朝 yaw 方向），不是世界坐标的左右；例如人物背对你时，你的"左"是它的"右"。
-把描述转成 JSON：{"bones":[{"name":"骨骼名","rotation":{"x":弧度,"y":弧度,"z":弧度}}]}。只改需要动的骨骼（用上面的英文骨骼名）；单位弧度；只输出 JSON。` });
-      const text = String(res?.text || '').trim();
+把描述转成 JSON：{"bones":[{"name":"骨骼名","rotation":{"x":弧度,"y":弧度,"z":弧度}}]}。只改需要动的骨骼（用上面的英文骨骼名）；单位弧度；只输出 JSON。`;
+      let text = '';
+      // DSH 优先，未装 DSH 时回退聊天 AI（与运镜/AI 导演一致）
+      const { dshAsk } = await import('@/services/dsh.service');
+      const usable = await dshAsk({ task: prompt, systemPrompt: sysPrompt, timeoutMs: 8 * 60 * 1000 });
+      if (usable.ok && usable.text.trim()) {
+        text = usable.text.trim();
+      } else {
+        const { sendChat } = await import('@/services/chat.service');
+        const res = await sendChat(prompt, [], [], undefined, { systemPrompt: sysPrompt });
+        text = String(res?.text || '').trim();
+      }
       const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI 未返回有效姿势');
       const obj = JSON.parse(m[0].replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'));
       const obj3d = objectsRef.current.find(o => o.id === selectedIdRef.current);
@@ -2733,14 +3187,49 @@ ${boneDetails}
           </div>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Button size="small" type="primary" icon={<VideoCameraOutlined />} loading={aiDirectorBusy} onClick={() => setAiDirectorOpen(true)} style={{ background: 'linear-gradient(135deg,#7c3aed,#4f46e5)', border: 'none' }}>AI 导演</Button>
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,.45)' }}>让 DSH 布置场景/摆姿势/做动画/运镜（打开面板输入任务）</span>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>AI 摆姿势:</span>
-          <input value={posePrompt} onChange={e => setPosePrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void runAiPose(); }} placeholder="如：右手举起" style={{ width: 170, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, padding: '3px 8px', fontSize: 11 }} />
+          <input value={posePrompt} onChange={e => setPosePrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void runAiPose(); }} placeholder="如：右手举起" style={{ width: 150, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, padding: '3px 8px', fontSize: 11 }} />
           <Button size="small" loading={poseLoading} disabled={!boneNames.length || !posePrompt.trim()} onClick={() => void runAiPose()}>摆姿势</Button>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,.6)' }}>AI 运镜:</span>
-          <input value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void runAiMotion(); }} placeholder="如：环绕半圈" style={{ width: 170, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, padding: '3px 8px', fontSize: 11 }} />
+          <input value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void runAiMotion(); }} placeholder="如：环绕半圈" style={{ width: 150, background: '#1c2230', color: '#fff', border: '1px solid rgba(255,255,255,.2)', borderRadius: 5, padding: '3px 8px', fontSize: 11 }} />
           <Button size="small" loading={aiLoading} disabled={recording || !aiPrompt.trim()} onClick={() => void runAiMotion()}>运镜</Button>
           <span style={{ fontSize: 10, color: hasChatKey ? 'rgba(255,255,255,.4)' : '#fbbf24' }}>{hasChatKey ? `AI：${chatProvider} / ${chatModel}（设置→AI 可换）` : '⚠ 未配置 AI，请到 设置 → AI 配置 填写 API Key'}</span>
         </div>
+        {/* AI 导演面板：DSH 深度操作入口（布置场景/动作/动画/运镜） */}
+        {aiDirectorOpen && createPortal(
+          <div style={{ position: 'fixed', inset: 0, zIndex: 4000, background: 'rgba(4,6,12,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onMouseDown={e => { if (e.target === e.currentTarget) setAiDirectorOpen(false); }}>
+            <div style={{ width: 680, maxWidth: '92vw', maxHeight: '82vh', background: '#131926', border: '1px solid rgba(255,255,255,.14)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,.1)', flexShrink: 0 }}>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>🎬 AI 导演</span>
+                <span style={{ fontSize: 10, color: 'rgba(255,255,255,.45)' }}>DeepSeek Harness 深度操作导演台——布置场景 · 摆姿势 · 关键帧动画 · 运镜</span>
+                <span style={{ marginLeft: 'auto' }}><Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setAiDirectorOpen(false)} /></span>
+              </div>
+              <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10, overflow: 'auto', flex: 1 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <textarea value={aiDirectorTask} onChange={e => setAiDirectorTask(e.target.value)} placeholder={'例如：\n· 布置一个森林场景，放两个人物，一个在左边树下，一个在右边岩石旁\n· 选中的角色举起右手，然后记录关键帧\n· 加一张桌子和两把椅子放在房间中间，桌子上放盆栽\n· 相机移到人物正面特写，环绕 180 度运镜'} rows={4} style={{ flex: 1, background: '#0d1220', color: '#fff', border: '1px solid rgba(255,255,255,.16)', borderRadius: 8, padding: '8px 10px', fontSize: 12, resize: 'vertical', lineHeight: 1.5 }} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, justifyContent: 'flex-end' }}>
+                    <Button type="primary" loading={aiDirectorBusy} disabled={!aiDirectorTask.trim()} onClick={() => void runAiDirector()} style={{ background: 'linear-gradient(135deg,#7c3aed,#4f46e5)', border: 'none' }}>执行导演任务</Button>
+                    <Button size="small" onClick={() => setAiDirectorTask('把场景清空，布置一个森林：加森林环境，放两个人物，一个在左边树下，一个在右边岩石旁，然后给左边人物摆个张开双臂的姿势并记录关键帧，最后相机绕场景环绕 180 度')}>示例：森林双人</Button>
+                    <Button size="small" onClick={() => setAiDirectorTask('加一个房间环境，在房间中间放一张桌子和两把椅子，桌上放一个盆栽，加一个书架靠左墙，再放一个落地灯在角落，然后相机移到房间门口位置看向房间中心')}>示例：布置客厅</Button>
+                    <Button size="small" onClick={() => setAiDirectorTask('选中的角色做举手动作：右手举起，左手自然下垂，然后记录关键帧；再让他右手放下、左手叉腰，再记录关键帧')}>示例：角色动作</Button>
+                    <Button size="small" onClick={() => setAiDirectorTask('相机先到人物正面中景位置，记录机位；然后运镜环绕 270 度慢速拍摄')}>示例：机位+运镜</Button>
+                  </div>
+                </div>
+                {aiDirectorJson && <div style={{ fontSize: 10, color: '#93c5fd', background: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.25)', borderRadius: 6, padding: '6px 8px', maxHeight: 130, overflow: 'auto', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>{aiDirectorJson}</div>}
+                {aiDirectorLog.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflow: 'auto', border: '1px solid rgba(255,255,255,.1)', borderRadius: 8, padding: 8, background: 'rgba(0,0,0,.2)' }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,.7)' }}>执行日志（{aiDirectorLog.filter(l => l.ok).length}/{aiDirectorLog.length} 成功）</span>
+                    {aiDirectorLog.map((log, i) => <div key={i} style={{ fontSize: 11, color: log.ok ? '#86efac' : '#fca5a5', lineHeight: 1.4 }}>{log.ok ? '✓ ' : '✗ '}{log.text}</div>)}
+                  </div>
+                )}
+              </div>
+              <div style={{ padding: '8px 16px', borderTop: '1px solid rgba(255,255,255,.08)', fontSize: 10, color: 'rgba(255,255,255,.4)', flexShrink: 0 }}>提示：AI 导演输出的是指令 JSON，执行前会展示，失败指令会标红。所有操作与手动操作一致，可用撤销/时间线回退。</div>
+            </div>
+          </div>,
+          document.body
+        )}
       </div>
       </div>
     </div>,
